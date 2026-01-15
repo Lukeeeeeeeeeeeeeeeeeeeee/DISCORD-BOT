@@ -5,7 +5,11 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "register-commands": "node src/register-commands.js"
+    "register-commands": "node src/register-commands.js",
+    "test": "jest --runInBand"
+  },
+  "devDependencies": {
+    "jest": "^29.5.0"
   },
   "dependencies": {
     "@discordjs/builders": "^1.4.0",

@@ -48,17 +48,52 @@ module.exports = {
       if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
       const member = interaction.options.getUser('member');
       const note = interaction.options.getString('note') || 'Manual warning by staff';
-      db.prepare('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)').run(member.id, Date.now(), note);
-      db.prepare('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?').run(member.id);
-      // DM if possible
+
       try {
-        const m = await interaction.guild.members.fetch(member.id).catch(()=>null);
-        if (m) await m.send(`You have received a warning: ${note}`).catch(()=>{});
-      } catch (e) {}
-      const { CHANNELS } = require('../constants');
-      const ch = interaction.guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS);
-      if (ch) ch.send(`<@${member.id}> has been issued a warning by <@${interaction.user.id}>: ${note}`).catch(()=>{});
-      return interaction.reply({ content: `Warning issued to ${member.tag}.`, ephemeral: true });
+        // Insert warning and increment counter atomically
+        const tx = db.transaction(() => {
+          db.prepare('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)').run(member.id, Date.now(), note);
+          db.prepare('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?').run(member.id);
+        });
+        tx();
+
+        // DM the user with an embed
+        const { EmbedBuilder } = require('discord.js');
+        const warnEmbed = new EmbedBuilder()
+          .setTitle('⚠️ You have received a warning')
+          .setDescription(`**Reason:** ${note}`)
+          .setColor(0xFF8800)
+          .setTimestamp();
+        try {
+          const m = await interaction.guild.members.fetch(member.id).catch(()=>null);
+          if (m) await m.send({ embeds: [warnEmbed] }).catch(()=>{});
+        } catch (e) {
+          console.error('Failed to DM warned member', { memberId: member.id, error: e });
+        }
+
+        // Post to staff channel as embed with context
+        const { CHANNELS } = require('../constants');
+        const ch = interaction.guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS);
+        if (ch) {
+          const staffEmbed = new EmbedBuilder()
+            .setTitle('⚠️ Recruiter Warning Issued')
+            .addFields(
+              { name: 'Recruiter', value: `<@${member.id}>`, inline: true },
+              { name: 'By', value: `<@${interaction.user.id}>`, inline: true },
+              { name: 'Reason', value: note, inline: false }
+            )
+            .setColor(0xFF4400)
+            .setTimestamp();
+          ch.send({ embeds: [staffEmbed] }).catch((e)=> console.error('Failed to post warning to channel', { channelId: ch.id, error: e }));
+        }
+
+        console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note });
+
+        return interaction.reply({ content: `Warning issued to ${member.tag}. ✅`, ephemeral: true });
+      } catch (e) {
+        console.error('Failed to issue warning', { error: e });
+        return interaction.reply({ content: 'Failed to issue warning.', ephemeral: true });
+      }
     }
 
     if (sub === 'dismiss') {
@@ -66,11 +101,25 @@ module.exports = {
       if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
       const member = interaction.options.getUser('member');
       const reason = interaction.options.getString('reason') || 'Dismissed by staff';
-      // Mark flags dismissed
-      db.prepare('UPDATE flags SET dismissed = 1 WHERE recruiter_id = ?').run(member.id);
-      const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
-      if (ch) ch.send(`<@${member.id}>'s flags dismissed by <@${interaction.user.id}>: ${reason}`).catch(()=>{});
-      return interaction.reply({ content: `Flags for ${member.tag} dismissed.`, ephemeral: true });
+      try {
+        db.prepare('UPDATE flags SET dismissed = 1 WHERE recruiter_id = ?').run(member.id);
+        const { EmbedBuilder } = require('discord.js');
+        const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
+        if (ch) {
+          const embed = new EmbedBuilder()
+            .setTitle('✅ Flags Dismissed')
+            .setDescription(`Flags for <@${member.id}> dismissed by <@${interaction.user.id}>`)
+            .addFields({ name: 'Reason', value: reason })
+            .setColor(0x00CC66)
+            .setTimestamp();
+          ch.send({ embeds: [embed] }).catch(e => console.error('Failed to post dismiss to channel', { error: e, channelId: ch.id }));
+        }
+        console.info('Flags dismissed', { recruiterId: member.id, by: interaction.user.id, reason });
+        return interaction.reply({ content: `Flags for ${member.tag} dismissed. ✅`, ephemeral: true });
+      } catch (e) {
+        console.error('Failed to dismiss flags', { error: e });
+        return interaction.reply({ content: 'Failed to dismiss flags.', ephemeral: true });
+      }
     }
   }
 };
