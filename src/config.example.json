@@ -1,0 +1,26 @@
+{
+  "guildId": "REPLACE_WITH_GUILD_ID",
+  "roleIds": {
+    "onboarding": ["1459880782108692521","1459880774168739892","1459878495290261839","1459878488751476930"],
+    "rookie": "1331020584473329726",
+    "unverified": "1331020591175565517",
+    "recruiter_roles": {
+      "EU": "1331020554588917772",
+      "NA": "1331020555566059622",
+      "AS": "1331020556144869438"
+    },
+    "special_role": "1459956798172827933",
+    "auto_promote_role": "1331020565879984198"
+  },
+  "channels": {
+    "log_invites_overall": "1331020749556809843",
+    "invites_eu": "1331020760906731730",
+    "invites_na": "1331020766296150190",
+    "invites_as": "1331020771476242544",
+    "recruiter_warnings": "1331020754090987570"
+  },
+  "limits": {
+    "max_join_age_minutes": 120,
+    "min_account_age_days": 30*6
+  }
+}
