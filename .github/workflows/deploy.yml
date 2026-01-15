@@ -1,0 +1,41 @@
+﻿name: Deploy to SneakyHub
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout repo
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      # Step 3: Install dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # Step 4: Optional build
+      - name: Build
+        run: npm run build
+        if: ${{ always() }}
+
+      # Step 5: Upload to SneakyHub (disabled until password available)
+      - name: Upload to SneakyHub via SCP
+        if: false # change to `true` once you have SFTP_PASSWORD
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host: ${{ secrets.SFTP_HOST }}
+          username: ${{ secrets.SFTP_USER }}
+          password: ${{ secrets.SFTP_PASSWORD }}
+          port: ${{ secrets.SFTP_PORT }}
+          source: "."
+          target: "/home/container"
