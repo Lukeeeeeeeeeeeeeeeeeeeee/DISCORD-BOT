@@ -1,4 +1,6 @@
 const db = require('../db');
+const { EmbedBuilder } = require('discord.js');
+const { REGIONS } = require('../constants');
 
 module.exports = {
   data: { name: 'leaderboard' },
@@ -7,17 +9,20 @@ module.exports = {
     if (sub === 'show') {
       const scheduler = require('../scheduler');
       const region = interaction.options.getString('region');
+      const since = Date.now() - (7 * 24 * 60 * 60 * 1000);
       if (region) {
-        const since = Date.now() - (7*24*60*60*1000);
+        if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.', ephemeral: true });
         const rows = db.prepare('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC').all(region, since);
         const text = scheduler.formatLeaderboardMessage(rows, region);
-        return interaction.reply({ content: text, ephemeral: false });
+        const embed = new EmbedBuilder().setTitle(`Leaderboard (${region})`).setDescription(text).setColor(0x00AAFF);
+        return interaction.reply({ embeds: [embed], ephemeral: false });
       }
+
       // Global: combine regions into one list but still use weekly window
-      const since = Date.now() - (7*24*60*60*1000);
       const rows = db.prepare('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC').all(since);
       const text = scheduler.formatLeaderboardMessage(rows, 'GLOBAL');
-      return interaction.reply({ content: text, ephemeral: false });
+      const embed = new EmbedBuilder().setTitle('Leaderboard (GLOBAL)').setDescription(text).setColor(0x00AAFF);
+      return interaction.reply({ embeds: [embed], ephemeral: false });
     }
 
     if (sub === 'init') {
