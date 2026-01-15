@@ -1,4 +1,4 @@
-﻿name: Deploy to Bot-Hosting.net
+﻿name: Deploy to Bot-Hosting
 
 on:
   push:
@@ -9,23 +9,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repo
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Step 2: Setup Node.js
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: "18"
 
-      # Step 3: Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # Step 4: Upload to Bot-Hosting.net via SFTP (disabled until password available)
-      - name: Upload to Bot-Hosting.net via SFTP
-        if: false # change to `true` once you have SFTP_PASSWORD
+      - name: Build (optional)
+        run: npm run build
+        # If you DON'T have build script, delete this block
+
+      - name: Upload to Bot-Hosting via SFTP
         uses: appleboy/scp-action@v0.1.5
         with:
           host: ${{ secrets.SFTP_HOST }}
@@ -34,3 +33,4 @@ jobs:
           port: ${{ secrets.SFTP_PORT }}
           source: "."
           target: "/home/container"
+
