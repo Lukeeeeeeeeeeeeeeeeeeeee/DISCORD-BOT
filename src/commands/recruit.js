@@ -52,14 +52,15 @@ module.exports = {
       // set nickname
       await guildMember.setNickname(`${ign} | ${region}`).catch(()=>null);
 
-      // add recruit to DB
+      // Database writes in a transaction to avoid partial state
       const nowTs = Date.now();
-      db.prepare('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)')
-        .run(interaction.user.id, member.id, region, ign, nowTs);
-
-      // increment recruiter points
-      db.prepare('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)').run(interaction.user.id);
-      db.prepare('UPDATE recruiters SET points = points + 1 WHERE id = ?').run(interaction.user.id);
+      const tx = db.transaction(() => {
+        db.prepare('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)')
+          .run(interaction.user.id, member.id, region, ign, nowTs);
+        db.prepare('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)').run(interaction.user.id);
+        db.prepare('UPDATE recruiters SET points = points + 1 WHERE id = ?').run(interaction.user.id);
+      });
+      tx();
 
       // Check for special-role auto-promotion: if they have the special role and got >=3 recruits in last 7 days
       const recruiterMember = await interaction.guild.members.fetch(interaction.user.id).catch(()=>null);
@@ -85,12 +86,16 @@ module.exports = {
         }
       }
 
-      // Log to invites channel overall + region
+      // Log to invites channel overall + region and cross-post to central leaderboard channel (use embed)
       const { CHANNELS } = require('../constants');
       const channelOverall = interaction.guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
       const channelRegion = interaction.guild.channels.cache.get(region === 'EU' ? CHANNELS.INVITES_EU : region === 'NA' ? CHANNELS.INVITES_NA : CHANNELS.INVITES_AS);
-      if (channelOverall) channelOverall.send(`Recruit: ${interaction.user.tag} -> ${member.tag} (${region})`);
-      if (channelRegion) channelRegion.send(`Recruit: ${interaction.user.tag} -> ${member.tag}`);
+      const central = interaction.guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
+      const { makeRecruitEmbed } = require('../lib/messages');
+      const embed = makeRecruitEmbed(interaction.user.id, member.id, region, ign);
+      if (channelOverall) channelOverall.send({ embeds: [embed] }).catch(()=>{});
+      if (channelRegion) channelRegion.send({ embeds: [embed] }).catch(()=>{});
+      if (central) central.send({ embeds: [embed] }).catch(()=>{});
 
       // Update region leaderboards immediately
       try {

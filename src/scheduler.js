@@ -86,30 +86,27 @@ async function recomputeLeaderboards(db, guild) {
   // For each of the region channels, update a single message with top recruiters
   const regions = [{key:'EU', channel: CHANNELS.INVITES_EU},{key:'NA', channel: CHANNELS.INVITES_NA},{key:'AS', channel: CHANNELS.INVITES_AS}];
   const since = Date.now() - (7*24*60*60*1000);
+  const { upsertLeaderboardMessage } = require('./lib/messages');
   for (const rg of regions) {
     const rows = db.prepare('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC').all(rg.key, since);
     const ch = guild.channels.cache.get(rg.channel);
     if (!ch) continue;
     try {
       const text = formatLeaderboardMessage(rows, rg.key);
-      const record = db.prepare('SELECT * FROM leaderboard_messages WHERE channel_id = ?').get(ch.id);
-      if (record) {
-        // try to edit
-        const msg = await ch.messages.fetch(record.message_id).catch(()=>null);
-        if (msg) {
-          await msg.edit(text);
-          db.prepare('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?').run(Date.now(), record.id);
-        } else {
-          const m2 = await ch.send({ content: text });
-          db.prepare('UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?').run(m2.id, Date.now(), record.id);
-        }
-      } else {
-        const m = await ch.send({ content: text });
-        db.prepare('INSERT INTO leaderboard_messages (channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?)')
-          .run(ch.id, m.id, rg.key, Date.now());
+      // Update region channel message via helper
+      await upsertLeaderboardMessage(db, ch, rg.key, text, null).catch(()=>{});
+
+      // Cross-post / update in central channel
+      try {
+        const { CHANNELS } = require('./constants');
+        const central = guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
+        if (central) await upsertLeaderboardMessage(db, central, rg.key, text, null).catch(()=>{});
+      } catch (e) {
+        // best-effort
       }
     } catch (err) {
       // ignore non-critical errors
+      console.error('Leaderboard update failed for', rg.key, err);
     }
   }
 }

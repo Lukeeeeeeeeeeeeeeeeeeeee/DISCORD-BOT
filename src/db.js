@@ -65,6 +65,13 @@ function prepareDb() {
   );
   `);
 
+  // Ensure unique constraint per (channel_id, region) to avoid duplicates
+  try {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region)');
+  } catch (e) {
+    // ignore
+  }
+
   // Ensure promoted column exists for older DBs
   try {
     db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0");
