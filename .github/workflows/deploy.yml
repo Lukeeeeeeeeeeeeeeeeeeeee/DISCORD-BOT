@@ -1,4 +1,4 @@
-﻿name: Deploy to SneakyHub
+﻿name: Deploy to Bot-Hosting.net
 
 on:
   push:
@@ -28,8 +28,8 @@ jobs:
         run: npm run build
         if: ${{ always() }}
 
-      # Step 5: Upload to SneakyHub (disabled until password available)
-      - name: Upload to SneakyHub via SCP
+      # Step 5: Upload to Bot-Hosting.net via SFTP (disabled until password available)
+      - name: Upload to Bot-Hosting.net via SFTP
         if: false # change to `true` once you have SFTP_PASSWORD
         uses: appleboy/scp-action@v0.1.5
         with:
