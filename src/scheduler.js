@@ -93,14 +93,17 @@ async function recomputeLeaderboards(db, guild) {
     if (!ch) continue;
     try {
       const text = formatLeaderboardMessage(rows, rg.key);
-      // Update region channel message via helper
-      await upsertLeaderboardMessage(db, ch, rg.key, text, null).catch(()=>{});
+      // Update region channel message via helper using embed
+      const { makeLeaderboardEmbed } = require('./lib/messages');
+      const lang = process.env.DEFAULT_LANG || 'en';
+      const embed = makeLeaderboardEmbed(rows, rg.key, lang);
+      await upsertLeaderboardMessage(db, ch, rg.key, null, embed).catch(()=>{});
 
       // Cross-post / update in central channel
       try {
         const { CHANNELS } = require('./constants');
         const central = guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
-        if (central) await upsertLeaderboardMessage(db, central, rg.key, text, null).catch(()=>{});
+        if (central) await upsertLeaderboardMessage(db, central, rg.key, null, embed).catch(()=>{});
       } catch (e) {
         // best-effort
       }

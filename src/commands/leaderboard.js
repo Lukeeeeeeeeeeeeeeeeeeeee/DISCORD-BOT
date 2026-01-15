@@ -13,8 +13,9 @@ module.exports = {
       if (region) {
         if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.', ephemeral: true });
         const rows = db.prepare('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC').all(region, since);
-        const text = scheduler.formatLeaderboardMessage(rows, region);
-        const embed = new EmbedBuilder().setTitle(`Leaderboard (${region})`).setDescription(text).setColor(0x00AAFF);
+        const { makeLeaderboardEmbed } = require('../lib/messages');
+        const lang = interaction.locale || 'en';
+        const embed = makeLeaderboardEmbed(rows, region, lang);
         return interaction.reply({ embeds: [embed], ephemeral: false });
       }
 

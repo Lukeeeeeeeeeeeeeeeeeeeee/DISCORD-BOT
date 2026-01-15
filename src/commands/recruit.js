@@ -92,7 +92,8 @@ module.exports = {
       const channelRegion = interaction.guild.channels.cache.get(region === 'EU' ? CHANNELS.INVITES_EU : region === 'NA' ? CHANNELS.INVITES_NA : CHANNELS.INVITES_AS);
       const central = interaction.guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
       const { makeRecruitEmbed } = require('../lib/messages');
-      const embed = makeRecruitEmbed(interaction.user.id, member.id, region, ign);
+      const lang = interaction.locale || 'en';
+      const embed = makeRecruitEmbed(interaction.user.id, member.id, region, ign, lang);
       if (channelOverall) channelOverall.send({ embeds: [embed] }).catch(()=>{});
       if (channelRegion) channelRegion.send({ embeds: [embed] }).catch(()=>{});
       if (central) central.send({ embeds: [embed] }).catch(()=>{});

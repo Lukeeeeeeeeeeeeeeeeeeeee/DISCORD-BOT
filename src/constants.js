@@ -23,9 +23,13 @@ module.exports = {
   MIN_LEADERBOARD_ENTRIES: 5,
   EXEMPT_TOP_PERCENT: 0.10,
   REPEATED_FLAGS_TO_WARN: 2,
-  ESCALATION_WINDOW_WEEKS: 4
-  ,
+  ESCALATION_WINDOW_WEEKS: 4,
   REGIONS: ['EU','NA','AS'],
+  REGION_INFO: {
+    EU: { name: 'Europe', emoji: '🇪🇺', color: 0x4A90E2, thumbnail: '' },
+    NA: { name: 'North America', emoji: '🇺🇸', color: 0xE94E3A, thumbnail: '' },
+    AS: { name: 'Asia', emoji: '🌏', color: 0x8E44AD, thumbnail: '' }
+  },
   PURCHASE_ITEMS: {
     'nickname': 30,
     'custom-vc': 25,

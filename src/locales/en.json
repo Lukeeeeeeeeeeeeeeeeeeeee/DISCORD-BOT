@@ -1,0 +1,16 @@
+{
+  "recruit": {
+    "title": "New Recruit",
+    "reason_warning": "You have received a warning",
+    "issued": "Warning issued to {user}",
+    "flags_dismissed": "Flags for {user} dismissed"
+  },
+  "leaderboard": {
+    "title": "Leaderboard ({region})",
+    "no_recruits": "No weekly recruits yet.",
+    "not_enough": "Not enough data yet (need at least {min} active recruiters this week).",
+    "podium": "🏆 Podium",
+    "people_with_3": "🔥 People with 3+",
+    "other": "Other"
+  }
+}
