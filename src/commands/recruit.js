@@ -1,6 +1,6 @@
 const dayjs = require('dayjs');
 const { ROLE_IDS } = require('../constants');
-const db = require('../db');
+const db = require('../db_async');
 
 module.exports = {
   data: { name: 'recruit' },
@@ -27,7 +27,7 @@ module.exports = {
     if (guildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return interaction.reply({ content: 'Member is already verified.', ephemeral: true });
 
     // check if recruited already
-    const exist = db.prepare('SELECT * FROM recruits WHERE recruited_id = ?').get(member.id);
+    const exist = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', member.id);
     if (exist) return interaction.reply({ content: 'That member has already been recruited previously.', ephemeral: true });
 
     // assign onboarding role balancing
@@ -54,24 +54,28 @@ module.exports = {
 
       // Database writes in a transaction to avoid partial state
       const nowTs = Date.now();
-      const tx = db.transaction(() => {
-        db.prepare('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)')
-          .run(interaction.user.id, member.id, region, ign, nowTs);
-        db.prepare('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)').run(interaction.user.id);
-        db.prepare('UPDATE recruiters SET points = points + 1 WHERE id = ?').run(interaction.user.id);
-      });
-      tx();
+      await db.run('BEGIN TRANSACTION');
+      try {
+        await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)', interaction.user.id, member.id, region, ign, nowTs);
+        await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)', interaction.user.id);
+        await db.run('UPDATE recruiters SET points = points + 1 WHERE id = ?', interaction.user.id);
+        await db.run('COMMIT');
+      } catch (e) {
+        await db.run('ROLLBACK');
+        throw e;
+      }
 
       // Check for special-role auto-promotion: if they have the special role and got >=3 recruits in last 7 days
       const recruiterMember = await interaction.guild.members.fetch(interaction.user.id).catch(()=>null);
       if (recruiterMember && recruiterMember.roles.cache.has(ROLE_IDS.SPECIAL_ROLE)) {
         const cutoff = Date.now() - (7*24*60*60*1000);
-        const countRecent = db.prepare('SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ?').get(interaction.user.id, cutoff).c;
+        const countRecentRow = await db.get('SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ?', interaction.user.id, cutoff);
+        const countRecent = countRecentRow ? countRecentRow.c : 0;
         if (countRecent >= 3) {
-          const recRow = db.prepare('SELECT promoted FROM recruiters WHERE id = ?').get(interaction.user.id);
+          const recRow = await db.get('SELECT promoted FROM recruiters WHERE id = ?', interaction.user.id);
           if (!recRow || !recRow.promoted) {
             // determine top region in the last 7 days
-            const rows = db.prepare('SELECT region, COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ? GROUP BY region ORDER BY c DESC').all(interaction.user.id, cutoff);
+            const rows = await db.all('SELECT region, COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ? GROUP BY region ORDER BY c DESC', interaction.user.id, cutoff);
             const topRegion = rows.length ? rows[0].region : region;
             const recruiterRoleId = require('../constants').RECRUITER_ROLE_IDS[topRegion];
 
@@ -81,7 +85,7 @@ module.exports = {
             await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(()=>{});
             if (recruiterRoleId) await recruiterMember.roles.add(recruiterRoleId).catch(()=>{});
 
-            db.prepare('UPDATE recruiters SET promoted = 1 WHERE id = ?').run(interaction.user.id);
+            await db.run('UPDATE recruiters SET promoted = 1 WHERE id = ?', interaction.user.id);
           }
         }
       }

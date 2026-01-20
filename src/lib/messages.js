@@ -21,18 +21,18 @@ function makeRecruitEmbed(recruiter, recruited, region, ign, lang='en') {
 
 async function upsertLeaderboardMessage(db, channel, region, content, embed) {
   // record keyed by channel_id + region
-  const record = db.prepare('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?').get(channel.id, region);
+  const record = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, region);
   if (record) {
     const msg = await channel.messages.fetch(record.message_id).catch(()=>null);
     if (msg) {
       if (embed) await msg.edit({ content: content || null, embeds: [embed] });
       else await msg.edit(content);
-      db.prepare('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?').run(Date.now(), record.id);
+      await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), record.id);
       return msg;
     } else {
       const m = embed ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
       try {
-        db.prepare('UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?').run(m.id, Date.now(), record.id);
+        await db.run('UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?', m.id, Date.now(), record.id);
       } catch (e) {
         // best-effort: ignore DB problems
       }
@@ -41,8 +41,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
   } else {
     const m = embed ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
     try {
-      db.prepare('INSERT INTO leaderboard_messages (channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?)')
-        .run(channel.id, m.id, region, Date.now());
+      await db.run('INSERT INTO leaderboard_messages (channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?)', channel.id, m.id, region, Date.now());
     } catch (e) {
       // ignore insert failure
     }

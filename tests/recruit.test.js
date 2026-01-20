@@ -76,20 +76,24 @@ function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member
 
 describe('/recruit command', () => {
   let dbPath;
-  beforeEach(() => {
+  beforeEach(async () => {
     dbPath = makeTempDbPath();
     process.env.DATABASE_PATH = dbPath;
     // clear require cache for db and recruit module to re-init with new DB
-    delete require.cache[require.resolve('../src/db.js')];
-    delete require.cache[require.resolve('../src/commands/recruit.js')];    // ensure DB has been initialized and is empty
-    const db = require('../src/db.js');
-    const cnt = db.prepare('SELECT COUNT(*) as c FROM recruits').get().c;
+    delete require.cache[require.resolve('../src/db_async.js')];
+    delete require.cache[require.resolve('../src/commands/recruit.js')];
+    const db = require('../src/db_async');
+    // ensure initialized
+    await db.exec('SELECT 1');
+    const cntRow = await db.get('SELECT COUNT(*) as c FROM recruits');
+    const cnt = cntRow ? cntRow.c : 0;
     if (cnt !== 0) {
       // reset DB file if unexpected rows exist
       try { fs.unlinkSync(dbPath); } catch (e) {}
-      delete require.cache[require.resolve('../src/db.js')];
-      require('../src/db.js');
-    }  });
+      delete require.cache[require.resolve('../src/db_async.js')];
+      await require('../src/db_async').exec('SELECT 1');
+    }
+  });
 
   afterEach(() => {
     try { fs.unlinkSync(dbPath); } catch (e) {}
@@ -100,10 +104,10 @@ describe('/recruit command', () => {
     // ensure guild members.fetch returns our guildMember
     interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
     // load db and module
-    const db = require('../src/db.js');
+    const db = require('../src/db_async');
     // sanity checks before executing
     expect(guildMember.roles.cache.has(require('../src/constants').ROLE_IDS.ROOKIE)).toBe(false);
-    expect(db.prepare('SELECT * FROM recruits WHERE recruited_id = ?').get('M1')).toBeUndefined();
+    expect(await db.get('SELECT * FROM recruits WHERE recruited_id = ?', 'M1')).toBeUndefined();
 
     const cmd = require('../src/commands/recruit.js');
 
@@ -115,11 +119,11 @@ describe('/recruit command', () => {
     expect(replyArg.content).toMatch(/Successfully recruited/);
 
     // verify DB rows: recruits and recruiters
-    const rec = db.prepare('SELECT * FROM recruits WHERE recruiter_id = ?').get(interaction.user.id);
+    const rec = await db.get('SELECT * FROM recruits WHERE recruiter_id = ?', interaction.user.id);
     expect(rec).toBeDefined();
     expect(rec.recruited_id).toBe('M1');
 
-    const recruiterRow = db.prepare('SELECT * FROM recruiters WHERE id = ?').get(interaction.user.id);
+    const recruiterRow = await db.get('SELECT * FROM recruiters WHERE id = ?', interaction.user.id);
     expect(recruiterRow).toBeDefined();
     expect(recruiterRow.points).toBeGreaterThanOrEqual(1);
 

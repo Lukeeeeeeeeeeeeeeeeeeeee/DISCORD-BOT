@@ -27,9 +27,11 @@ module.exports = {
     const uptime = `${Math.round(process.uptime())}s`;
 
     // gather DB counts
-    const db = require('../db');
-    const recruits = db.prepare('SELECT COUNT(*) as c FROM recruits').get().c;
-    const recruiters = db.prepare('SELECT COUNT(*) as c FROM recruiters').get().c;
+    const db = require('../db_async');
+    const recruitsRow = await db.get('SELECT COUNT(*) as c FROM recruits');
+    const recruitersRow = await db.get('SELECT COUNT(*) as c FROM recruiters');
+    const recruits = recruitsRow ? recruitsRow.c : 0;
+    const recruiters = recruitersRow ? recruitersRow.c : 0;
 
     const embed = new EmbedBuilder()
       .setTitle('Bot Status')

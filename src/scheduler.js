@@ -2,12 +2,12 @@ const cron = require('node-cron');
 const dayjs = require('dayjs');
 const { MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS } = require('./constants');
 
-function computeStats(db, region, since=0) {
+async function computeStats(db, region, since=0) {
   // since: timestamp in ms. If zero, consider all-time; otherwise limit to recruits.created_at >= since
-  const totalRow = since ? db.prepare('SELECT COUNT(*) as c FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ?').get(region, since) : db.prepare('SELECT COUNT(*) as c FROM recruits WHERE region = ? AND valid = 1').get(region);
+  const totalRow = since ? await db.get('SELECT COUNT(*) as c FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ?', region, since) : await db.get('SELECT COUNT(*) as c FROM recruits WHERE region = ? AND valid = 1', region);
   const total = totalRow ? totalRow.c : 0;
-  const rows = since ? db.prepare('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id').all(region, since)
-                 : db.prepare('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 GROUP BY recruiter_id').all(region);
+  const rows = since ? await db.all('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id', region, since)
+                 : await db.all('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 GROUP BY recruiter_id', region);
   if (!rows.length) return [];
   const counts = rows.map(r=>r.cnt);
   const mean = counts.reduce((a,b)=>a+b,0)/counts.length;
@@ -19,19 +19,20 @@ function computeStats(db, region, since=0) {
   return rows;
 }
 
-function applyFlags(db, guild) {
+async function applyFlags(db, guild) {
   // use last 7 days as the weekly window
   const sinceWindow = Date.now() - (7*24*60*60*1000);
-  ['EU','NA','AS'].forEach(region=>{
-    const rows = computeStats(db, region, sinceWindow);
-    if (!rows.length) return;
+  for (const region of ['EU','NA','AS']) {
+    const rows = await computeStats(db, region, sinceWindow);
+    if (!rows.length) continue;
     const active = rows.filter(r=>r.cnt >= MIN_RECRUITS_FOR_AUTO);
-    if (active.length <= 2) return; // no auto-warnings
+    if (active.length <= 2) continue; // no auto-warnings
     const total = rows[0].total;
     rows.sort((a,b)=>b.cnt-a.cnt);
     const next_highest = (i)=> rows[i+1] ? rows[i+1].cnt : 0;
 
-    rows.forEach((r,i)=>{
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
       const z = r.stddev ? (r.cnt - r.mean)/r.stddev : 0;
       const flagged = [];
       if (z >= 2.5) flagged.push('Outlier');
@@ -43,15 +44,16 @@ function applyFlags(db, guild) {
       const exempt = i < exemptCutoff;
 
       if (flagged.length) {
-        db.prepare('INSERT INTO flags (recruiter_id, reason, created_at) VALUES (?, ?, ?)').run(r.recruiter_id, flagged.join(','), Date.now());
+        await db.run('INSERT INTO flags (recruiter_id, reason, created_at) VALUES (?, ?, ?)', r.recruiter_id, flagged.join(','), Date.now());
 
         // check escalation
         const since = Date.now() - (ESCALATION_WINDOW_WEEKS*7*24*60*60*1000);
-        const countFlags = db.prepare('SELECT COUNT(*) as c FROM flags WHERE recruiter_id = ? AND created_at >= ?').get(r.recruiter_id, since).c;
+        const countFlagsRow = await db.get('SELECT COUNT(*) as c FROM flags WHERE recruiter_id = ? AND created_at >= ?', r.recruiter_id, since);
+        const countFlags = countFlagsRow ? countFlagsRow.c : 0;
         if (!exempt && countFlags >= REPEATED_FLAGS_TO_WARN) {
-          db.prepare('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)').run(r.recruiter_id, Date.now(), 'Auto-created from repeated flags');
+          await db.run('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)', r.recruiter_id, Date.now(), 'Auto-created from repeated flags');
           // increment warnings in recruiters table
-          db.prepare('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?').run(r.recruiter_id);
+          await db.run('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?', r.recruiter_id);
           // DM recruiter
           guild.members.fetch(r.recruiter_id).then(m=>{
             m.send('You have received a warning for suspicious recruiting activity.').catch(()=>{});
@@ -61,8 +63,8 @@ function applyFlags(db, guild) {
           if (ch) ch.send(`<@${r.recruiter_id}> received an automated warning.`).catch(()=>{});
         }
       }
-    });
-  });
+    }
+  }
 }
 
 function formatLeaderboardMessage(rows, regionLabel) {
@@ -88,7 +90,7 @@ async function recomputeLeaderboards(db, guild) {
   const since = Date.now() - (7*24*60*60*1000);
   const { upsertLeaderboardMessage } = require('./lib/messages');
   for (const rg of regions) {
-    const rows = db.prepare('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC').all(rg.key, since);
+    const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', rg.key, since);
     const ch = guild.channels.cache.get(rg.channel);
     if (!ch) continue;
     try {
@@ -122,22 +124,22 @@ function start(client, db) {
     });
 
     // Cron: Sunday at 12:00 UTC
-    cron.schedule('0 12 * * 0', () => {
+    cron.schedule('0 12 * * 0', async () => {
       const guild = client.guilds.cache.get(process.env.GUILD_ID);
       if (!guild) return;
       // Recompute statistics, check for members who left and mark recruits invalid
       // Remove recruits where member left
-      const recruits = db.prepare('SELECT * FROM recruits WHERE valid = 1').all();
-      recruits.forEach(r=>{
-        guild.members.fetch(r.recruited_id).catch(()=>{
+      const recruits = await db.all('SELECT * FROM recruits WHERE valid = 1');
+      for (const r of recruits) {
+        guild.members.fetch(r.recruited_id).catch(async ()=>{
           // member not found, mark invalid and recompute
-          db.prepare('UPDATE recruits SET valid = 0 WHERE id = ?').run(r.id);
+          await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', r.id);
         });
-      });
+      }
 
       // Apply flags and leaderboard recompute
-      applyFlags(db, guild);
-      recomputeLeaderboards(db, guild);
+      await applyFlags(db, guild);
+      await recomputeLeaderboards(db, guild);
 
       // Reset weekly counts: For this system we will delete weekly recruits or set a week marker; simpler: purchases/points persist; leaderboards are recomputed from recruits with timestamps; however spec says reset weekly counts — we implement a 'week' table for counts or just reset points for weekly scoreboard. For now, keep recruits but staff can clear weekly counts by truncating a 'weekly' view. (Tunable later.)
     }, {
@@ -146,9 +148,9 @@ function start(client, db) {
     });
 
     // Monthly reset: 1st of month 00:00 UTC
-    cron.schedule('0 0 1 * *', () => {
+    cron.schedule('0 0 1 * *', async () => {
       try {
-        db.prepare('UPDATE recruiters SET points = 0').run();
+        await db.run('UPDATE recruiters SET points = 0');
         const guild = client.guilds.cache.get(process.env.GUILD_ID);
         if (guild) {
           const ch = guild.channels.cache.get(CHANNELS.INVITES_OVERALL);

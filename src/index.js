@@ -2,7 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
-const db = require('./db');
+const db = require('./db_async');
 const scheduler = require('./scheduler');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages] });
@@ -34,9 +34,9 @@ client.on('interactionCreate', async interaction => {
 
 // When a member leaves, mark their recruit(s) invalid and recompute flags/leaderboards immediately
 client.on('guildMemberRemove', async member => {
-  const rec = db.prepare('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1').get(member.id);
+  const rec = await db.get('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1', member.id);
   if (rec) {
-    db.prepare('UPDATE recruits SET valid = 0 WHERE recruited_id = ?').run(member.id);
+    await db.run('UPDATE recruits SET valid = 0 WHERE recruited_id = ?', member.id);
     const guild = member.guild;
     // apply flags and recompute leaderboards immediately
     try {

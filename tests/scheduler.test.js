@@ -36,14 +36,24 @@ function makeGuildMock(db) {
 
 describe('scheduler recompute & persistence', () => {
   let dbPath, db;
-  beforeEach(() => {
+  beforeEach(async () => {
     dbPath = makeTempDbPath();
     process.env.DATABASE_PATH = dbPath;
-    delete require.cache[require.resolve('../src/db.js')];
-    db = require('../src/db.js');
+    // Create a fresh DB directly for test isolation
+    const sqlite3 = require('sqlite3');
+    const { open } = require('sqlite');
+    db = await open({ filename: dbPath, driver: sqlite3.Database });
+    // create minimal schema used by tests
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS recruiters ( id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0 );
+      CREATE TABLE IF NOT EXISTS recruits ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, recruited_id TEXT NOT NULL, region TEXT NOT NULL, ign TEXT, created_at INTEGER NOT NULL, valid INTEGER DEFAULT 1 );
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(recruited_id);
+      CREATE TABLE IF NOT EXISTS leaderboard_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, region TEXT, updated_at INTEGER NOT NULL );
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region);
+    `);
   });
-  afterEach(() => {
-    try { db.close(); } catch (e) {}
+  afterEach(async () => {
+    try { await db.close(); } catch (e) {}
     try { fs.unlinkSync(dbPath); } catch (e) {}
   });
 
@@ -53,11 +63,11 @@ describe('scheduler recompute & persistence', () => {
 
     // Insert some recruits into EU
     const now = Date.now();
-    db.prepare('INSERT INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)').run('A');
-    db.prepare('INSERT INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)').run('B');
-    db.prepare('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)').run('A','u1','EU','x', now);
-    db.prepare('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)').run('B','u2','EU','y', now);
-    db.prepare('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)').run('A','u3','EU','z', now);
+    await db.run('INSERT INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)', 'A');
+    await db.run('INSERT INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)', 'B');
+    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)', 'A','u1','EU','x', now);
+    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)', 'B','u2','EU','y', now);
+    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)', 'A','u3','EU','z', now);
 
     const guild = makeGuildMock(db);
     // patch constants to use our channel ids
@@ -68,13 +78,13 @@ describe('scheduler recompute & persistence', () => {
     await scheduler.recomputeLeaderboards(db, guild);
 
     // Check DB for entries for EU in leaderboard_messages
-    const row = db.prepare('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?').get('EU_CH', 'EU');
+    const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', 'EU_CH', 'EU');
     expect(row).toBeDefined();
     expect(row.message_id).toBeTruthy();
 
     // Running again should update existing record (message exists)
     await scheduler.recomputeLeaderboards(db, guild);
-    const row2 = db.prepare('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?').get('EU_CH', 'EU');
+    const row2 = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', 'EU_CH', 'EU');
     expect(row2).toBeDefined();
     expect(row2.id).toBe(row.id);
     expect(row2.updated_at).toBeGreaterThanOrEqual(row.updated_at);

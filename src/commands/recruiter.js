@@ -1,4 +1,4 @@
-const db = require('../db');
+const db = require('../db_async');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const { EmbedBuilder } = require('discord.js');
 const { PURCHASE_ITEMS } = require('../constants');
@@ -10,10 +10,10 @@ module.exports = {
     const sub = interaction.options.getSubcommand();
     if (sub === 'info') {
       const member = interaction.options.getUser('member') || interaction.user;
-      const rec = db.prepare('SELECT * FROM recruiters WHERE id = ?').get(member.id);
-      const recruits = db.prepare('SELECT * FROM recruits WHERE recruiter_id = ? ORDER BY created_at DESC LIMIT 5').all(member.id);
-      const flags = db.prepare('SELECT COUNT(*) as c FROM flags WHERE recruiter_id = ?').get(member.id);
-      const warnings = db.prepare('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ?').get(member.id);
+      const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', member.id);
+      const recruits = await db.all('SELECT * FROM recruits WHERE recruiter_id = ? ORDER BY created_at DESC LIMIT 5', member.id);
+      const flags = await db.get('SELECT COUNT(*) as c FROM flags WHERE recruiter_id = ?', member.id);
+      const warnings = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ?', member.id);
       const recentText = recruits.length ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT','')})`).join('\n') : 'None';
       const embed = new EmbedBuilder()
         .setTitle(`Recruiter: ${member.tag}`)
@@ -31,14 +31,14 @@ module.exports = {
     if (sub === 'buy') {
       const item = interaction.options.getString('item');
       const userId = interaction.user.id;
-      const rec = db.prepare('SELECT * FROM recruiters WHERE id = ?').get(userId);
+      const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', userId);
       const points = rec ? rec.points : 0;
       const cost = PURCHASE_ITEMS[item];
       if (!cost) return interaction.reply({ content: 'Unknown item.', ephemeral: true });
       if (points < cost) return interaction.reply({ content: 'Not enough points.', ephemeral: true });
       // Deduct
-      db.prepare('UPDATE recruiters SET points = points - ? WHERE id = ?').run(cost, userId);
-      db.prepare('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)').run(userId, item, cost, Date.now());
+      await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
+      await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
       const embed = new EmbedBuilder().setTitle('Purchase Complete').setDescription(`Purchased **${item}** for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
@@ -51,11 +51,15 @@ module.exports = {
 
       try {
         // Insert warning and increment counter atomically
-        const tx = db.transaction(() => {
-          db.prepare('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)').run(member.id, Date.now(), note);
-          db.prepare('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?').run(member.id);
-        });
-        tx();
+        await db.run('BEGIN TRANSACTION');
+        try {
+          await db.run('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)', member.id, Date.now(), note);
+          await db.run('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?', member.id);
+          await db.run('COMMIT');
+        } catch (e) {
+          await db.run('ROLLBACK');
+          throw e;
+        }
 
         // DM the user with an embed
         const { EmbedBuilder } = require('discord.js');
@@ -102,7 +106,7 @@ module.exports = {
       const member = interaction.options.getUser('member');
       const reason = interaction.options.getString('reason') || 'Dismissed by staff';
       try {
-        db.prepare('UPDATE flags SET dismissed = 1 WHERE recruiter_id = ?').run(member.id);
+        await db.run('UPDATE flags SET dismissed = 1 WHERE recruiter_id = ?', member.id);
         const { EmbedBuilder } = require('discord.js');
         const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
         if (ch) {

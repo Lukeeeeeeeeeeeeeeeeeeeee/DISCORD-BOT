@@ -26,7 +26,8 @@
   "dependencies": {
     "@discordjs/builders": "^1.4.0",
     "@discordjs/rest": "^2.6.0",
-    "better-sqlite3": "^8.0.0",
+    "sqlite3": "^5.1.6",
+    "sqlite": "^4.0.24",
     "dayjs": "^1.11.0",
     "discord.js": "^14.17.0",
     "dotenv": "^16.6.1",

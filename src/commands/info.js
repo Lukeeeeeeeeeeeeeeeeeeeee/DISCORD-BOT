@@ -1,9 +1,9 @@
-const db = require('../db');
+const db = require('../db_async');
 module.exports = {
   data: { name: 'info' },
   async execute(interaction) {
     const member = interaction.options.getUser('member');
-    const recruit = db.prepare('SELECT * FROM recruits WHERE recruited_id = ?').get(member.id);
+    const recruit = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', member.id);
     if (!recruit) return interaction.reply({ content: 'No recruit record for that member.', ephemeral: true });
 
     const recruiter = await interaction.guild.members.fetch(recruit.recruiter_id).catch(()=>null);
