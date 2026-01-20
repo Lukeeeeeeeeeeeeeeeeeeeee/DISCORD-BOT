@@ -20,7 +20,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Upload to Bot-Hosting via SFTP
+      - name: Upload to host (disabled)
+        if: false
         uses: appleboy/scp-action@v0.1.5
         with:
           host: ${{ secrets.SFTP_HOST }}
