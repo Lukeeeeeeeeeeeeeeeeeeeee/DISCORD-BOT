@@ -46,6 +46,8 @@ Commands implemented (slash commands):
 - `/recruiter dismiss member reason` — **ADMIN**: dismiss flags for a recruiter
 - `/leaderboard [region]` — shows leaderboard
 - `/leaderboard init` — **ADMIN**: initialize persistent leaderboard messages in invite channels
+- `/status` — **ADMIN**: show bot status (DB size, uptime, last backup, counts)
+- `/dm` — **ADMIN**: DM broadcast with batching, retries, and audit logs
 
 See `TESTING.md` for a manual test checklist and `scripts/force_recompute.js` for forcing recompute during tests.
 
