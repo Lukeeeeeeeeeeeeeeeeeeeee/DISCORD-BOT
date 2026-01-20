@@ -49,4 +49,29 @@ Commands implemented (slash commands):
 
 See `TESTING.md` for a manual test checklist and `scripts/force_recompute.js` for forcing recompute during tests.
 
+## Deployment (Pterodactyl)
+
+If you deploy with Pterodactyl, ensure the following so the host can find the bot entrypoint and safely pull updates:
+
+- Add a root `index.js` that requires the real start file. Example:
+
+```js
+// index.js
+require('./src/index.js');
+```
+
+- Pterodactyl startup settings:
+  - Auto Update = 1
+  - Git Repo Address = `https://github.com/Lukeeeeeeeeeeeeeeeeeeeee/DISCORD-BOT-1`
+  - Install Branch = `main`
+  - Bot JS file = `index.js`
+
+- Do NOT commit your SQLite DB. Add to `.gitignore`:
+
+```
+data/recruiter.db
+```
+
+If you see `Error: Cannot find module '/home/container/index.js'`, it means Pterodactyl didn't pull the latest repo or the startup file is incorrect. Check the host file manager and confirm `index.js` exists at the container root.
+
 This is a minimal, extendable implementation. Adjust logic, thresholds, and messaging to taste.
