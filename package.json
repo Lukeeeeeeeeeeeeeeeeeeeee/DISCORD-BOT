@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "register-commands": "node src/register-commands.js",
+    "backup": "node scripts/backup-db.js",
     "test": "jest --runInBand"
   },
   "devDependencies": {
