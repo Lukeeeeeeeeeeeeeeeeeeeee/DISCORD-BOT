@@ -60,10 +60,11 @@ module.exports = {
     const batches = [];
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) batches.push(recipients.slice(i, i + BATCH_SIZE));
 
-    // Fire-and-forget async job
+    // Fire-and-forget async job with retries and enhanced metrics
     (async () => {
       let totalSent = 0;
       let totalFailed = 0;
+      let totalRetries = 0;
       const auditChId = CHANNELS && CHANNELS.INVITES_OVERALL ? CHANNELS.INVITES_OVERALL : null;
       let auditCh = null;
       if (auditChId) auditCh = await interaction.guild.channels.fetch(auditChId).catch(() => null);
@@ -73,26 +74,43 @@ module.exports = {
           .catch(() => null);
       }
 
+      const sendWithRetries = async (member, message, maxRetries = 2) => {
+        let attempts = 0;
+        while (attempts <= maxRetries) {
+          try {
+            await member.send(message);
+            return { ok: true, attempts };
+          } catch (err) {
+            attempts++;
+            if (attempts > maxRetries) return { ok: false, attempts };
+            // backoff before retry
+            await new Promise(r => setTimeout(r, DELAY_MS * 2));
+          }
+        }
+        return { ok: false, attempts: maxRetries };
+      };
+
       for (let b = 0; b < batches.length; b++) {
         const batch = batches[b];
         let batchSent = 0;
         let batchFailed = 0;
+        let batchRetries = 0;
         for (let i = 0; i < batch.length; i++) {
           const member = batch[i];
-          try {
-            await member.send(message);
-            batchSent++;
-          } catch (err) {
-            batchFailed++;
-          }
+          const res = await sendWithRetries(member, message, 2);
+          if (res.ok) batchSent++;
+          else batchFailed++;
+          batchRetries += Math.max(0, res.attempts);
+
           if (i < batch.length - 1) await new Promise(r => setTimeout(r, DELAY_MS));
         }
         totalSent += batchSent;
         totalFailed += batchFailed;
+        totalRetries += batchRetries;
 
         // log batch results
         if (auditCh && auditCh.send) {
-          await auditCh.send(`DM batch ${b + 1}/${batches.length} by <@${interaction.user.id}> to **${role.name}**: attempted ${batch.length}, sent ${batchSent}, failed ${batchFailed}. Total so far: sent ${totalSent}, failed ${totalFailed}.`).catch(() => null);
+          await auditCh.send(`DM batch ${b + 1}/${batches.length} by <@${interaction.user.id}> to **${role.name}**: attempted ${batch.length}, sent ${batchSent}, failed ${batchFailed}, retries ${batchRetries}. Total so far: sent ${totalSent}, failed ${totalFailed}, retries ${totalRetries}.`).catch(() => null);
         }
 
         // delay between batches
@@ -101,7 +119,7 @@ module.exports = {
 
       // final audit
       if (auditCh && auditCh.send) {
-        await auditCh.send(`DM broadcast completed by <@${interaction.user.id}> to **${role.name}**: attempted ${recipients.length}, sent ${totalSent}, failed ${totalFailed}.`).catch(() => null);
+        await auditCh.send(`DM broadcast completed by <@${interaction.user.id}> to **${role.name}**: attempted ${recipients.length}, sent ${totalSent}, failed ${totalFailed}, total retries ${totalRetries}.`).catch(() => null);
       }
     })();
 
