@@ -49,7 +49,8 @@ function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member
       add: jest.fn().mockResolvedValue(true),
       remove: jest.fn().mockResolvedValue(true)
     },
-    setNickname: jest.fn().mockResolvedValue(true)
+    setNickname: jest.fn().mockResolvedValue(true),
+    send: jest.fn().mockResolvedValue(true)
   };
 
   const recruiterMember = {
@@ -125,7 +126,13 @@ describe('/recruit command', () => {
 
     const recruiterRow = await db.get('SELECT * FROM recruiters WHERE id = ?', interaction.user.id);
     expect(recruiterRow).toBeDefined();
-    expect(recruiterRow.points).toBeGreaterThanOrEqual(1);
+    // points should be numeric and equal to the per-recruit points recorded
+    expect(typeof recruiterRow.points).toBe('number');
+    const recPoints = rec.points || 0;
+    expect(recruiterRow.points).toBe(recPoints);
+
+    // DM to recruited member attempted
+    expect(guildMember.send).toHaveBeenCalled();
 
     // channels should have send called
     const chOverall = channelsCache.get(require('../src/constants').CHANNELS.INVITES_OVERALL);
@@ -174,5 +181,38 @@ describe('/recruit command', () => {
     // second attempt should be rejected
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalledWith({ content: 'That member has already been recruited previously.', ephemeral: true });
+  });
+
+  test('recruiter info shows extended fields', async () => {
+    const db = require('../src/db_async');
+
+    // seed recruiter and some activity
+    await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?)', 'R1', 120, 1, 0, 4);
+    const now = Date.now();
+    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1','u10','EU','p1', now - (2*24*60*60*1000), 25);
+    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1','u11','EU','p2', now - (10*24*60*60*1000), 25);
+    await db.run('INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', 'R1', 1.25, 'm1.25_14d', now - 1000, now + (14*24*60*60*1000));
+    await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', 'R1', 'custom-role', 50, now - 2000);
+
+    // Mock retention scan to return 0.75
+    const econ = require('../src/lib/economy');
+    const spy = jest.spyOn(econ, 'computeRetentionFromGuild').mockResolvedValue(0.75);
+
+    // create interaction for recruiter info
+    const options = { getSubcommand: () => 'info', getUser: (k) => ({ id: 'R1', tag: 'Recruiter#0001' }) };
+    const reply = jest.fn();
+    const guild = { members: { fetch: jest.fn(async (id)=> ({ id, roles: { cache: { has: () => false } } })) } };
+    const interaction = { options, reply, user: { id: 'R1', tag: 'Recruiter#0001' }, member: { permissions: { has: () => true } }, guild };
+
+    const cmd = require('../src/commands/recruiter.js');
+    await cmd.execute(interaction);
+    expect(interaction.reply).toHaveBeenCalled();
+    const arg = interaction.reply.mock.calls[0][0];
+    const fields = arg.embeds[0].data.fields.map(f => f.name);
+    expect(fields).toContain('Active Multiplier');
+    expect(fields).toContain('Total recruits (all time)');
+    expect(fields).toContain('Min recruits required');
+
+    spy.mockRestore();
   });
 });

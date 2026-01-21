@@ -34,17 +34,11 @@ client.on('interactionCreate', async interaction => {
 
 // When a member leaves, mark their recruit(s) invalid and recompute flags/leaderboards immediately
 client.on('guildMemberRemove', async member => {
-  const rec = await db.get('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1', member.id);
-  if (rec) {
-    await db.run('UPDATE recruits SET valid = 0 WHERE recruited_id = ?', member.id);
-    const guild = member.guild;
-    // apply flags and recompute leaderboards immediately
-    try {
-      await scheduler.applyFlags(db, guild);
-      await scheduler.recomputeLeaderboards(db, guild);
-    } catch (err) {
-      console.error('Error handling member leave:', err);
-    }
+  try {
+    const { handleMemberLeave } = require('./lib/memberLeave');
+    await handleMemberLeave(db, member.guild, member);
+  } catch (err) {
+    console.error('Error handling member leave:', err);
   }
 });
 

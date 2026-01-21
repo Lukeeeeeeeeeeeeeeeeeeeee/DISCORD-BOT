@@ -1,6 +1,7 @@
 const dayjs = require('dayjs');
 const { ROLE_IDS } = require('../constants');
 const db = require('../db_async');
+const { getActiveMultiplier, calculateRecruitPoints } = require('../lib/economy');
 
 module.exports = {
   data: { name: 'recruit' },
@@ -52,21 +53,49 @@ module.exports = {
       // set nickname
       await guildMember.setNickname(`${ign} | ${region}`).catch(()=>null);
 
+      // Determine recruiter role and active multiplier, compute points
+      const recruiterMember = await interaction.guild.members.fetch(interaction.user.id).catch(()=>null);
+      let recruiterRole = 'NONE';
+      if (recruiterMember) {
+        if (recruiterMember.roles.cache.has(ROLE_IDS.VIP)) recruiterRole = 'VIP';
+        else if (recruiterMember.roles.cache.has(ROLE_IDS.MVP)) recruiterRole = 'MVP';
+        else if (recruiterMember.roles.cache.has(ROLE_IDS.CUSTOM)) recruiterRole = 'CUSTOM';
+      }
+      const multiplier = await getActiveMultiplier(db, interaction.user.id);
+      const points = calculateRecruitPoints({ recruiterRole, multiplierValue: multiplier.value });
+
       // Database writes in a transaction to avoid partial state
       const nowTs = Date.now();
       await db.run('BEGIN TRANSACTION');
       try {
-        await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)', interaction.user.id, member.id, region, ign, nowTs);
-        await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)', interaction.user.id);
-        await db.run('UPDATE recruiters SET points = points + 1 WHERE id = ?', interaction.user.id);
+        await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', interaction.user.id, member.id, region, ign, nowTs, points);
+        await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', interaction.user.id);
+        await db.run('UPDATE recruiters SET points = points + ? WHERE id = ?', points, interaction.user.id);
         await db.run('COMMIT');
       } catch (e) {
         await db.run('ROLLBACK');
         throw e;
       }
 
+      // DM recruited member to confirm verification
+      try {
+        const { EmbedBuilder } = require('discord.js');
+        const verifyEmbed = new EmbedBuilder()
+          .setTitle('✅ Verified')
+          .setDescription('You have been verified and welcomed to the server.')
+          .addFields(
+            { name: 'Recruiter', value: `<@${interaction.user.id}>`, inline: true },
+            { name: 'Region', value: region, inline: true },
+            { name: 'Points', value: `${points}`, inline: true }
+          )
+          .setColor(0x00CC66)
+          .setTimestamp();
+        await guildMember.send({ embeds: [verifyEmbed] }).catch(()=>{});
+      } catch (e) {
+        // best-effort DM
+      }
+
       // Check for special-role auto-promotion: if they have the special role and got >=3 recruits in last 7 days
-      const recruiterMember = await interaction.guild.members.fetch(interaction.user.id).catch(()=>null);
       if (recruiterMember && recruiterMember.roles.cache.has(ROLE_IDS.SPECIAL_ROLE)) {
         const cutoff = Date.now() - (7*24*60*60*1000);
         const countRecentRow = await db.get('SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ?', interaction.user.id, cutoff);
@@ -97,7 +126,7 @@ module.exports = {
       const central = interaction.guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
       const { makeRecruitEmbed } = require('../lib/messages');
       const lang = interaction.locale || 'en';
-      const embed = makeRecruitEmbed(interaction.user.id, member.id, region, ign, lang);
+      const embed = makeRecruitEmbed(interaction.user.id, member.id, region, ign, lang, { points, recruiterRole });
       if (channelOverall) channelOverall.send({ embeds: [embed] }).catch(()=>{});
       if (channelRegion) channelRegion.send({ embeds: [embed] }).catch(()=>{});
       if (central) central.send({ embeds: [embed] }).catch(()=>{});
@@ -110,7 +139,7 @@ module.exports = {
         console.error('Failed updating leaderboards:', e);
       }
 
-      await interaction.reply({ content: `Successfully recruited ${member.tag} as ${region}.`, ephemeral: false });
+      await interaction.reply({ content: `Successfully recruited ${member.tag} as ${region}. Awarded **${points}** points.`, ephemeral: false });
     } catch (err) {
       console.error(err);
       if (err && err.message && err.message.includes('UNIQUE constraint failed')) {

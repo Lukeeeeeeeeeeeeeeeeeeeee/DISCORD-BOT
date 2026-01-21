@@ -12,7 +12,7 @@ module.exports = {
       const since = Date.now() - (7 * 24 * 60 * 60 * 1000);
       if (region) {
         if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.', ephemeral: true });
-        const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', region, since);
+        const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt, (SELECT COALESCE(points,0) FROM recruiters r WHERE r.id = recruiter_id) as points FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', region, since);
         const { makeLeaderboardEmbed } = require('../lib/messages');
         const lang = interaction.locale || 'en';
         const embed = makeLeaderboardEmbed(rows, region, lang);
@@ -20,7 +20,7 @@ module.exports = {
       }
 
       // Global: combine regions into one list but still use weekly window
-      const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', since);
+      const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt, (SELECT COALESCE(points,0) FROM recruiters r WHERE r.id = recruiter_id) as points FROM recruits WHERE valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', since);
       const text = scheduler.formatLeaderboardMessage(rows, 'GLOBAL');
       const embed = new EmbedBuilder().setTitle('Leaderboard (GLOBAL)').setDescription(text).setColor(0x00AAFF);
       return interaction.reply({ embeds: [embed], ephemeral: false });

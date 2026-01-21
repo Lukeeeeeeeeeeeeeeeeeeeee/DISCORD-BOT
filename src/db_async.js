@@ -20,7 +20,8 @@ async function init() {
     region TEXT NOT NULL,
     ign TEXT,
     created_at INTEGER NOT NULL,
-    valid INTEGER DEFAULT 1
+    valid INTEGER DEFAULT 1,
+    points INTEGER DEFAULT 0
   );
 
   CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(recruited_id);
@@ -29,7 +30,8 @@ async function init() {
     id TEXT PRIMARY KEY,
     points INTEGER DEFAULT 0,
     warnings INTEGER DEFAULT 0,
-    promoted INTEGER DEFAULT 0
+    promoted INTEGER DEFAULT 0,
+    channel_base INTEGER DEFAULT 4
   );
 
   CREATE TABLE IF NOT EXISTS flags (
@@ -44,7 +46,18 @@ async function init() {
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recruiter_id TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    note TEXT
+    expired_at INTEGER,
+    note TEXT,
+    revoked INTEGER DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS multipliers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recruiter_id TEXT NOT NULL,
+    value REAL NOT NULL,
+    type TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS purchases (
@@ -72,7 +85,12 @@ async function init() {
 
   // Add columns if missing (best-effort)
   try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) {}
+  try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) {}
   try { await db.exec("ALTER TABLE flags ADD COLUMN dismissed INTEGER DEFAULT 0"); } catch (e) {}
+  try { await db.exec("ALTER TABLE recruits ADD COLUMN points INTEGER DEFAULT 0"); } catch (e) {}
+  try { await db.exec("ALTER TABLE warnings ADD COLUMN expired_at INTEGER"); } catch (e) {}
+  try { await db.exec("ALTER TABLE warnings ADD COLUMN revoked INTEGER DEFAULT 0"); } catch (e) {}
+  try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) {}
 
   return db;
 }

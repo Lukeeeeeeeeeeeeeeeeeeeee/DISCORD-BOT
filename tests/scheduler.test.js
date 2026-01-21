@@ -50,6 +50,7 @@ describe('scheduler recompute & persistence', () => {
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(recruited_id);
       CREATE TABLE IF NOT EXISTS leaderboard_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, region TEXT, updated_at INTEGER NOT NULL );
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region);
+      CREATE TABLE IF NOT EXISTS warnings ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, created_at INTEGER NOT NULL, note TEXT, revoked INTEGER DEFAULT 0, expired_at INTEGER );
     `);
   });
   afterEach(async () => {

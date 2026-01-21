@@ -90,7 +90,7 @@ async function recomputeLeaderboards(db, guild) {
   const since = Date.now() - (7*24*60*60*1000);
   const { upsertLeaderboardMessage } = require('./lib/messages');
   for (const rg of regions) {
-    const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', rg.key, since);
+    const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt, (SELECT COALESCE(points,0) FROM recruiters r WHERE r.id = recruiter_id) as points FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', rg.key, since);
     const ch = guild.channels.cache.get(rg.channel);
     if (!ch) continue;
     try {
@@ -113,6 +113,24 @@ async function recomputeLeaderboards(db, guild) {
       // ignore non-critical errors
       console.error('Leaderboard update failed for', rg.key, err);
     }
+  }
+
+  // warnings leaderboard
+  await recomputeWarningsLeaderboard(db, guild);
+}
+
+async function recomputeWarningsLeaderboard(db, guild) {
+  const since = Date.now();
+  // active warnings: not revoked and not expired
+  const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id ORDER BY cnt DESC', since);
+  const { upsertLeaderboardMessage, makeWarningsEmbed } = require('./lib/messages');
+  const ch = guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS);
+  if (!ch) return;
+  try {
+    const embed = makeWarningsEmbed(rows, process.env.DEFAULT_LANG || 'en');
+    await upsertLeaderboardMessage(db, ch, 'WARNINGS', null, embed).catch(()=>{});
+  } catch (e) {
+    console.error('Failed to update warnings leaderboard', e);
   }
 }
 
@@ -147,6 +165,31 @@ function start(client, db) {
       timezone: 'UTC'
     });
 
+    // Daily maintenance: expire warnings/multipliers and recompute warning counts
+    cron.schedule('0 0 * * *', async () => {
+      try {
+        // remove expired multipliers (cleanup)
+        await db.run('DELETE FROM multipliers WHERE expires_at <= ?', Date.now());
+
+        // recompute warnings per recruiter (active = not revoked AND (expired_at IS NULL OR expired_at > now))
+        const rows = await db.all('SELECT DISTINCT recruiter_id FROM warnings');
+        for (const r of rows) {
+          const cntRow = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', r.recruiter_id, Date.now());
+          const active = cntRow ? cntRow.c : 0;
+          await db.run('UPDATE recruiters SET warnings = ? WHERE id = ?', active, r.recruiter_id);
+        }
+
+        // Recompute leaderboards to reflect any changes
+        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+        if (guild) await module.exports.recomputeLeaderboards(db, guild);
+      } catch (e) {
+        console.error('Daily maintenance failed', e);
+      }
+    }, {
+      scheduled: true,
+      timezone: 'UTC'
+    });
+
     // Monthly reset: 1st of month 00:00 UTC
     cron.schedule('0 0 1 * *', async () => {
       try {
@@ -167,5 +210,6 @@ module.exports = {
   start,
   applyFlags,
   recomputeLeaderboards,
-  formatLeaderboardMessage
+  formatLeaderboardMessage,
+  recomputeWarningsLeaderboard
 };
