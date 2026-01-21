@@ -67,7 +67,7 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   }
 
   // Build a simple ordered list of all recruiters: rank. @user — N recruits — M pts
-  const lines = rows.map((r, i) => `${i+1}. <@${r.recruiter_id}> — **${r.cnt}** recruits${(r.points || 0) ? ` — ${(r.points || 0)} pts` : ''}`);
+  const lines = rows.map((r, i) => `${i+1}. <@${r.recruiter_id}> — **${r.cnt}** recruits${(r.points || 0) ? ` — ${(r.points || 0)} pts` : ''}${r.minReq !== undefined ? ` — min: ${r.minReq}` : ''}`);
   embed.addFields({ name: t('leaderboard.title', lang), value: lines.join('\n') });
 
   if (info.thumbnail) embed.setThumbnail(info.thumbnail);

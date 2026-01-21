@@ -69,8 +69,13 @@ function calculateRecruitPoints({ recruiterRole = 'NONE', multiplierValue = 1.0 
 }
 
 async function getActiveMultiplier(db, recruiterId) {
-  const row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1', recruiterId, Date.now());
-  return row ? { value: row.value, expiresAt: row.expires_at, type: row.type } : { value: 1.0, expiresAt: 0, type: null };
+  try {
+    const row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1', recruiterId, Date.now());
+    return row ? { value: row.value, expiresAt: row.expires_at, type: row.type } : { value: 1.0, expiresAt: 0, type: null };
+  } catch (e) {
+    // If the multipliers table doesn't exist or other DB error, fall back to no multiplier
+    return { value: 1.0, expiresAt: 0, type: null };
+  }
 }
 
 async function applyMultiplier(db, recruiterId, multiplierKey) {

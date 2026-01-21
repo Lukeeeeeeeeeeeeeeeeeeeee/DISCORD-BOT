@@ -81,7 +81,35 @@ async function recomputeLeaderboards(db, guild) {
   const { upsertLeaderboardMessage } = require('./lib/messages');
   for (const rg of regions) {
     // include all recruiters (even with zero recruits in window) and attach total points
-    const rows = await db.all(`SELECT r.id AS recruiter_id, COALESCE(c.cnt,0) AS cnt, COALESCE(r.points,0) AS points FROM recruiters r LEFT JOIN (SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id) c ON c.recruiter_id = r.id ORDER BY cnt DESC, points DESC`, rg.key, since);
+    const rowsBase = await db.all(`SELECT r.id AS recruiter_id, COALESCE(c.cnt,0) AS cnt, COALESCE(r.points,0) AS points FROM recruiters r LEFT JOIN (SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id) c ON c.recruiter_id = r.id ORDER BY cnt DESC, points DESC`, rg.key, since);
+    const rows = [];
+    for (const r of rowsBase) {
+      // compute per-recruiter additional stats for min requirement
+      const since28 = Date.now() - (28*24*60*60*1000);
+      const recentRows = await db.all('SELECT created_at, recruited_id FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND valid = 1', r.recruiter_id, since28);
+      const total28 = recentRows.length;
+      const weekStarts = new Set(recentRows.map(rr => Math.floor((rr.created_at - since28) / (7*24*60*60*1000))));
+      const distinctWeeks = Math.max(1, Math.min(4, weekStarts.size || 1));
+      const recruitedIds = recentRows.map(rr => rr.recruited_id);
+
+      const econ = require('./lib/economy');
+      const retention = recruitedIds.length ? await econ.computeRetentionFromGuild(guild, recruitedIds, 7, 15, { fallbackToHeuristic: true }) : 0;
+      const warningsRow = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', r.recruiter_id, Date.now());
+      const lastRow = await db.get('SELECT created_at FROM recruits WHERE recruiter_id = ? AND valid = 1 ORDER BY created_at DESC LIMIT 1', r.recruiter_id);
+      const daysSinceLast = lastRow ? Math.floor((Date.now() - lastRow.created_at) / (24*60*60*1000)) : Number.POSITIVE_INFINITY;
+      const mul = await econ.getActiveMultiplier(db, r.recruiter_id);
+      let channelBase = econ.ECONOMY_CONFIG.BASE_VALUE;
+      try {
+        const recRow = await db.get('SELECT channel_base FROM recruiters WHERE id = ?', r.recruiter_id);
+        if (recRow && recRow.channel_base) channelBase = recRow.channel_base;
+      } catch (e) {
+        channelBase = econ.ECONOMY_CONFIG.BASE_VALUE;
+      }
+      const roleModifier = econ.ECONOMY_CONFIG.ROLE_MODIFIERS.NONE;
+      const minReq = econ.calculateMinRecruitsRequired({ channelBase, roleModifier, total28d: total28, distinctWeeks, retention: Math.max(0, Math.min(1, retention === -1 ? 0 : retention)), activeWarnings: warningsRow ? warningsRow.c : 0, daysSinceLastRecruit: daysSinceLast || Number.POSITIVE_INFINITY, activeMultiplierValue: mul.value || 1.0 });
+      rows.push({...r, total28, distinctWeeks, retention, warnings: warningsRow ? warningsRow.c : 0, daysSinceLast, multiplier: mul, minReq});
+    }
+
     const ch = guild.channels.cache.get(rg.channel);
     if (!ch) continue;
     try {

@@ -4,7 +4,10 @@ module.exports = {
     ROOKIE: "1331020584473329726",
     UNVERIFIED: "1331020591175565517",
     SPECIAL_ROLE: "1459956798172827933",
-    AUTO_PROMOTE_ROLE: "1331020565879984198"
+    AUTO_PROMOTE_ROLE: "1331020565879984198",
+    VIP: "1463546680832954379",
+    MVP: "1463546673883250688",
+    CUSTOM: "1331020540982460466"
   },
   RECRUITER_ROLE_IDS: {
     EU: "1331020554588917772",
@@ -34,6 +37,8 @@ module.exports = {
     'nickname': 30,
     'custom-vc': 25,
     'custom-role': 50,
-    'custom-suggestion': 100
+    'custom-suggestion': 100,
+    'vip-role': 25,
+    'mvp-role': 35
   }
 };

@@ -125,6 +125,23 @@ module.exports = {
       // Deduct
       await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
       await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
+
+      // handle role grants for vip/mvp
+      try {
+        if (item === 'vip-role') {
+          const ROLE_IDS = require('../constants').ROLE_IDS;
+          const memberRec = await interaction.guild.members.fetch(userId).catch(()=>null);
+          if (memberRec && ROLE_IDS.VIP) await memberRec.roles.add(ROLE_IDS.VIP).catch(()=>{});
+        }
+        if (item === 'mvp-role') {
+          const ROLE_IDS = require('../constants').ROLE_IDS;
+          const memberRec = await interaction.guild.members.fetch(userId).catch(()=>null);
+          if (memberRec && ROLE_IDS.MVP) await memberRec.roles.add(ROLE_IDS.MVP).catch(()=>{});
+        }
+      } catch (e) {
+        // best-effort
+      }
+
       const embed = new EmbedBuilder().setTitle('Purchase Complete').setDescription(`Purchased **${item}** for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
       return interaction.reply({ embeds: [embed], ephemeral: true });
     }
@@ -134,12 +151,15 @@ module.exports = {
       if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
       const member = interaction.options.getUser('member');
       const note = interaction.options.getString('note') || 'Manual warning by staff';
+      const expiresDays = interaction.options.getInteger('expires_days');
 
       try {
         // Insert warning and increment counter atomically
+        const createdAt = Date.now();
+        const expiredAt = expiresDays ? (createdAt + (expiresDays * 24 * 60 * 60 * 1000)) : null;
         await db.run('BEGIN TRANSACTION');
         try {
-          await db.run('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)', member.id, Date.now(), note);
+          await db.run('INSERT INTO warnings (recruiter_id, created_at, note, expired_at) VALUES (?, ?, ?, ?)', member.id, createdAt, note, expiredAt);
           await db.run('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?', member.id);
           await db.run('COMMIT');
         } catch (e) {
@@ -151,7 +171,7 @@ module.exports = {
         const { EmbedBuilder } = require('discord.js');
         const warnEmbed = new EmbedBuilder()
           .setTitle('⚠️ You have received a warning')
-          .setDescription(`**Reason:** ${note}`)
+          .setDescription(`**Reason:** ${note}${expiredAt ? `\n**Expires:** ${new Date(expiredAt).toUTCString()}` : ''}`)
           .setColor(0xFF8800)
           .setTimestamp();
         try {
@@ -174,10 +194,11 @@ module.exports = {
             )
             .setColor(0xFF4400)
             .setTimestamp();
+          if (expiredAt) staffEmbed.addFields({ name: 'Expires', value: new Date(expiredAt).toUTCString(), inline: true });
           ch.send({ embeds: [staffEmbed] }).catch((e)=> console.error('Failed to post warning to channel', { channelId: ch.id, error: e }));
         }
 
-        console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note });
+        console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note, expiredAt });
 
         return interaction.reply({ content: `Warning issued to ${member.tag}. ✅`, ephemeral: true });
       } catch (e) {
