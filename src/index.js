@@ -27,9 +27,30 @@ client.on('interactionCreate', async interaction => {
   try {
     await cmd.execute(interaction);
   } catch (err) {
-    console.error(err);
-    await interaction.reply({ content: 'Command failed.', ephemeral: true });
+    console.error('Command handler failed', err);
+    // Safely notify the user (use editReply if deferred/replied)
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: 'Command failed.' });
+      } else {
+        await interaction.reply({ content: 'Command failed.', ephemeral: true });
+      }
+    } catch (err2) {
+      // best-effort: log and swallow to avoid crashing the bot (Discord may have expired the interaction)
+      console.error('Failed to send error response for interaction:', err2);
+    }
   }
+});
+
+// Prevent uncaught rejections / exceptions from crashing the process
+process.on('unhandledRejection', (reason, p) => {
+  console.error('Unhandled Rejection at:', p, 'reason:', reason);
+});
+process.on('uncaughtException', err => {
+  console.error('Uncaught Exception:', err);
+});
+client.on('error', err => {
+  console.error('Discord client error:', err);
 });
 
 // When a member leaves, mark their recruit(s) invalid and recompute flags/leaderboards immediately
