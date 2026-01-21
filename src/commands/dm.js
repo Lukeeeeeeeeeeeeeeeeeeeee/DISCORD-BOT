@@ -16,14 +16,14 @@ module.exports = {
   async execute(interaction, client, db) {
     const perms = interaction.member.permissions || interaction.member.permissionsIn?.(interaction.channel);
     const isAdmin = perms && perms.has && perms.has(PermissionsBitField.Flags.Administrator);
-    if (!isAdmin) return interaction.reply({ content: 'Administrator permission required.', ephemeral: true });
+    if (!isAdmin) return interaction.reply({ content: 'Administrator permission required.', flags: 64 });
 
     const role = interaction.options.getRole('role', true);
     const message = interaction.options.getString('message', true);
     const limitOpt = interaction.options.getInteger('limit');
     const preview = interaction.options.getBoolean('preview') || false;
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: 64 });
 
     // cooldown check (only applies to actual sends, not previews)
     if (!preview) {
@@ -31,7 +31,7 @@ module.exports = {
       const now = Date.now();
       if (now - last < COOLDOWN_MS) {
         const rem = Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
-        return interaction.editReply({ content: `Please wait ${rem}s before sending another DM broadcast. Use preview to test.`, ephemeral: true });
+        return interaction.editReply({ content: `Please wait ${rem}s before sending another DM broadcast. Use preview to test.`, flags: 64 });
       }
       cooldowns.set(interaction.user.id, now);
     }
@@ -46,14 +46,14 @@ module.exports = {
 
     const targets = membersCol.filter(m => m.roles.cache.has(role.id) && !m.user.bot);
     const totalFound = targets.size;
-    if (!totalFound) return interaction.editReply({ content: `No human members found with the role ${role.name}.`, ephemeral: true });
+    if (!totalFound) return interaction.editReply({ content: `No human members found with the role ${role.name}.`, flags: 64 });
 
     const cap = Math.min(limitOpt || DEFAULT_MAX, HARD_MAX);
     const recipients = Array.from(targets.values()).slice(0, cap);
 
     if (preview) {
       const sample = recipients.slice(0, 10).map(m => `<@${m.id}>`).join(', ');
-      return interaction.editReply({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}`, ephemeral: true });
+      return interaction.editReply({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}`, flags: 64 });
     }
 
     // Queue the job and return immediately to avoid interaction timeouts
@@ -123,6 +123,6 @@ module.exports = {
       }
     })();
 
-    return interaction.editReply({ content: `Queued DM broadcast to ${recipients.length} recipient(s) in ${batches.length} batch(es). Progress will be posted to the audit channel.`, ephemeral: true });
+    return interaction.editReply({ content: `Queued DM broadcast to ${recipients.length} recipient(s) in ${batches.length} batch(es). Progress will be posted to the audit channel.`, flags: 64 });
   }
 };

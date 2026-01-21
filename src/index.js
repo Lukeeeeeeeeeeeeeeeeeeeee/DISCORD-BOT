@@ -22,7 +22,7 @@ function onReady() {
   console.log(`Logged in as ${client.user.tag}`);
   scheduler.start(client, db);
 }
-client.once('ready', onReady);
+// Use the new `clientReady` event; avoid the deprecated `ready` binding which logs a deprecation warning
 client.once('clientReady', onReady);
 
 client.on('interactionCreate', async interaction => {
@@ -32,6 +32,8 @@ client.on('interactionCreate', async interaction => {
   try {
     await cmd.execute(interaction);
   } catch (err) {
+    // If the interaction itself failed because it's unknown/expired (10062), ignore silently
+    if (err && err.code === 10062) return;
     console.error('Command handler failed', err);
     // Safely notify the user (use editReply if deferred/replied)
     try {

@@ -11,7 +11,7 @@ module.exports = {
       const region = interaction.options.getString('region');
       const since = Date.now() - (7 * 24 * 60 * 60 * 1000);
       if (region) {
-        if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.', ephemeral: true });
+        if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.', flags: 64 });
         const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt, (SELECT COALESCE(points,0) FROM recruiters r WHERE r.id = recruiter_id) as points FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', region, since);
         const { makeLeaderboardEmbed } = require('../lib/messages');
         const lang = interaction.locale || 'en';
@@ -28,14 +28,14 @@ module.exports = {
 
     if (sub === 'init') {
       // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
       try {
         const scheduler = require('../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);
-        return interaction.reply({ content: 'Leaderboards initialized/updated.', ephemeral: true });
+        return interaction.reply({ content: 'Leaderboards initialized/updated.', flags: 64 });
       } catch (e) {
         console.error(e);
-        return interaction.reply({ content: 'Failed to initialize leaderboards.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to initialize leaderboards.', flags: 64 });
       }
     }
   }

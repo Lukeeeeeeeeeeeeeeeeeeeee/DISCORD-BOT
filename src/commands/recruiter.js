@@ -116,7 +116,7 @@ module.exports = {
         await applyMultiplier(db, userId, item);
         await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
         const embed = new EmbedBuilder().setTitle('Multiplier Purchased').setDescription(`Applied **${item}** for ${multCfg.days} days for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
-        return interaction.reply({ embeds: [embed], ephemeral: true });
+        return interaction.reply({ embeds: [embed], flags: 64 });
       }
 
       const cost = PURCHASE_ITEMS[item];
@@ -143,12 +143,12 @@ module.exports = {
       }
 
       const embed = new EmbedBuilder().setTitle('Purchase Complete').setDescription(`Purchased **${item}** for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: 64 });
     }
 
     if (sub === 'warn') {
       // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
       const member = interaction.options.getUser('member');
       const note = interaction.options.getString('note') || 'Manual warning by staff';
       const expiresDays = interaction.options.getInteger('expires_days');
@@ -209,7 +209,7 @@ module.exports = {
 
     if (sub === 'revoke') {
       // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
       const member = interaction.options.getUser('member');
       const warningId = interaction.options.getInteger('warning_id');
       try {
@@ -248,7 +248,7 @@ module.exports = {
       const { ECONOMY_CONFIG } = econ;
       const entries = Object.entries(ECONOMY_CONFIG.MULTIPLIERS).map(([k,v]) => `**${k}** — ×${v.value} for ${v.days}d — **${v.cost}** pts`).join('\n');
       const embed = new EmbedBuilder().setTitle('Available Multipliers').setDescription(entries || 'None').setColor(0x00AAFF).setTimestamp();
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: 64 });
     }
 
     if (sub === 'multiplier-view') {
@@ -258,12 +258,12 @@ module.exports = {
       const econ = require('../lib/economy');
       const m = await econ.getActiveMultiplier(db, member.id);
       const embed = new EmbedBuilder().setTitle(`Multiplier for ${member.tag}`).setDescription(m.type ? `**${m.type}** — ×${m.value} (expires ${m.expiresAt ? new Date(m.expiresAt).toUTCString() : 'N/A'})` : 'No active multiplier').setColor(0x00AAFF).setTimestamp();
-      return interaction.reply({ embeds: [embed], ephemeral: true });
+      return interaction.reply({ embeds: [embed], flags: 64 });
     }
 
     if (sub === 'multiplier-active') {
       // Admin: list all active multipliers server-wide
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
       try {
         const rows = await db.all('SELECT recruiter_id, type, value, expires_at FROM multipliers WHERE expires_at > ? ORDER BY recruiter_id, expires_at', Date.now());
         if (!rows || rows.length === 0) return interaction.reply({ content: 'No active multipliers.', flags: 64 });
@@ -278,7 +278,7 @@ module.exports = {
           return `<@${rid}>\n${list}`;
         });
         const embed = new EmbedBuilder().setTitle('Active Multipliers').setDescription(lines.join('\n\n')).setColor(0x00AAFF).setTimestamp();
-        return interaction.reply({ embeds: [embed], ephemeral: true });
+        return interaction.reply({ embeds: [embed], flags: 64 });
       } catch (e) {
         console.error('Failed to list active multipliers', e);
         return interaction.reply({ content: 'Failed to list active multipliers.', flags: 64 });
@@ -286,7 +286,7 @@ module.exports = {
     }
 
     if (sub === 'multiplier-apply') {
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
       const member = interaction.options.getUser('member');
       const type = interaction.options.getString('type');
       try {
@@ -307,7 +307,7 @@ module.exports = {
     }
 
     if (sub === 'multiplier-reset') {
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
       const member = interaction.options.getUser('member');
       try {
         const econ = require('../lib/economy');
@@ -328,7 +328,7 @@ module.exports = {
 
     if (sub === 'dismiss') {
       // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
       const member = interaction.options.getUser('member');
       const reason = interaction.options.getString('reason') || 'Dismissed by staff';
       try {
