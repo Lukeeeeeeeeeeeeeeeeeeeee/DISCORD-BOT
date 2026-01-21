@@ -148,7 +148,7 @@ describe('/recruit command', () => {
     interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', ephemeral: true });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', flags: 64 });
   });
 
   test('rejects if account too young', async () => {
@@ -157,7 +157,7 @@ describe('/recruit command', () => {
     interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Account must be at least 6 months old.', ephemeral: true });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Account must be at least 6 months old.', flags: 64 });
   });
 
   test('rejects if member already verified', async () => {
@@ -166,7 +166,7 @@ describe('/recruit command', () => {
     interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Member is already verified.', ephemeral: true });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Member is already verified.', flags: 64 });
   });
 
   test('rejects if already recruited', async () => {
@@ -180,7 +180,7 @@ describe('/recruit command', () => {
 
     // second attempt should be rejected
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'That member has already been recruited previously.', ephemeral: true });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'That member has already been recruited previously.', flags: 64 });
   });
 
   test('recruiter info shows extended fields', async () => {

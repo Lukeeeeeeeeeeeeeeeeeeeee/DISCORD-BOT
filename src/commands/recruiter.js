@@ -111,7 +111,7 @@ module.exports = {
       const multCfg = ECONOMY_CONFIG.MULTIPLIERS[item];
       if (multCfg) {
         const cost = multCfg.cost;
-        if (points < cost) return interaction.reply({ content: 'Not enough points to buy that multiplier.', ephemeral: true });
+        if (points < cost) return interaction.reply({ content: 'Not enough points to buy that multiplier.', flags: 64 });
         await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
         await applyMultiplier(db, userId, item);
         await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
@@ -120,8 +120,8 @@ module.exports = {
       }
 
       const cost = PURCHASE_ITEMS[item];
-      if (!cost) return interaction.reply({ content: 'Unknown item.', ephemeral: true });
-      if (points < cost) return interaction.reply({ content: 'Not enough points.', ephemeral: true });
+      if (!cost) return interaction.reply({ content: 'Unknown item.', flags: 64 });
+      if (points < cost) return interaction.reply({ content: 'Not enough points.', flags: 64 });
       // Deduct
       await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
       await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
@@ -200,10 +200,10 @@ module.exports = {
 
         console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note, expiredAt });
 
-        return interaction.reply({ content: `Warning issued to ${member.tag}. ✅`, ephemeral: true });
+        return interaction.reply({ content: `Warning issued to ${member.tag}. ✅`, flags: 64 });
       } catch (e) {
         console.error('Failed to issue warning', { error: e });
-        return interaction.reply({ content: 'Failed to issue warning.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to issue warning.', flags: 64 });
       }
     }
 
@@ -235,10 +235,10 @@ module.exports = {
           ch.send({ embeds: [embed] }).catch(()=>{});
         }
 
-        return interaction.reply({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}. ✅`, ephemeral: true });
+        return interaction.reply({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}. ✅`, flags: 64 });
       } catch (e) {
         console.error('Failed to revoke warnings', { error: e });
-        return interaction.reply({ content: 'Failed to revoke warnings.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to revoke warnings.', flags: 64 });
       }
     }
 
@@ -254,7 +254,7 @@ module.exports = {
     if (sub === 'multiplier-view') {
       // View active multiplier for a recruiter (self or admin for others)
       const member = interaction.options.getUser('member') || interaction.user;
-      if (member.id !== interaction.user.id && !interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only to view others.', ephemeral: true });
+      if (member.id !== interaction.user.id && !interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only to view others.', flags: 64 });
       const econ = require('../lib/economy');
       const m = await econ.getActiveMultiplier(db, member.id);
       const embed = new EmbedBuilder().setTitle(`Multiplier for ${member.tag}`).setDescription(m.type ? `**${m.type}** — ×${m.value} (expires ${m.expiresAt ? new Date(m.expiresAt).toUTCString() : 'N/A'})` : 'No active multiplier').setColor(0x00AAFF).setTimestamp();
@@ -266,7 +266,7 @@ module.exports = {
       if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', ephemeral: true });
       try {
         const rows = await db.all('SELECT recruiter_id, type, value, expires_at FROM multipliers WHERE expires_at > ? ORDER BY recruiter_id, expires_at', Date.now());
-        if (!rows || rows.length === 0) return interaction.reply({ content: 'No active multipliers.', ephemeral: true });
+        if (!rows || rows.length === 0) return interaction.reply({ content: 'No active multipliers.', flags: 64 });
         // Group by recruiter
         const byRec = rows.reduce((acc, r) => {
           acc[r.recruiter_id] = acc[r.recruiter_id] || [];
@@ -281,7 +281,7 @@ module.exports = {
         return interaction.reply({ embeds: [embed], ephemeral: true });
       } catch (e) {
         console.error('Failed to list active multipliers', e);
-        return interaction.reply({ content: 'Failed to list active multipliers.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to list active multipliers.', flags: 64 });
       }
     }
 
@@ -299,10 +299,10 @@ module.exports = {
         const { EmbedBuilder } = require('discord.js');
         const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
         if (ch) ch.send({ embeds: [ new EmbedBuilder().setTitle('✅ Multiplier Applied').setDescription(`<@${member.id}> granted multiplier **${type}** by <@${interaction.user.id}>`).setTimestamp() ] }).catch(()=>{});
-        return interaction.reply({ content: `Applied multiplier ${type} to ${member.tag}. ✅`, ephemeral: true });
+        return interaction.reply({ content: `Applied multiplier ${type} to ${member.tag}. ✅`, flags: 64 });
       } catch (e) {
         console.error('Failed to apply multiplier', e);
-        return interaction.reply({ content: 'Failed to apply multiplier.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to apply multiplier.', flags: 64 });
       }
     }
 
@@ -319,10 +319,10 @@ module.exports = {
         const { EmbedBuilder } = require('discord.js');
         const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
         if (ch) ch.send({ embeds: [ new EmbedBuilder().setTitle('✅ Multipliers Reset').setDescription(`Multipliers reset for <@${member.id}> by <@${interaction.user.id}>`).setTimestamp() ] }).catch(()=>{});
-        return interaction.reply({ content: `Reset multipliers for ${member.tag}. ✅`, ephemeral: true });
+        return interaction.reply({ content: `Reset multipliers for ${member.tag}. ✅`, flags: 64 });
       } catch (e) {
         console.error('Failed to reset multipliers', e);
-        return interaction.reply({ content: 'Failed to reset multipliers.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to reset multipliers.', flags: 64 });
       }
     }
 
@@ -345,10 +345,10 @@ module.exports = {
           ch.send({ embeds: [embed] }).catch(e => console.error('Failed to post dismiss to channel', { error: e, channelId: ch.id }));
         }
         console.info('Flags dismissed', { recruiterId: member.id, by: interaction.user.id, reason });
-        return interaction.reply({ content: `Flags for ${member.tag} dismissed. ✅`, ephemeral: true });
+        return interaction.reply({ content: `Flags for ${member.tag} dismissed. ✅`, flags: 64 });
       } catch (e) {
         console.error('Failed to dismiss flags', { error: e });
-        return interaction.reply({ content: 'Failed to dismiss flags.', ephemeral: true });
+        return interaction.reply({ content: 'Failed to dismiss flags.', flags: 64 });
       }
     }
   }

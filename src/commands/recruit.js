@@ -11,25 +11,25 @@ module.exports = {
     const ign = interaction.options.getString('ign');
 
     const guildMember = await interaction.guild.members.fetch(member.id).catch(()=>null);
-    if (!guildMember) return interaction.reply({ content: 'Member not found in this guild.', ephemeral: true });
+    if (!guildMember) return interaction.reply({ content: 'Member not found in this guild.', flags: 64 });
 
     // checks
-    if (guildMember.user.bot) return interaction.reply({ content: "Cannot recruit bots.", ephemeral: true });
+    if (guildMember.user.bot) return interaction.reply({ content: "Cannot recruit bots.", flags: 64 });
 
     const joinedAt = guildMember.joinedAt;
     const now = new Date();
     const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-    if (minutesSinceJoin > 120) return interaction.reply({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', ephemeral: true });
+    if (minutesSinceJoin > 120) return interaction.reply({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', flags: 64 });
 
     const accountAgeDays = (now - guildMember.user.createdAt) / (1000*60*60*24);
-    if (accountAgeDays < (30*6)) return interaction.reply({ content: 'Account must be at least 6 months old.', ephemeral: true });
+    if (accountAgeDays < (30*6)) return interaction.reply({ content: 'Account must be at least 6 months old.', flags: 64 });
 
     // already verified = has rookie
-    if (guildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return interaction.reply({ content: 'Member is already verified.', ephemeral: true });
+    if (guildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return interaction.reply({ content: 'Member is already verified.', flags: 64 });
 
     // check if recruited already
     const exist = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', member.id);
-    if (exist) return interaction.reply({ content: 'That member has already been recruited previously.', ephemeral: true });
+    if (exist) return interaction.reply({ content: 'That member has already been recruited previously.', flags: 64 });
 
     // assign onboarding role balancing
     const onboardingRoles = ROLE_IDS.ONBOARDING;
@@ -137,9 +137,9 @@ module.exports = {
     } catch (err) {
       console.error(err);
       if (err && err.message && err.message.includes('UNIQUE constraint failed')) {
-        return interaction.reply({ content: 'That member has already been recruited before and cannot be recruited again.', ephemeral: true });
+        return interaction.reply({ content: 'That member has already been recruited before and cannot be recruited again.', flags: 64 });
       }
-      return interaction.reply({ content: 'Failed to complete recruit action.', ephemeral: true });
+      return interaction.reply({ content: 'Failed to complete recruit action.', flags: 64 });
     }
   }
 };

@@ -15,10 +15,15 @@ for (const file of commandFiles) {
   client.commands.set(cmd.data.name, cmd);
 }
 
-client.once('ready', () => {
+let _readyCalled = false;
+function onReady() {
+  if (_readyCalled) return;
+  _readyCalled = true;
   console.log(`Logged in as ${client.user.tag}`);
   scheduler.start(client, db);
-});
+}
+client.once('ready', onReady);
+client.once('clientReady', onReady);
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
@@ -33,10 +38,12 @@ client.on('interactionCreate', async interaction => {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply({ content: 'Command failed.' });
       } else {
-        await interaction.reply({ content: 'Command failed.', ephemeral: true });
+        await interaction.reply({ content: 'Command failed.', flags: 64 });
       }
     } catch (err2) {
-      // best-effort: log and swallow to avoid crashing the bot (Discord may have expired the interaction)
+      // If the interaction is expired, Discord returns code 10062 — ignore silently
+      if (err2 && err2.code === 10062) return;
+      // otherwise log
       console.error('Failed to send error response for interaction:', err2);
     }
   }
