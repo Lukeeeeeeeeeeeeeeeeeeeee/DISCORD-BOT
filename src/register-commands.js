@@ -66,11 +66,27 @@ const rest = new REST({ version: '10' }).setToken(token);
 (async () => {
   try {
     console.log('Started refreshing application (/) commands.');
-    await rest.put(
-      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
-      { body: commands.map(c => c.toJSON()) },
-    );
-    console.log('Successfully reloaded application (/) commands.');
+    const rawArgs = process.argv.slice(2);
+    const useGlobal = rawArgs.includes('--global');
+    const guildArgIndex = rawArgs.findIndex(a => a === '--guild');
+    const guildId = guildArgIndex !== -1 ? rawArgs[guildArgIndex + 1] : (process.env.GUILD_ID || null);
+
+    if (useGlobal) {
+      await rest.put(
+        Routes.applicationCommands(process.env.CLIENT_ID),
+        { body: commands.map(c => c.toJSON()) },
+      );
+      console.log('Successfully reloaded global application (/) commands.');
+    } else if (guildId) {
+      await rest.put(
+        Routes.applicationGuildCommands(process.env.CLIENT_ID, guildId),
+        { body: commands.map(c => c.toJSON()) },
+      );
+      console.log(`Successfully reloaded application (/) commands for guild ${guildId}.`);
+    } else {
+      console.error('No target specified. Provide --global or set GUILD_ID or pass --guild <id>.');
+      process.exit(1);
+    }
   } catch (error) {
     if (error && error.code === 'TokenInvalid') {
       console.error('Failed to register commands: DISCORD_TOKEN is invalid. Regenerate it in the Developer Portal and update .env.');
