@@ -54,44 +54,62 @@ const commands = [
     .addSubcommand(s=>s.setName('init').setDescription('Initialize leaderboard messages (admin only)'))
 ];
 
-// Validate token before attempting to register commands
-const rawToken = process.env.DISCORD_TOKEN;
-const token = rawToken ? rawToken.trim().replace(/^"(.+)"$/,'$1') : null;
-if (!token) {
-  console.error('DISCORD_TOKEN missing — cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
-  process.exit(1);
+async function registerCommands({ guildId = null, global = false } = {}) {
+  const rawToken = process.env.DISCORD_TOKEN;
+  const token = rawToken ? rawToken.trim().replace(/^"(.+)"$/,'$1') : null;
+  if (!token) throw new Error('DISCORD_TOKEN missing — cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
+
+  const rest = new REST({ version: '10' }).setToken(token);
+  const clientId = process.env.CLIENT_ID;
+  if (!clientId) throw new Error('CLIENT_ID missing — set CLIENT_ID in .env');
+
+  console.log('Started refreshing application (/) commands.');
+  if (global) {
+    await rest.put(
+      Routes.applicationCommands(clientId),
+      { body: commands.map(c => c.toJSON()) },
+    );
+    console.log('Successfully reloaded global application (/) commands.');
+    return;
+  }
+
+  if (guildId) {
+    await rest.put(
+      Routes.applicationGuildCommands(clientId, guildId),
+      { body: commands.map(c => c.toJSON()) },
+    );
+    console.log(`Successfully reloaded application (/) commands for guild ${guildId}.`);
+    return;
+  }
+
+  throw new Error('No target specified. Provide --global or set GUILD_ID or pass --guild <id>.');
 }
 
-const rest = new REST({ version: '10' }).setToken(token);
-(async () => {
-  try {
-    console.log('Started refreshing application (/) commands.');
-    const rawArgs = process.argv.slice(2);
-    const useGlobal = rawArgs.includes('--global');
-    const guildArgIndex = rawArgs.findIndex(a => a === '--guild');
-    const guildId = guildArgIndex !== -1 ? rawArgs[guildArgIndex + 1] : (process.env.GUILD_ID || null);
+module.exports = { registerCommands };
 
-    if (useGlobal) {
-      await rest.put(
-        Routes.applicationCommands(process.env.CLIENT_ID),
-        { body: commands.map(c => c.toJSON()) },
-      );
-      console.log('Successfully reloaded global application (/) commands.');
-    } else if (guildId) {
-      await rest.put(
-        Routes.applicationGuildCommands(process.env.CLIENT_ID, guildId),
-        { body: commands.map(c => c.toJSON()) },
-      );
-      console.log(`Successfully reloaded application (/) commands for guild ${guildId}.`);
-    } else {
-      console.error('No target specified. Provide --global or set GUILD_ID or pass --guild <id>.');
+if (require.main === module) {
+  (async () => {
+    try {
+      const rawArgs = process.argv.slice(2);
+      const useGlobal = rawArgs.includes('--global');
+      const guildArgIndex = rawArgs.findIndex(a => a === '--guild');
+      const guildId = guildArgIndex !== -1 ? rawArgs[guildArgIndex + 1] : (process.env.GUILD_ID || null);
+      await registerCommands({ guildId, global: useGlobal });
+    } catch (error) {
+      if (error && error.message && error.message.includes('DISCORD_TOKEN missing')) {
+        console.error('DISCORD_TOKEN missing — cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
+        process.exit(1);
+      }
+      if (error && error.message && error.message.includes('CLIENT_ID missing')) {
+        console.error('CLIENT_ID missing — set CLIENT_ID in .env and try again.');
+        process.exit(1);
+      }
+      if (error && error.code === 'TokenInvalid') {
+        console.error('Failed to register commands: DISCORD_TOKEN is invalid. Regenerate it in the Developer Portal and update .env.');
+        process.exit(1);
+      }
+      console.error('Failed to register commands:', error);
       process.exit(1);
     }
-  } catch (error) {
-    if (error && error.code === 'TokenInvalid') {
-      console.error('Failed to register commands: DISCORD_TOKEN is invalid. Regenerate it in the Developer Portal and update .env.');
-      process.exit(1);
-    }
-    console.error(error);
-  }
-})();
+  })();
+}

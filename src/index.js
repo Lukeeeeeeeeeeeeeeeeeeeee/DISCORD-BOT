@@ -21,6 +21,21 @@ function onReady() {
   _readyCalled = true;
   console.log(`Logged in as ${client.user.tag}`);
   scheduler.start(client, db);
+
+  // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
+  const guildId = process.env.GUILD_ID;
+  if (guildId) {
+    try {
+      const { registerCommands } = require('./register-commands');
+      registerCommands({ guildId }).then(() => {
+        console.log(`Auto-synced commands to guild ${guildId}.`);
+      }).catch(err => {
+        console.error('Failed to auto-sync commands on startup:', err);
+      });
+    } catch (err) {
+      console.error('Failed to require register-commands for auto-sync:', err);
+    }
+  }
 }
 // Use the new `clientReady` event; avoid the deprecated `ready` binding which logs a deprecation warning
 client.once('clientReady', onReady);
