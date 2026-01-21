@@ -91,10 +91,12 @@ describe('scheduler recompute & persistence', () => {
     expect(row2.updated_at).toBeGreaterThanOrEqual(row.updated_at);
   });
 
-  test('formatLeaderboardMessage handles not enough data', () => {
+  test('formatLeaderboardMessage lists recruiters and counts', () => {
     const scheduler = require('../src/scheduler');
-    const rows = [{recruiter_id: 'A', cnt: 1},{recruiter_id:'B', cnt:1}];
+    const rows = [{recruiter_id: 'A', cnt: 1, points: 10},{recruiter_id:'B', cnt:1, points:5}];
     const text = scheduler.formatLeaderboardMessage(rows, 'EU');
-    expect(text).toMatch(/Not enough data/);
+    expect(text).toMatch(/A/);
+    expect(text).toMatch(/B/);
+    expect(text).toMatch(/recruits/);
   });
 });

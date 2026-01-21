@@ -6,44 +6,38 @@ describe('makeLeaderboardEmbed', () => {
     const embed = makeLeaderboardEmbed([], 'EU');
     const json = embed.toJSON();
     expect(json.title).toContain('Europe');
-    expect(json.description).toBe('No weekly recruits yet.');
+    expect(json.description).toContain('No recruiters');
   });
 
-  test('returns not-enough-data when below threshold', () => {
-    const rows = Array(MIN_LEADERBOARD_ENTRIES - 1).fill(0).map((_,i)=>({ recruiter_id: `u${i}`, cnt: 1 }));
+  test('lists below-threshold recruiters when there are few', () => {
+    const rows = Array(3).fill(0).map((_,i)=>({ recruiter_id: `u${i}`, cnt: i+1, points: (i+1)*5 }));
     const embed = makeLeaderboardEmbed(rows, 'NA');
     const json = embed.toJSON();
     expect(json.title).toContain('North America');
-    expect(json.description).toContain('Not enough data yet');
+    expect(json.fields[0].value).toMatch(/<@u0>/);
   });
 
-  test('returns podium and other fields when enough data', () => {
+  test('returns a full listing when enough data', () => {
     const rows = [
-      { recruiter_id: 'a', cnt: 10 },
-      { recruiter_id: 'b', cnt: 7 },
-      { recruiter_id: 'c', cnt: 5 },
-      { recruiter_id: 'd', cnt: 3 },
-      { recruiter_id: 'e', cnt: 2 }
+      { recruiter_id: 'a', cnt: 10, points: 50 },
+      { recruiter_id: 'b', cnt: 7, points: 30 },
+      { recruiter_id: 'c', cnt: 5, points: 20 }
     ];
     const embed = makeLeaderboardEmbed(rows, 'AS');
     const json = embed.toJSON();
     expect(json.title).toContain('Asia');
     const fields = json.fields.map(f => f.name);
-    expect(fields).toContain('🏆 Podium');
-    expect(fields).toContain('Other');
+    expect(fields[0]).toMatch(/Leaderboard/);
   });
 
   test('supports localization (spanish)', () => {
     const rows = [
-      { recruiter_id: 'a', cnt: 5 },
-      { recruiter_id: 'b', cnt: 4 },
-      { recruiter_id: 'c', cnt: 3 },
-      { recruiter_id: 'd', cnt: 1 },
-      { recruiter_id: 'e', cnt: 1 }
+      { recruiter_id: 'a', cnt: 5, points: 10 },
+      { recruiter_id: 'b', cnt: 4, points: 8 }
     ];
     const embed = makeLeaderboardEmbed(rows, 'EU', 'es');
     const json = embed.toJSON();
     expect(json.title).toContain('Clasificación');
-    expect(json.fields[0].name).toBe('🏆 Podio');
+    expect(json.fields[0].name).toContain('Clasificación');
   });
 });

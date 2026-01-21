@@ -68,20 +68,10 @@ async function applyFlags(db, guild) {
 }
 
 function formatLeaderboardMessage(rows, regionLabel) {
-  // rows: [{recruiter_id, cnt}, ...] sorted desc
-  const { MIN_LEADERBOARD_ENTRIES } = require('./constants');
-  if (!rows || rows.length === 0) return `Leaderboard (${regionLabel})\nNo weekly recruits yet`;
-  if (rows.length < MIN_LEADERBOARD_ENTRIES) return `Leaderboard (${regionLabel})\nNot enough data yet (need at least ${MIN_LEADERBOARD_ENTRIES} active recruiters this week).`;
-
-  const podium = rows.slice(0,3);
-  const others = rows.slice(3);
-  const peopleWith3 = rows.filter(r => r.cnt >= 3 && !podium.find(p => p.recruiter_id === r.recruiter_id));
-
-  const podiumText = podium.map((r, i) => `${i+1}. <@${r.recruiter_id}> — **${r.cnt}**`).join('\n');
-  const peopleWith3Text = peopleWith3.length ? '\n\n**PEOPLE WITH +3**\n' + peopleWith3.map(r => `<@${r.recruiter_id}> — ${r.cnt}`).join('\n') : '';
-  const otherText = others.length ? '\n\n**OTHER**\n' + others.map((r, i) => `${i+4}. <@${r.recruiter_id}> — ${r.cnt}`).join('\n') : '';
-
-  return `Leaderboard (${regionLabel})\n\n**PODIUM**\n${podiumText}${peopleWith3Text}${otherText}`;
+  // rows: [{recruiter_id, cnt, points}, ...]
+  if (!rows || rows.length === 0) return `Leaderboard (${regionLabel})\nNo recruiters yet.`;
+  const lines = rows.map((r, i) => `${i+1}. <@${r.recruiter_id}> — **${r.cnt}** recruits${(r.points || 0) ? ` — ${(r.points || 0)} pts` : ''}`);
+  return `Leaderboard (${regionLabel})\n\n` + lines.join('\n');
 }
 
 async function recomputeLeaderboards(db, guild) {
@@ -90,11 +80,11 @@ async function recomputeLeaderboards(db, guild) {
   const since = Date.now() - (7*24*60*60*1000);
   const { upsertLeaderboardMessage } = require('./lib/messages');
   for (const rg of regions) {
-    const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt, (SELECT COALESCE(points,0) FROM recruiters r WHERE r.id = recruiter_id) as points FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY cnt DESC', rg.key, since);
+    // include all recruiters (even with zero recruits in window) and attach total points
+    const rows = await db.all(`SELECT r.id AS recruiter_id, COALESCE(c.cnt,0) AS cnt, COALESCE(r.points,0) AS points FROM recruiters r LEFT JOIN (SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id) c ON c.recruiter_id = r.id ORDER BY cnt DESC, points DESC`, rg.key, since);
     const ch = guild.channels.cache.get(rg.channel);
     if (!ch) continue;
     try {
-      const text = formatLeaderboardMessage(rows, rg.key);
       // Update region channel message via helper using embed
       const { makeLeaderboardEmbed } = require('./lib/messages');
       const lang = process.env.DEFAULT_LANG || 'en';

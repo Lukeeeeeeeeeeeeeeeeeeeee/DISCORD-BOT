@@ -124,14 +124,8 @@ module.exports = {
       const channelOverall = interaction.guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
       const channelRegion = interaction.guild.channels.cache.get(region === 'EU' ? CHANNELS.INVITES_EU : region === 'NA' ? CHANNELS.INVITES_NA : CHANNELS.INVITES_AS);
       const central = interaction.guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
-      const { makeRecruitEmbed } = require('../lib/messages');
-      const lang = interaction.locale || 'en';
-      const embed = makeRecruitEmbed(interaction.user.id, member.id, region, ign, lang, { points, recruiterRole });
-      if (channelOverall) channelOverall.send({ embeds: [embed] }).catch(()=>{});
-      if (channelRegion) channelRegion.send({ embeds: [embed] }).catch(()=>{});
-      if (central) central.send({ embeds: [embed] }).catch(()=>{});
-
-      // Update region leaderboards immediately
+      // Do not post a per-recruit message in leaderboard channels to avoid creating new messages.
+      // Leaderboard messages are persistent and will be updated by recomputing leaderboards.
       try {
         const scheduler = require('../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);

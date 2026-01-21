@@ -3,6 +3,10 @@ const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 
+const econ = require('./src/lib/economy');
+const { PURCHASE_ITEMS } = require('./src/constants');
+const BUY_CHOICES = Object.entries(econ.ECONOMY_CONFIG.MULTIPLIERS).map(([k,v]) => ({ name: `${k} ×${v.value} (${v.days}d)`, value: k })).concat(Object.entries(PURCHASE_ITEMS).map(([k,c]) => ({ name: `${k} — ${c} pts`, value: k })));
+
 const commands = [
   new SlashCommandBuilder().setName('recruit').setDescription('Register a recruit')
     .addUserOption(opt => opt.setName('member').setDescription('Member to recruit').setRequired(true))
@@ -19,8 +23,11 @@ const commands = [
 
   new SlashCommandBuilder().setName('recruiter').setDescription('Recruiter info and actions')
     .addSubcommand(s=>s.setName('info').setDescription('Show recruiter info').addUserOption(o=>o.setName('member').setDescription('Recruiter to query')))
-    .addSubcommand(s=>s.setName('buy').setDescription('Buy recruiter items').addStringOption(o=>o.setName('item').setDescription('Item to purchase').setRequired(true)))
-    .addSubcommand(s=>s.setName('multiplier-list').setDescription('List available multipliers'))
+    .addSubcommand(s=>s.setName('buy').setDescription('Buy recruiter items').addStringOption(o=>{
+      const opt = o.setName('item').setDescription('Item to purchase').setRequired(true);
+      // Add choices dynamically
+      return opt.addChoices(...BUY_CHOICES.map(c => ({ name: c.name, value: c.value })));
+    }))    .addSubcommand(s=>s.setName('multiplier-list').setDescription('List available multipliers'))
     .addSubcommand(s=>s.setName('multiplier-view').setDescription('View active multiplier (self or admin for others)').addUserOption(o=>o.setName('member').setDescription('Recruiter to check (optional)')))
     .addSubcommand(s=>s.setName('multiplier-active').setDescription('Admin: list active multipliers for the server'))
     .addSubcommand(s=>s.setName('warn').setDescription('Admin: issue a warning to a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to warn').setRequired(true)).addStringOption(o=>o.setName('note').setDescription('Warning note (optional)')))

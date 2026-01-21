@@ -134,9 +134,9 @@ describe('/recruit command', () => {
     // DM to recruited member attempted
     expect(guildMember.send).toHaveBeenCalled();
 
-    // channels should have send called
+    // channels should NOT have a per-recruit send (leaderboards are updated via upsert)
     const chOverall = channelsCache.get(require('../src/constants').CHANNELS.INVITES_OVERALL);
-    expect(chOverall.send).toHaveBeenCalled();
+    expect(chOverall.send).not.toHaveBeenCalled();
 
     // scheduler should have been invoked
     expect(recomputeLeaderboards).toHaveBeenCalled();
