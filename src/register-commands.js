@@ -3,8 +3,8 @@ const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 
-const econ = require('./src/lib/economy');
-const { PURCHASE_ITEMS } = require('./src/constants');
+const econ = require('./lib/economy');
+const { PURCHASE_ITEMS } = require('./constants');
 const BUY_CHOICES = Object.entries(econ.ECONOMY_CONFIG.MULTIPLIERS).map(([k,v]) => ({ name: `${k} ×${v.value} (${v.days}d)`, value: k })).concat(Object.entries(PURCHASE_ITEMS).map(([k,c]) => ({ name: `${k} — ${c} pts`, value: k })));
 
 const commands = [
