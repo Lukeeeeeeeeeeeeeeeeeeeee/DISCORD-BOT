@@ -4,6 +4,7 @@ const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const db = require('./db_async');
 const scheduler = require('./scheduler');
+const { GUILD_ID } = require('./constants');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages] });
 client.commands = new Collection();
@@ -23,7 +24,7 @@ function onReady() {
   scheduler.start(client, db);
 
   // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
-  const guildId = process.env.GUILD_ID;
+  const guildId = GUILD_ID;
   if (guildId) {
     try {
       const { registerCommands } = require('./register-commands');

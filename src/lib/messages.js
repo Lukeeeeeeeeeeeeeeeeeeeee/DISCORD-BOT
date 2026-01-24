@@ -29,12 +29,15 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
   if (record) {
     const msg = await channel.messages.fetch(record.message_id).catch(()=>null);
     if (msg) {
-      if (embed) await msg.edit({ content: content || null, embeds: [embed] });
-      else await msg.edit(content);
+      if (embed && typeof embed === 'object' && embed.embeds) {
+        await msg.edit({ content: content || null, embeds: [embed] });
+      } else {
+        await msg.edit(content);
+      }
       await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), record.id);
       return msg;
     } else {
-      const m = embed ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
+      const m = embed && typeof embed === 'object' && embed.embeds ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
       try {
         await db.run('UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?', m.id, Date.now(), record.id);
       } catch (e) {
@@ -43,7 +46,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
       return m;
     }
   } else {
-    const m = embed ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
+    const m = embed && typeof embed === 'object' && embed.embeds ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
     try {
       await db.run('INSERT INTO leaderboard_messages (channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?)', channel.id, m.id, region, Date.now());
     } catch (e) {
@@ -58,12 +61,9 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   const { t } = require('./i18n');
   const info = REGION_INFO[regionLabel] || { emoji: '', color: 0xFFD700, name: regionLabel };
   const title = `${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`;
-  const embed = new EmbedBuilder().setTitle(title).setColor(info.color).setTimestamp();
 
   if (!rows || rows.length === 0) {
-    embed.setDescription('No recruiters found.');
-    if (info.thumbnail) embed.setThumbnail(info.thumbnail);
-    return embed;
+    return { content: `${title}\n\nNo recruiters found.` };
   }
 
   // Build a simple ordered list of all recruiters: rank. @user — N recruits — M pts
@@ -76,22 +76,19 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
     return `${i+1}. ${displayName} — **${recruitCount}** recruits — **${points}** pts${minReq}`;
   });
   
-  embed.addFields({ name: t('leaderboard.title', lang), value: lines.join('\n') });
-
-  if (info.thumbnail) embed.setThumbnail(info.thumbnail);
-  return embed; 
+  return { content: `${title}\n\n${lines.join('\n')}` };
 }
 
 function makeWarningsEmbed(rows, lang='en') {
   const { t } = require('./i18n');
-  const embed = new EmbedBuilder().setTitle('⚠️ Warnings Leaderboard').setColor(0xFF4400).setTimestamp();
+  const title = '⚠️ Warnings Leaderboard';
+  
   if (!rows || rows.length === 0) {
-    embed.setDescription('No active warnings.');
-    return embed;
+    return { content: `${title}\n\nNo active warnings.` };
   }
+  
   const lines = rows.map((r, i) => `${i+1}. <@${r.recruiter_id}> — **${r.cnt}** warnings`).join('\n');
-  embed.setDescription(lines);
-  return embed;
+  return { content: `${title}\n\n${lines}` };
 }
 
 module.exports = {

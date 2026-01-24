@@ -184,12 +184,12 @@ module.exports = {
       }
 
       const embed = new EmbedBuilder().setTitle('Purchase Complete').setDescription(`Purchased **${item}** for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
     }
 
     if (sub === 'warn') {
       // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.' });
       const member = interaction.options.getUser('member');
       const note = interaction.options.getString('note') || 'Manual warning by staff';
       const expiresDays = interaction.options.getInteger('expires_days');
@@ -197,7 +197,7 @@ module.exports = {
       // Validate member exists
       const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       if (!targetMember) {
-        return interaction.reply({ content: 'Member not found in this guild.', flags: 64 });
+        return interaction.reply({ content: 'Member not found in this guild.' });
       }
 
       try {
@@ -255,16 +255,16 @@ module.exports = {
 
         console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note, expiredAt });
 
-        return interaction.reply({ content: `Warning issued to ${member.tag}. ✅`, flags: 64 });
+        return interaction.reply({ content: `Warning issued to ${member.tag}. ✅` });
       } catch (e) {
         console.error('Failed to issue warning', { error: e });
-        return interaction.reply({ content: 'Failed to issue warning.', flags: 64 });
+        return interaction.reply({ content: 'Failed to issue warning.' });
       }
     }
 
     if (sub === 'revoke') {
       // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.' });
       const member = interaction.options.getUser('member');
       const warningId = interaction.options.getInteger('warning_id');
       try {
@@ -272,7 +272,7 @@ module.exports = {
           // Revoke specific warning
           const warning = await db.get('SELECT * FROM warnings WHERE id = ? AND recruiter_id = ?', warningId, member.id);
           if (!warning) {
-            return interaction.reply({ content: `Warning #${warningId} not found for ${member.tag}.`, flags: 64 });
+            return interaction.reply({ content: `Warning #${warningId} not found for ${member.tag}.` });
           }
           
           await db.run('UPDATE warnings SET revoked = 1 WHERE id = ? AND recruiter_id = ?', warningId, member.id);
@@ -341,114 +341,16 @@ module.exports = {
           console.error('Failed to update leaderboards after warning revocation:', e);
         }
 
-        return interaction.reply({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}. ✅`, flags: 64 });
+        return interaction.reply({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}. ✅` });
       } catch (e) {
         console.error('Failed to revoke warnings', { error: e });
-        return interaction.reply({ content: 'Failed to revoke warnings.', flags: 64 });
-      }
-    }
-
-    if (sub === 'multiplier-list') {
-      // Check if user has permission to view multipliers
-      const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-      if (!guildMember) {
-        return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
-      }
-      
-      // Show available multipliers and costs
-      const econ = require('../lib/economy');
-      const { ECONOMY_CONFIG } = econ;
-      const entries = Object.entries(ECONOMY_CONFIG.MULTIPLIERS).map(([k,v]) => `**${k}** — ×${v.value} for ${v.days}d — **${v.cost}** pts`).join('\n');
-      const embed = new EmbedBuilder().setTitle('Available Multipliers').setDescription(entries || 'None').setColor(0x00AAFF).setTimestamp();
-      return interaction.reply({ embeds: [embed], flags: 64 });
-    }
-
-    if (sub === 'multiplier-view') {
-      // View active multiplier for a recruiter (self or admin for others)
-      const member = interaction.options.getUser('member') || interaction.user;
-      
-      // Check if user has permission to view multipliers
-      const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-      if (!guildMember) {
-        return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
-      }
-      
-      if (member.id !== interaction.user.id && !interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only to view others.', flags: 64 });
-      
-      const econ = require('../lib/economy');
-      const m = await econ.getActiveMultiplier(db, member.id);
-      const embed = new EmbedBuilder().setTitle(`Multiplier for ${member.tag}`).setDescription(m.type ? `**${m.type}** — ×${m.value} (expires ${m.expiresAt ? new Date(m.expiresAt).toUTCString() : 'N/A'})` : 'No active multiplier').setColor(0x00AAFF).setTimestamp();
-      return interaction.reply({ embeds: [embed], flags: 64 });
-    }
-
-    if (sub === 'multiplier-active') {
-      // Admin: list all active multipliers server-wide
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
-      try {
-        const rows = await db.all('SELECT recruiter_id, type, value, expires_at FROM multipliers WHERE expires_at > ? ORDER BY recruiter_id, expires_at', Date.now());
-        if (!rows || rows.length === 0) return interaction.reply({ content: 'No active multipliers.', flags: 64 });
-        // Group by recruiter
-        const byRec = rows.reduce((acc, r) => {
-          acc[r.recruiter_id] = acc[r.recruiter_id] || [];
-          acc[r.recruiter_id].push(r);
-          return acc;
-        }, {});
-        const lines = Object.entries(byRec).map(([rid, arr]) => {
-          const list = arr.map(a => `**${a.type}** ×${a.value} (expires ${new Date(a.expires_at).toUTCString()})`).join('\n');
-          return `<@${rid}>\n${list}`;
-        });
-        const embed = new EmbedBuilder().setTitle('Active Multipliers').setDescription(lines.join('\n\n')).setColor(0x00AAFF).setTimestamp();
-        return interaction.reply({ embeds: [embed], flags: 64 });
-      } catch (e) {
-        console.error('Failed to list active multipliers', e);
-        return interaction.reply({ content: 'Failed to list active multipliers.', flags: 64 });
-      }
-    }
-
-    if (sub === 'multiplier-apply') {
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
-      const member = interaction.options.getUser('member');
-      const type = interaction.options.getString('type');
-      try {
-        const econ = require('../lib/economy');
-        const sqlite3 = require('sqlite3');
-        const { open } = require('sqlite');
-        const localDb = await open({ filename: process.env.DATABASE_PATH, driver: sqlite3.Database });
-        const cfg = await econ.applyMultiplier(localDb, member.id, type);
-        await localDb.close();
-        const { EmbedBuilder } = require('discord.js');
-        const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
-        if (ch) ch.send({ embeds: [ new EmbedBuilder().setTitle('✅ Multiplier Applied').setDescription(`<@${member.id}> granted multiplier **${type}** by <@${interaction.user.id}>`).setTimestamp() ] }).catch(()=>{});
-        return interaction.reply({ content: `Applied multiplier ${type} to ${member.tag}. ✅`, flags: 64 });
-      } catch (e) {
-        console.error('Failed to apply multiplier', e);
-        return interaction.reply({ content: 'Failed to apply multiplier.', flags: 64 });
-      }
-    }
-
-    if (sub === 'multiplier-reset') {
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
-      const member = interaction.options.getUser('member');
-      try {
-        const econ = require('../lib/economy');
-        const sqlite3 = require('sqlite3');
-        const { open } = require('sqlite');
-        const localDb = await open({ filename: process.env.DATABASE_PATH, driver: sqlite3.Database });
-        await econ.resetMultipliers(localDb, member.id);
-        await localDb.close();
-        const { EmbedBuilder } = require('discord.js');
-        const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
-        if (ch) ch.send({ embeds: [ new EmbedBuilder().setTitle('✅ Multipliers Reset').setDescription(`Multipliers reset for <@${member.id}> by <@${interaction.user.id}>`).setTimestamp() ] }).catch(()=>{});
-        return interaction.reply({ content: `Reset multipliers for ${member.tag}. ✅`, flags: 64 });
-      } catch (e) {
-        console.error('Failed to reset multipliers', e);
-        return interaction.reply({ content: 'Failed to reset multipliers.', flags: 64 });
+        return interaction.reply({ content: 'Failed to revoke warnings.' });
       }
     }
 
     if (sub === 'dismiss') {
       // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
+      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.' });
       const member = interaction.options.getUser('member');
       const reason = interaction.options.getString('reason') || 'Dismissed by staff';
       try {
@@ -465,10 +367,10 @@ module.exports = {
           ch.send({ embeds: [embed] }).catch(e => console.error('Failed to post dismiss to channel', { error: e, channelId: ch.id }));
         }
         console.info('Flags dismissed', { recruiterId: member.id, by: interaction.user.id, reason });
-        return interaction.reply({ content: `Flags for ${member.tag} dismissed. ✅`, flags: 64 });
+        return interaction.reply({ content: `Flags for ${member.tag} dismissed. ✅` });
       } catch (e) {
         console.error('Failed to dismiss flags', { error: e });
-        return interaction.reply({ content: 'Failed to dismiss flags.', flags: 64 });
+        return interaction.reply({ content: 'Failed to dismiss flags.' });
       }
     }
   }

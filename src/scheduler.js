@@ -127,17 +127,17 @@ async function recomputeLeaderboards(db, guild) {
     const ch = guild.channels.cache.get(rg.channel);
     if (!ch) continue;
     try {
-      // Update region channel message via helper using embed
+      // Update region channel message via helper using plain text
       const { makeLeaderboardEmbed } = require('./lib/messages');
       const lang = process.env.DEFAULT_LANG || 'en';
-      const embed = makeLeaderboardEmbed(rows, rg.key, lang);
-      await upsertLeaderboardMessage(db, ch, rg.key, null, embed).catch(()=>{});
+      const leaderboardData = makeLeaderboardEmbed(rows, rg.key, lang);
+      await upsertLeaderboardMessage(db, ch, rg.key, leaderboardData.content, null).catch(()=>{});
 
       // Cross-post / update in central channel
       try {
         const { CHANNELS } = require('./constants');
         const central = guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
-        if (central) await upsertLeaderboardMessage(db, central, rg.key, null, embed).catch(()=>{});
+        if (central) await upsertLeaderboardMessage(db, central, rg.key, leaderboardData.content, null).catch(()=>{});
       } catch (e) {
         // best-effort
       }
@@ -173,8 +173,8 @@ async function recomputeWarningsLeaderboard(db, guild) {
   const ch = guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS);
   if (!ch) return;
   try {
-    const embed = makeWarningsEmbed(rows, process.env.DEFAULT_LANG || 'en');
-    await upsertLeaderboardMessage(db, ch, 'WARNINGS', null, embed).catch(()=>{});
+    const warningsData = makeWarningsEmbed(rows, process.env.DEFAULT_LANG || 'en');
+    await upsertLeaderboardMessage(db, ch, 'WARNINGS', warningsData.content, null).catch(()=>{});
   } catch (e) {
     console.error('Failed to update warnings leaderboard', e);
   }

@@ -27,19 +27,10 @@ const commands = [
       const opt = o.setName('item').setDescription('Item to purchase').setRequired(true);
       // Add choices dynamically
       return opt.addChoices(...BUY_CHOICES.map(c => ({ name: c.name, value: c.value })));
-    }))    .addSubcommand(s=>s.setName('multiplier-list').setDescription('List available multipliers'))
-    .addSubcommand(s=>s.setName('multiplier-view').setDescription('View active multiplier (self or admin for others)').addUserOption(o=>o.setName('member').setDescription('Recruiter to check (optional)')))
-    .addSubcommand(s=>s.setName('multiplier-active').setDescription('Admin: list active multipliers for the server'))
+    }))
     .addSubcommand(s=>s.setName('warn').setDescription('Admin: issue a warning to a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to warn').setRequired(true)).addStringOption(o=>o.setName('note').setDescription('Warning note (optional)')).addIntegerOption(o=>o.setName('expires_days').setDescription('Expire after N days (optional, admin only)').setRequired(false)))
     .addSubcommand(s=>s.setName('dismiss').setDescription('Admin: dismiss flags for a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to dismiss flags for').setRequired(true)).addStringOption(o=>o.setName('reason').setDescription('Reason for dismissal (optional)')))
-    .addSubcommand(s=>s.setName('revoke').setDescription('Admin: revoke warnings for a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to revoke warnings for').setRequired(true)).addIntegerOption(o=>o.setName('warning_id').setDescription('Specific warning id to revoke (optional)')))
-    .addSubcommand(s=>s.setName('multiplier-apply').setDescription('Admin: apply a multiplier to a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to apply multiplier to').setRequired(true)).addStringOption(o=>o.setName('type').setDescription('Multiplier type').setRequired(true).addChoices(
-      { name: '1.15 × (14 days)', value: 'm1.15_14d' },
-      { name: '1.25 × (14 days)', value: 'm1.25_14d' },
-      { name: '1.5 × (7 days)', value: 'm1.5_7d' },
-      { name: '2.0 × (7 days)', value: 'm2.0_7d' }
-    )))
-    .addSubcommand(s=>s.setName('multiplier-reset').setDescription('Admin: reset multipliers for a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to reset multipliers for').setRequired(true))),
+    .addSubcommand(s=>s.setName('revoke').setDescription('Admin: revoke warnings for a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to revoke warnings for').setRequired(true)).addIntegerOption(o=>o.setName('warning_id').setDescription('Specific warning id to revoke (optional)'))),
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
     .addUserOption(opt=>opt.setName('member').setDescription('Member to check').setRequired(true)),
   new SlashCommandBuilder()
