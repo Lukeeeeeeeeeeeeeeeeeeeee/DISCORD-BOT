@@ -2,6 +2,16 @@ const db = require('../db_async');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const { EmbedBuilder } = require('discord.js');
 const { PURCHASE_ITEMS } = require('../constants');
+const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions } = require('../lib/permissions');
+const { 
+  calculate7DayStats, 
+  getPreviousMinReq, 
+  storeWeeklyCalculation,
+  calculateMinRecruitsFixed,
+  getBaseRequirement,
+  hasModPlusPermissions,
+  isNewStaff
+} = require('../lib/recruiting-system');
 
 module.exports = {
   data: { name: 'recruiter' },
@@ -17,8 +27,8 @@ module.exports = {
         return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
       }
       
-      // Allow viewing own info or admin can view others
-      if (member.id !== interaction.user.id && !interaction.member.permissions.has('Administrator')) {
+      // Allow viewing own info or staff can view others
+      if (member.id !== interaction.user.id && !hasAdminOrStaffPermissions(interaction.member)) {
         return interaction.reply({ content: 'You can only view your own recruiter info.', flags: 64 });
       }
 
@@ -78,10 +88,35 @@ module.exports = {
         recruiterRole = 'UNKNOWN';
       }
 
-      // Min recruits calculation
-      const roleModifier = (recruiterRole && econ.ECONOMY_CONFIG.ROLE_MODIFIERS[recruiterRole]) || econ.ECONOMY_CONFIG.ROLE_MODIFIERS.NONE;
-      const channelBase = rec && rec.channel_base ? rec.channel_base : econ.ECONOMY_CONFIG.BASE_VALUE;
-      const minReq = econ.calculateMinRecruitsRequired({ channelBase, roleModifier, total28d: total28, distinctWeeks, retention: Math.max(0, Math.min(1, retention === -1 ? 0 : retention)), activeWarnings: warnings ? warnings.c : 0, daysSinceLastRecruit: daysSinceLast || Number.POSITIVE_INFINITY, activeMultiplierValue: mul.value || 1.0 });
+      // Get 7-day stats using new system
+      const stats7d = await calculate7DayStats(db, member.id);
+      const previousMinReq = await getPreviousMinReq(db, member.id);
+      
+      // Check for active absence
+      const absence = await db.get(
+        'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+        member.id
+      );
+      
+      // Get role base requirement
+      const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
+      const roleBase = getBaseRequirement(targetMember);
+      
+      // Check if new staff (first 2 recalcs)
+      const newStaffCheck = await isNewStaff(db, member.id);
+      
+      // Calculate min recruits using new system
+      const minReq = calculateMinRecruitsFixed({
+        roleBase,
+        role: targetMember ? targetMember.roles.cache.first()?.id : null,
+        recruits7d: stats7d.recruits7d,
+        activityRate: stats7d.activityRate,
+        retention: stats7d.retention,
+        warnings: warnings ? warnings.c : 0,
+        previousMinReq,
+        absent: !!absence,
+        isNewStaff: newStaffCheck
+      });
 
       const recentText = recruits.length ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT','')}) — ${r.points || 0} pts`).join('\n') : 'None';
 
@@ -94,12 +129,15 @@ module.exports = {
           { name: 'Points', value: `${points}`, inline: true },
           { name: 'Active Multiplier', value: mul && mul.type ? `${mul.type} — ×${mul.value}` : 'None', inline: true },
           { name: 'Total recruits (all time)', value: `${totalAll}`, inline: true },
+          { name: 'Recruits (7 days)', value: `${stats7d.recruits7d}`, inline: true },
           { name: 'Warnings (active)', value: `${warnings ? warnings.c : 0}`, inline: true },
-          { name: 'Flags (total)', value: `${flags ? flags.c : 0}`, inline: true },
           { name: 'Min recruits required', value: `${minReq}`, inline: true }
         )
-        .addFields({ name: 'Recent recruits (last 5)', value: recentText || 'None' })
-        .setColor(0x00CC66)
+        .addFields(
+          { name: 'Recent recruits (last 5)', value: recentText || 'None' },
+          { name: 'Status', value: absence ? `📅 Absent until ${absence.end_date}` : '✅ Active', inline: true }
+        )
+        .setColor(absence ? 0xFFAA00 : 0x00CC66)
         .setTimestamp();
 
       // Add compact summaries for purchases/multipliers if present
@@ -109,7 +147,7 @@ module.exports = {
       if (recentWarnings.length) embed.addFields({ name: 'Recent warnings', value: recentWarnings.map(w=>`${new Date(w.created_at).toUTCString()} — ${w.note || ''}`).join('\n') });
 
       // Additional info footnote
-      embed.setFooter({ text: `Retention: ${retention === -1 ? 'unknown' : (Math.round((retention||0)*100) + '%')} • Last recruit: ${lastTs ? new Date(lastTs).toUTCString() : 'Never'}` });
+      embed.setFooter({ text: `7-Day Retention: ${Math.round(stats7d.retention * 100)}% • Last recruit: ${lastTs ? new Date(lastTs).toUTCString() : 'Never'}` });
 
       return interaction.reply({ embeds: [embed], ephemeral: false });
     }
@@ -192,8 +230,8 @@ module.exports = {
     }
 
     if (sub === 'warn') {
-      // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.' });
+      // admin/staff only
+      if (!hasAdminOrStaffPermissions(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
       const member = interaction.options.getUser('member');
       const note = interaction.options.getString('note') || 'Manual warning by staff';
       const expiresDays = interaction.options.getInteger('expires_days');
@@ -262,13 +300,13 @@ module.exports = {
         return interaction.reply({ content: `Warning issued to ${member.tag}. ✅` });
       } catch (e) {
         console.error('Failed to issue warning', { error: e });
-        return interaction.reply({ content: 'Failed to issue warning.' });
+        return interaction.reply({ content: 'Failed to issue warning.', ephemeral: true });
       }
     }
 
     if (sub === 'warnings-revoke') {
-      // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.' });
+      // admin/staff only
+      if (!hasAdminOrStaffPermissions(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
       const member = interaction.options.getUser('member');
       const warningId = interaction.options.getInteger('warning_id');
       try {
@@ -353,8 +391,8 @@ module.exports = {
     }
 
     if (sub === 'dismiss') {
-      // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.' });
+      // admin/staff only
+      if (!hasAdminOrStaffPermissions(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
       const member = interaction.options.getUser('member');
       const reason = interaction.options.getString('reason') || 'Dismissed by staff';
       try {

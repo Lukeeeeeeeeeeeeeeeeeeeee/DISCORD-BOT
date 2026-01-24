@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const dayjs = require('dayjs');
 const { MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS, RECRUITER_ROLE_IDS } = require('./constants');
+const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
 
 async function computeStats(db, region, since=0) {
   // since: timestamp in ms. If zero, consider all-time; otherwise limit to recruits.created_at >= since
@@ -203,6 +204,23 @@ function start(client, db) {
     client.once('ready', ()=>{
       applyFlags(db, client.guilds.cache.get(process.env.GUILD_ID));
       recomputeLeaderboards(db, client.guilds.cache.get(process.env.GUILD_ID));
+    });
+
+    // Cron: Monday at 00:00 UTC - Weekly recruiter recalculation
+    cron.schedule('0 0 * * 1', async () => {
+      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      if (!guild) return;
+      
+      console.log('Starting weekly recruiter recalculation...');
+      try {
+        await performWeeklyRecalculations(guild);
+        console.log('Weekly recruiter recalculation completed successfully');
+      } catch (error) {
+        console.error('Weekly recruiter recalculation failed:', error);
+      }
+    }, {
+      scheduled: true,
+      timezone: 'UTC'
     });
 
     // Cron: Sunday at 12:00 UTC

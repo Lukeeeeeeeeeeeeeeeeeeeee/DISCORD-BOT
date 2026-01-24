@@ -75,6 +75,29 @@ async function init() {
     region TEXT,
     updated_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS weekly_calculations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recruiter_id TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    recruits7d INTEGER DEFAULT 0,
+    activity_rate REAL DEFAULT 0,
+    retention REAL DEFAULT 0,
+    warnings INTEGER DEFAULT 0,
+    previous_min_req INTEGER,
+    calculated_min_req INTEGER NOT NULL,
+    role_base INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS absences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recruiter_id TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    active INTEGER DEFAULT 1
+  );
   `);
 
   try {

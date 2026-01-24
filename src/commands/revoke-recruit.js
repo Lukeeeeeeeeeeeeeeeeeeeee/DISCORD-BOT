@@ -1,6 +1,7 @@
 const db = require('../db_async');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const { EmbedBuilder } = require('discord.js');
+const { hasAdminOrStaffPermissions } = require('../lib/permissions');
 
 module.exports = {
   data: {
@@ -8,9 +9,9 @@ module.exports = {
     description: 'Revoke a recruit and update invite channels',
   },
   async execute(interaction) {
-    // Admin only
-    if (!interaction.member.permissions.has('Administrator')) {
-      return interaction.reply({ content: 'Admin only.' });
+    // Admin/staff only
+    if (!hasAdminOrStaffPermissions(interaction.member)) {
+      return interaction.reply({ content: 'Admin/Staff only.' });
     }
 
     const member = interaction.options.getUser('member');
