@@ -14,6 +14,9 @@ const cooldowns = new Map();
 module.exports = {
   data: { name: 'dm' },
   async execute(interaction, client, db) {
+    // admin only
+    if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
+
     const perms = interaction.member.permissions || interaction.member.permissionsIn?.(interaction.channel);
     const isAdmin = perms && perms.has && perms.has(PermissionsBitField.Flags.Administrator);
     if (!isAdmin) return interaction.reply({ content: 'Administrator permission required.', flags: 64 });
@@ -22,6 +25,15 @@ module.exports = {
     const message = interaction.options.getString('message', true);
     const limitOpt = interaction.options.getInteger('limit');
     const preview = interaction.options.getBoolean('preview') || false;
+
+    // Validate inputs
+    if (!role || !message) {
+      return interaction.reply({ content: 'Missing required parameters. Please provide role and message.', flags: 64 });
+    }
+
+    if (limitOpt < 1 || limitOpt > 100) {
+      return interaction.reply({ content: 'Limit must be between 1 and 100.', flags: 64 });
+    }
 
     await interaction.deferReply({ flags: 64 });
 

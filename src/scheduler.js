@@ -80,8 +80,22 @@ async function recomputeLeaderboards(db, guild) {
   const since = Date.now() - (7*24*60*60*1000);
   const { upsertLeaderboardMessage } = require('./lib/messages');
   for (const rg of regions) {
-    // include all recruiters (even with zero recruits in window) and attach total points
-    const rowsBase = await db.all(`SELECT r.id AS recruiter_id, COALESCE(c.cnt,0) AS cnt, COALESCE(r.points,0) AS points FROM recruiters r LEFT JOIN (SELECT recruiter_id, COUNT(*) as cnt FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ? GROUP BY recruiter_id) c ON c.recruiter_id = r.id ORDER BY cnt DESC, points DESC`, rg.key, since);
+    // Get ALL recruiters and their weekly recruit counts, even those with 0 recruits
+    const rowsBase = await db.all(`
+      SELECT 
+        r.id AS recruiter_id, 
+        COALESCE(c.cnt, 0) AS cnt, 
+        COALESCE(r.points, 0) AS points 
+      FROM recruiters r 
+      LEFT JOIN (
+        SELECT recruiter_id, COUNT(*) as cnt 
+        FROM recruits 
+        WHERE region = ? AND valid = 1 AND created_at >= ? 
+        GROUP BY recruiter_id
+      ) c ON c.recruiter_id = r.id 
+      ORDER BY cnt DESC, points DESC
+    `, rg.key, since);
+    
     const rows = [];
     for (const r of rowsBase) {
       // compute per-recruiter additional stats for min requirement
@@ -138,9 +152,23 @@ async function recomputeLeaderboards(db, guild) {
 }
 
 async function recomputeWarningsLeaderboard(db, guild) {
-  const since = Date.now();
+  const now = Date.now();
   // active warnings: not revoked and not expired
-  const rows = await db.all('SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id ORDER BY cnt DESC', since);
+  // Get all recruiters with their warning counts, even those with 0 warnings
+  const rows = await db.all(`
+    SELECT 
+      r.id AS recruiter_id, 
+      COALESCE(w.cnt, 0) AS cnt 
+    FROM recruiters r 
+    LEFT JOIN (
+      SELECT recruiter_id, COUNT(*) as cnt 
+      FROM warnings 
+      WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) 
+      GROUP BY recruiter_id
+    ) w ON w.recruiter_id = r.id 
+    ORDER BY cnt DESC
+  `, now);
+  
   const { upsertLeaderboardMessage, makeWarningsEmbed } = require('./lib/messages');
   const ch = guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS);
   if (!ch) return;

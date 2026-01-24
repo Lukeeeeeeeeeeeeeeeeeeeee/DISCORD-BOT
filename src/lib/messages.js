@@ -61,13 +61,21 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   const embed = new EmbedBuilder().setTitle(title).setColor(info.color).setTimestamp();
 
   if (!rows || rows.length === 0) {
-    embed.setDescription('No recruiters yet.');
+    embed.setDescription('No recruiters found.');
     if (info.thumbnail) embed.setThumbnail(info.thumbnail);
     return embed;
   }
 
   // Build a simple ordered list of all recruiters: rank. @user — N recruits — M pts
-  const lines = rows.map((r, i) => `${i+1}. <@${r.recruiter_id}> — **${r.cnt}** recruits${(r.points || 0) ? ` — ${(r.points || 0)} pts` : ''}${r.minReq !== undefined ? ` — min: ${r.minReq}` : ''}`);
+  // Show all recruiters, even those with 0 weekly recruits
+  const lines = rows.map((r, i) => {
+    const displayName = r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown';
+    const recruitCount = r.cnt || 0;
+    const points = (r.points || 0);
+    const minReq = r.minReq !== undefined ? ` — min: ${r.minReq}` : '';
+    return `${i+1}. ${displayName} — **${recruitCount}** recruits — **${points}** pts${minReq}`;
+  });
+  
   embed.addFields({ name: t('leaderboard.title', lang), value: lines.join('\n') });
 
   if (info.thumbnail) embed.setThumbnail(info.thumbnail);
@@ -76,7 +84,7 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
 
 function makeWarningsEmbed(rows, lang='en') {
   const { t } = require('./i18n');
-  const embed = new EmbedBuilder().setTitle(t('recruit.title', lang) + ' — Warnings').setColor(0xFF4400).setTimestamp();
+  const embed = new EmbedBuilder().setTitle('⚠️ Warnings Leaderboard').setColor(0xFF4400).setTimestamp();
   if (!rows || rows.length === 0) {
     embed.setDescription('No active warnings.');
     return embed;

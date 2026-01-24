@@ -10,6 +10,17 @@ module.exports = {
     const sub = interaction.options.getSubcommand();
     if (sub === 'info') {
       const member = interaction.options.getUser('member') || interaction.user;
+      
+      // Check if user has permission to view info (basic check)
+      const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+      if (!guildMember) {
+        return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
+      }
+      
+      // Allow viewing own info or admin can view others
+      if (member.id !== interaction.user.id && !interaction.member.permissions.has('Administrator')) {
+        return interaction.reply({ content: 'You can only view your own recruiter info.', flags: 64 });
+      }
 
       // Basic rows
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', member.id);
@@ -103,6 +114,19 @@ module.exports = {
     if (sub === 'buy') {
       const item = interaction.options.getString('item');
       const userId = interaction.user.id;
+      
+      // Check if user has permission to buy (basic check)
+      const guildMember = await interaction.guild.members.fetch(userId).catch(() => null);
+      if (!guildMember) {
+        return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
+      }
+      
+      // Check if user has minimum role to buy items
+      const ROLE_IDS = require('../constants').ROLE_IDS;
+      if (!guildMember.roles.cache.has(ROLE_IDS.ROOKIE) && !guildMember.roles.cache.has(ROLE_IDS.VIP) && !guildMember.roles.cache.has(ROLE_IDS.MVP) && !guildMember.roles.cache.has(ROLE_IDS.CUSTOM) && !guildMember.permissions.has('Administrator')) {
+        return interaction.reply({ content: 'You need at least Rookie role to purchase items.', flags: 64 });
+      }
+      
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', userId);
       const points = rec ? rec.points : 0;
 
@@ -120,7 +144,24 @@ module.exports = {
       }
 
       const cost = PURCHASE_ITEMS[item];
-      if (!cost) return interaction.reply({ content: 'Unknown item.', flags: 64 });
+      if (!cost) {
+        // Show available items if item not found
+        const econ = require('../lib/economy');
+        const { ECONOMY_CONFIG } = econ;
+        const multiplierItems = Object.entries(ECONOMY_CONFIG.MULTIPLIERS).map(([k,v]) => `**${k}** — ×${v.value} for ${v.days}d — **${v.cost}** pts`).join('\n');
+        const purchaseItems = Object.entries(PURCHASE_ITEMS).map(([k,c]) => `**${k}** — **${c}** pts`).join('\n');
+        const embed = new EmbedBuilder()
+          .setTitle('🛒 Available Items')
+          .addFields(
+            { name: 'Multipliers', value: multiplierItems || 'None available', inline: false },
+            { name: 'Other Items', value: purchaseItems || 'None available', inline: false }
+          )
+          .setColor(0x00AAFF)
+          .setFooter({ text: 'Use /recruiter buy <item_name> to purchase' })
+          .setTimestamp();
+        return interaction.reply({ embeds: [embed], flags: 64 });
+      }
+      
       if (points < cost) return interaction.reply({ content: 'Not enough points.', flags: 64 });
       // Deduct
       await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
@@ -130,13 +171,13 @@ module.exports = {
       try {
         if (item === 'vip-role') {
           const ROLE_IDS = require('../constants').ROLE_IDS;
-          const memberRec = await interaction.guild.members.fetch(userId).catch(()=>null);
-          if (memberRec && ROLE_IDS.VIP) await memberRec.roles.add(ROLE_IDS.VIP).catch(()=>{});
+          const memberRec = await interaction.guild.members.fetch(userId).catch(() => null);
+          if (memberRec && ROLE_IDS.VIP) await memberRec.roles.add(ROLE_IDS.VIP).catch(() => {});
         }
         if (item === 'mvp-role') {
           const ROLE_IDS = require('../constants').ROLE_IDS;
-          const memberRec = await interaction.guild.members.fetch(userId).catch(()=>null);
-          if (memberRec && ROLE_IDS.MVP) await memberRec.roles.add(ROLE_IDS.MVP).catch(()=>{});
+          const memberRec = await interaction.guild.members.fetch(userId).catch(() => null);
+          if (memberRec && ROLE_IDS.MVP) await memberRec.roles.add(ROLE_IDS.MVP).catch(() => {});
         }
       } catch (e) {
         // best-effort
@@ -152,6 +193,12 @@ module.exports = {
       const member = interaction.options.getUser('member');
       const note = interaction.options.getString('note') || 'Manual warning by staff';
       const expiresDays = interaction.options.getInteger('expires_days');
+      
+      // Validate member exists
+      const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
+      if (!targetMember) {
+        return interaction.reply({ content: 'Member not found in this guild.', flags: 64 });
+      }
 
       try {
         // Insert warning and increment counter atomically
@@ -175,8 +222,8 @@ module.exports = {
           .setColor(0xFF8800)
           .setTimestamp();
         try {
-          const m = await interaction.guild.members.fetch(member.id).catch(()=>null);
-          if (m) await m.send({ embeds: [warnEmbed] }).catch(()=>{});
+          const m = await interaction.guild.members.fetch(member.id).catch(() => null);
+          if (m) await m.send({ embeds: [warnEmbed] }).catch(() => {});
         } catch (e) {
           console.error('Failed to DM warned member', { memberId: member.id, error: e });
         }
@@ -198,6 +245,14 @@ module.exports = {
           ch.send({ embeds: [staffEmbed] }).catch((e)=> console.error('Failed to post warning to channel', { channelId: ch.id, error: e }));
         }
 
+        // Update leaderboards
+        try {
+          const scheduler = require('../scheduler');
+          await scheduler.recomputeLeaderboards(db, interaction.guild);
+        } catch (e) {
+          console.error('Failed to update leaderboards after warning:', e);
+        }
+
         console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note, expiredAt });
 
         return interaction.reply({ content: `Warning issued to ${member.tag}. ✅`, flags: 64 });
@@ -214,10 +269,50 @@ module.exports = {
       const warningId = interaction.options.getInteger('warning_id');
       try {
         if (warningId) {
+          // Revoke specific warning
+          const warning = await db.get('SELECT * FROM warnings WHERE id = ? AND recruiter_id = ?', warningId, member.id);
+          if (!warning) {
+            return interaction.reply({ content: `Warning #${warningId} not found for ${member.tag}.`, flags: 64 });
+          }
+          
           await db.run('UPDATE warnings SET revoked = 1 WHERE id = ? AND recruiter_id = ?', warningId, member.id);
+          
+          // DM the user about warning revocation
+          try {
+            const { EmbedBuilder } = require('discord.js');
+            const revokeEmbed = new EmbedBuilder()
+              .setTitle('✅ Warning Revoked')
+              .setDescription(`Warning #${warningId} has been revoked by <@${interaction.user.id}>`)
+              .addFields(
+                { name: 'Original Reason', value: warning.note || 'No reason provided', inline: true },
+                { name: 'Revoked By', value: `<@${interaction.user.id}>`, inline: true }
+              )
+              .setColor(0x00CC66)
+              .setTimestamp();
+            const warnedMember = await interaction.guild.members.fetch(member.id).catch(() => null);
+            if (warnedMember) await warnedMember.send({ embeds: [revokeEmbed] }).catch(() => {});
+          } catch (e) {
+            console.error('Failed to DM warning revocation:', e);
+          }
         } else {
+          // Revoke all warnings for this recruiter
           await db.run('UPDATE warnings SET revoked = 1 WHERE recruiter_id = ?', member.id);
+          
+          // DM the user about all warnings being revoked
+          try {
+            const { EmbedBuilder } = require('discord.js');
+            const revokeEmbed = new EmbedBuilder()
+              .setTitle('✅ All Warnings Revoked')
+              .setDescription(`All your warnings have been revoked by <@${interaction.user.id}>`)
+              .setColor(0x00CC66)
+              .setTimestamp();
+            const warnedMember = await interaction.guild.members.fetch(member.id).catch(() => null);
+            if (warnedMember) await warnedMember.send({ embeds: [revokeEmbed] }).catch(() => {});
+          } catch (e) {
+            console.error('Failed to DM warning revocation:', e);
+          }
         }
+        
         // Recompute warnings count
         const cntRow = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', member.id, Date.now());
         const active = cntRow ? cntRow.c : 0;
@@ -230,9 +325,20 @@ module.exports = {
           const embed = new EmbedBuilder()
             .setTitle('🧾 Warning Revoked')
             .setDescription(`<@${member.id}> has had ${warningId ? `warning #${warningId}` : 'all warnings'} revoked by <@${interaction.user.id}>`)
+            .addFields(
+              { name: 'Active Warnings Remaining', value: `${active}`, inline: true }
+            )
             .setColor(0x00CC66)
             .setTimestamp();
-          ch.send({ embeds: [embed] }).catch(()=>{});
+          ch.send({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Update leaderboards
+        try {
+          const scheduler = require('../scheduler');
+          await scheduler.recomputeLeaderboards(db, interaction.guild);
+        } catch (e) {
+          console.error('Failed to update leaderboards after warning revocation:', e);
         }
 
         return interaction.reply({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}. ✅`, flags: 64 });
@@ -243,6 +349,12 @@ module.exports = {
     }
 
     if (sub === 'multiplier-list') {
+      // Check if user has permission to view multipliers
+      const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+      if (!guildMember) {
+        return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
+      }
+      
       // Show available multipliers and costs
       const econ = require('../lib/economy');
       const { ECONOMY_CONFIG } = econ;
@@ -254,7 +366,15 @@ module.exports = {
     if (sub === 'multiplier-view') {
       // View active multiplier for a recruiter (self or admin for others)
       const member = interaction.options.getUser('member') || interaction.user;
+      
+      // Check if user has permission to view multipliers
+      const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+      if (!guildMember) {
+        return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
+      }
+      
       if (member.id !== interaction.user.id && !interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only to view others.', flags: 64 });
+      
       const econ = require('../lib/economy');
       const m = await econ.getActiveMultiplier(db, member.id);
       const embed = new EmbedBuilder().setTitle(`Multiplier for ${member.tag}`).setDescription(m.type ? `**${m.type}** — ×${m.value} (expires ${m.expiresAt ? new Date(m.expiresAt).toUTCString() : 'N/A'})` : 'No active multiplier').setColor(0x00AAFF).setTimestamp();
