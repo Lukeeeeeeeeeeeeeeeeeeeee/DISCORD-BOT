@@ -85,10 +85,13 @@ module.exports = {
 
       const recentText = recruits.length ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT','')}) — ${r.points || 0} pts`).join('\n') : 'None';
 
+      const { TESTING_USER_ID } = require('../constants');
+      const points = (member.id === TESTING_USER_ID) ? '∞' : (rec ? rec.points : 0);
+
       const embed = new EmbedBuilder()
         .setTitle(`Recruiter: ${member.tag}`)
         .addFields(
-          { name: 'Points', value: `${rec ? rec.points : 0}`, inline: true },
+          { name: 'Points', value: `${points}`, inline: true },
           { name: 'Active Multiplier', value: mul && mul.type ? `${mul.type} — ×${mul.value}` : 'None', inline: true },
           { name: 'Total recruits (all time)', value: `${totalAll}`, inline: true },
           { name: 'Warnings (active)', value: `${warnings ? warnings.c : 0}`, inline: true },
@@ -128,7 +131,8 @@ module.exports = {
       }
       
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', userId);
-      const points = rec ? rec.points : 0;
+      const { TESTING_USER_ID } = require('../constants');
+      const points = (userId === TESTING_USER_ID) ? 999999999 : (rec ? rec.points : 0);
 
       // Check if item is a multiplier type
       const { ECONOMY_CONFIG, applyMultiplier } = require('../lib/economy');
@@ -217,7 +221,7 @@ module.exports = {
         // DM the user with an embed
         const { EmbedBuilder } = require('discord.js');
         const warnEmbed = new EmbedBuilder()
-          .setTitle('⚠️ You have received a warning')
+          .setTitle('⚠️ Recruiter Warning')
           .setDescription(`**Reason:** ${note}${expiredAt ? `\n**Expires:** ${new Date(expiredAt).toUTCString()}` : ''}`)
           .setColor(0xFF8800)
           .setTimestamp();
@@ -262,7 +266,7 @@ module.exports = {
       }
     }
 
-    if (sub === 'revoke') {
+    if (sub === 'warnings-revoke') {
       // admin only
       if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.' });
       const member = interaction.options.getUser('member');

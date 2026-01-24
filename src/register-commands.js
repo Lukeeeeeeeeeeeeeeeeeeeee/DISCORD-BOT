@@ -30,7 +30,10 @@ const commands = [
     }))
     .addSubcommand(s=>s.setName('warn').setDescription('Admin: issue a warning to a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to warn').setRequired(true)).addStringOption(o=>o.setName('note').setDescription('Warning note (optional)')).addIntegerOption(o=>o.setName('expires_days').setDescription('Expire after N days (optional, admin only)').setRequired(false)))
     .addSubcommand(s=>s.setName('dismiss').setDescription('Admin: dismiss flags for a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to dismiss flags for').setRequired(true)).addStringOption(o=>o.setName('reason').setDescription('Reason for dismissal (optional)')))
-    .addSubcommand(s=>s.setName('revoke').setDescription('Admin: revoke warnings for a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to revoke warnings for').setRequired(true)).addIntegerOption(o=>o.setName('warning_id').setDescription('Specific warning id to revoke (optional)'))),
+    .addSubcommand(s=>s.setName('warnings-revoke').setDescription('Admin: revoke warnings for a recruiter').addUserOption(o=>o.setName('member').setDescription('Recruiter to revoke warnings for').setRequired(true)).addIntegerOption(o=>o.setName('warning_id').setDescription('Specific warning id to revoke (optional)'))),
+  new SlashCommandBuilder().setName('revoke-recruit').setDescription('Revoke a recruit and update invite channels (admin only)')
+    .addUserOption(opt => opt.setName('member').setDescription('Member to revoke recruit status from').setRequired(true))
+    .addStringOption(opt => opt.setName('reason').setDescription('Reason for revocation').setRequired(false)),
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
     .addUserOption(opt=>opt.setName('member').setDescription('Member to check').setRequired(true)),
   new SlashCommandBuilder()

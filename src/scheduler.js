@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const dayjs = require('dayjs');
-const { MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS } = require('./constants');
+const { MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS, RECRUITER_ROLE_IDS } = require('./constants');
 
 async function computeStats(db, region, since=0) {
   // since: timestamp in ms. If zero, consider all-time; otherwise limit to recruits.created_at >= since
@@ -79,22 +79,43 @@ async function recomputeLeaderboards(db, guild) {
   const regions = [{key:'EU', channel: CHANNELS.INVITES_EU},{key:'NA', channel: CHANNELS.INVITES_NA},{key:'AS', channel: CHANNELS.INVITES_AS}];
   const since = Date.now() - (7*24*60*60*1000);
   const { upsertLeaderboardMessage } = require('./lib/messages');
+  
   for (const rg of regions) {
-    // Get ALL recruiters and their weekly recruit counts, even those with 0 recruits
+    // Get all users with recruiter roles and their recruit counts
+    const recruiterRoleId = RECRUITER_ROLE_IDS[rg.key];
+    const recruiterRole = guild.roles.cache.get(recruiterRoleId);
+    
+    if (!recruiterRole) {
+      console.error(`Recruiter role ${recruiterRoleId} for region ${rg.key} not found`);
+      continue;
+    }
+    
+    // Get all members with recruiter role for this region
+    const recruiterMembers = recruiterRole.members.map(member => member.id);
+    
+    if (recruiterMembers.length === 0) {
+      console.log(`No members found with recruiter role for region ${rg.key}`);
+      continue;
+    }
+    
+    // Build query to get all recruiters with their counts
+    const placeholders = recruiterMembers.map(() => '?').join(',');
+    const unionSelects = recruiterMembers.map(() => 'SELECT ? AS id').join(' UNION ALL ');
     const rowsBase = await db.all(`
       SELECT 
         r.id AS recruiter_id, 
         COALESCE(c.cnt, 0) AS cnt, 
-        COALESCE(r.points, 0) AS points 
-      FROM recruiters r 
+        COALESCE(db_rec.points, 0) AS points 
+      FROM (${unionSelects}) r
       LEFT JOIN (
         SELECT recruiter_id, COUNT(*) as cnt 
         FROM recruits 
         WHERE region = ? AND valid = 1 AND created_at >= ? 
         GROUP BY recruiter_id
       ) c ON c.recruiter_id = r.id 
+      LEFT JOIN recruiters db_rec ON db_rec.id = r.id
       ORDER BY cnt DESC, points DESC
-    `, rg.key, since);
+    `, ...recruiterMembers, rg.key, since);
     
     const rows = [];
     for (const r of rowsBase) {
@@ -146,9 +167,6 @@ async function recomputeLeaderboards(db, guild) {
       console.error('Leaderboard update failed for', rg.key, err);
     }
   }
-
-  // warnings leaderboard
-  await recomputeWarningsLeaderboard(db, guild);
 }
 
 async function recomputeWarningsLeaderboard(db, guild) {
