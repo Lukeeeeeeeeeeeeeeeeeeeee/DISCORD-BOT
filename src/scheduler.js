@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const dayjs = require('dayjs');
 const { MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
+const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
 
 async function computeStats(db, region, since=0) {
   // since: timestamp in ms. If zero, consider all-time; otherwise limit to recruits.created_at >= since
