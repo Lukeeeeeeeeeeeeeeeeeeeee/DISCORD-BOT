@@ -64,14 +64,23 @@ class InviteSystem {
   // Create a new invite for a recruiter
   async createInvite(recruiterId, guild) {
     try {
+      // Clean up expired invites first
+      await this.cleanupExpiredInvites();
+
       // Check if user has an active unused invite
       if (this.activeInvites.has(recruiterId)) {
         const activeInvite = this.activeInvites.get(recruiterId);
-        if (activeInvite.currentUses === 0) {
+        const now = Date.now();
+        
+        // Check if the existing invite is still valid
+        if (activeInvite.currentUses === 0 && activeInvite.expiresAt > now) {
           return {
             success: false,
             message: 'You already have an active unused invite. Use it first before creating a new one.'
           };
+        } else {
+          // Remove expired/used invite from memory
+          this.activeInvites.delete(recruiterId);
         }
       }
 
@@ -157,7 +166,36 @@ class InviteSystem {
     const activeInvite = this.activeInvites.get(userId);
     const now = Date.now();
 
-    if (activeInvite && activeInvite.currentUses === 0 && activeInvite.expiresAt > now) {
+    if (activeInvite) {
+      // Check if invite has expired or been used
+      if (activeInvite.currentUses > 0 || activeInvite.expiresAt <= now) {
+        // Remove expired/used invite from memory
+        this.activeInvites.delete(userId);
+        
+        // Check cooldown
+        if (this.inviteCooldowns.has(userId)) {
+          const lastUsed = this.inviteCooldowns.get(userId);
+          const cooldownTime = 90 * 60 * 1000; // 1.5 hours
+          const timeLeft = lastUsed + cooldownTime - now;
+          
+          if (timeLeft > 0) {
+            const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
+            return {
+              hasActive: false,
+              onCooldown: true,
+              cooldownLeft: `${minutesLeft} minutes`
+            };
+          }
+        }
+        
+        return {
+          hasActive: false,
+          onCooldown: false,
+          canCreate: true
+        };
+      }
+      
+      // Invite is still active
       const timeLeft = activeInvite.expiresAt - now;
       const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
       
@@ -207,6 +245,8 @@ class InviteSystem {
       for (const [recruiterId, invite] of this.activeInvites.entries()) {
         if (invite.code === inviteCode) {
           invite.currentUses = 1;
+          // Set cooldown when invite is used
+          this.inviteCooldowns.set(recruiterId, Date.now());
           break;
         }
       }
@@ -214,6 +254,32 @@ class InviteSystem {
       console.log(`✅ Invite ${inviteCode} marked as used`);
     } catch (error) {
       console.error('Error marking invite as used:', error);
+    }
+  }
+
+  // Mark invite as expired (when cancelled or manually expired)
+  async markInviteExpired(inviteCode) {
+    try {
+      // Update in database
+      await db.run(`
+        UPDATE recruiter_invites 
+        SET used = 1, used_at = ?
+        WHERE invite_code = ?
+      `, Date.now(), inviteCode);
+
+      // Remove from memory and set cooldown
+      for (const [recruiterId, invite] of this.activeInvites.entries()) {
+        if (invite.code === inviteCode) {
+          this.activeInvites.delete(recruiterId);
+          // Set cooldown when invite expires/cancelled
+          this.inviteCooldowns.set(recruiterId, Date.now());
+          break;
+        }
+      }
+
+      console.log(`⏰ Invite ${inviteCode} marked as expired`);
+    } catch (error) {
+      console.error('Error marking invite as expired:', error);
     }
   }
 
