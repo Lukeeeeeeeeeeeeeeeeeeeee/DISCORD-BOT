@@ -47,7 +47,24 @@ const commands = [
     .addBooleanOption(opt=>opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
     .addSubcommand(s=>s.setName('show').setDescription('Show leaderboard').addStringOption(opt=>opt.setName('region').setDescription('Region or all').setRequired(false)))
-    .addSubcommand(s=>s.setName('init').setDescription('Initialize leaderboard messages (admin only)'))
+    .addSubcommand(s=>s.setName('init').setDescription('Initialize leaderboard messages (admin only)')),
+  new SlashCommandBuilder().setName('antinuke_rollback').setDescription('Rollback all anti-nuke actions (Owner only)'),
+  
+  // Anti-nuke commands
+  new SlashCommandBuilder().setName('antinuke_status').setDescription('View full anti-nuke protection status (Admin only)'),
+  new SlashCommandBuilder().setName('check_score').setDescription("Check user's beast mode score (Admin only)")
+    .addUserOption(opt=>opt.setName('user').setDescription('User to check').setRequired(true)),
+  new SlashCommandBuilder().setName('reset_scores').setDescription('Reset beast mode scores (Admin only)')
+    .addUserOption(opt=>opt.setName('user').setDescription('User to reset (optional - resets all if not provided)')),
+  new SlashCommandBuilder().setName('whitelist').setDescription('Manage anti-nuke whitelist (Admin only)')
+    .addStringOption(opt=>opt.setName('action').setDescription('Action to perform').setRequired(true)
+      .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }))
+    .addUserOption(opt=>opt.setName('user').setDescription('User to add/remove (not required for list)')),
+  new SlashCommandBuilder().setName('set_log_channel').setDescription('Configure anti-nuke log channel (Admin only)')
+    .addChannelOption(opt=>opt.setName('channel').setDescription('Channel to set as log channel').setRequired(true)),
+  new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover from emergency lockdown (Admin only)'),
+  new SlashCommandBuilder().setName('force_backup').setDescription('Create manual backup of server (Admin only)'),
+  new SlashCommandBuilder().setName('view_backups').setDescription('View backup information (Admin only)')
 ];
 
 async function registerCommands({ guildId = null, global = false } = {}) {

@@ -31,8 +31,8 @@ module.exports = {
       return interaction.reply({ content: 'Missing required parameters. Please provide role and message.', flags: 64 });
     }
 
-    if (limitOpt < 1 || limitOpt > 100) {
-      return interaction.reply({ content: 'Limit must be between 1 and 100.', flags: 64 });
+    if (limitOpt && (limitOpt < 1 || limitOpt > HARD_MAX)) {
+      return interaction.reply({ content: `Limit must be between 1 and ${HARD_MAX}.`, flags: 64 });
     }
 
     await interaction.deferReply({ flags: 64 });
