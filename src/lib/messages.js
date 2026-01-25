@@ -80,7 +80,7 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
     const minReq = r.minReq !== undefined ? r.minReq : 0;
     const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
     
-    return `${i+1}. ${displayName} [${recruitCount}/${minReq}] **RETENTION RATIO [${retention}%]**`;
+    return `${i+1}. ${displayName} [${recruitCount}/${minReq}] **RETENTION [${retention}%]**`;
   });
   
   return { content: `${title}\n\n${lines.join('\n')}` };

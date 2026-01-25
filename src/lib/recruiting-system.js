@@ -96,29 +96,51 @@ function calculateMinRecruitsFixed({
   absent,
   isNewStaff = false
 } = {}) {
+  console.log(`\n=== MINREQ CALCULATION DEBUG ===`);
+  console.log(`Inputs: roleBase=${roleBase}, recruits7d=${recruits7d}, activityRate=${activityRate}, retention=${retention}, warnings=${warnings}, previousMinReq=${previousMinReq}, absent=${absent}, isNewStaff=${isNewStaff}`);
+  
+  // Check timing: only allow changes before Thursday, lock after until Monday
+  const now = new Date();
+  const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, ..., 4 = Thursday, ..., 6 = Saturday
+  const hourOfDay = now.getHours();
+  const isBeforeThursday = dayOfWeek < 4; // Before Thursday
+  const isThursdayOrLater = dayOfWeek >= 4; // Thursday or later
+  const isMondayReset = dayOfWeek === 1 && hourOfDay < 1; // Monday before 1 AM
+  
+  console.log(`-> Timing check: day=${dayOfWeek}, hour=${hourOfDay}, beforeThursday=${isBeforeThursday}, thursdayOrLater=${isThursdayOrLater}, mondayReset=${isMondayReset}`);
+  
   // Handle absence (MOD+ only)
   if (absent && hasModPlusPermissions({ roles: { cache: new Map([[role, true]]) } })) {
+    console.log(`-> Absent with MOD+ permissions, minReq = 0`);
     return 0;
   }
 
   // Low-activity floor (CRITICAL FIX)
   if (recruits7d <= 1) {
-    return hasModPlusPermissions({ roles: { cache: new Map([[role, true]]) } }) ? 3 : 2;
+    const floor = hasModPlusPermissions({ roles: { cache: new Map([[role, true]]) } }) ? 3 : 2;
+    console.log(`-> Low activity floor (recruits7d=${recruits7d}), minReq = ${floor}`);
+    return floor;
   }
 
   const target = TARGET_RECRUITS_PER_WEEK;
   const pressure = (target - activityRate) / target;
+  console.log(`-> target=${target}, activityRate=${activityRate}, pressure=${pressure.toFixed(3)}`);
 
   // Activity adjustment (dominant)
   const activityAdj = pressure * ACTIVITY_MAX_STEP;
+  console.log(`-> activityAdj = ${pressure.toFixed(3)} * ${ACTIVITY_MAX_STEP} = ${activityAdj.toFixed(3)}`);
 
   // Retention adjustment (secondary, only if volume ≥ 3)
   let retentionAdj = 0;
   if (recruits7d >= 3) {
     retentionAdj = pressure * retention * RETENTION_MAX_STEP;
+    console.log(`-> retentionAdj = ${pressure.toFixed(3)} * ${retention.toFixed(3)} * ${RETENTION_MAX_STEP} = ${retentionAdj.toFixed(3)}`);
+  } else {
+    console.log(`-> retentionAdj = 0 (recruits7d < 3)`);
   }
 
   const rawMin = roleBase + activityAdj + retentionAdj;
+  console.log(`-> rawMin = ${roleBase} + ${activityAdj.toFixed(3)} + ${retentionAdj.toFixed(3)} = ${rawMin.toFixed(3)}`);
 
   // Apply smoothing with warning-based delta limits
   let smoothed = rawMin;
@@ -127,22 +149,42 @@ function calculateMinRecruitsFixed({
     let base_max_delta_up = BASE_MAX_DELTA_UP;
     let base_max_delta_down = BASE_MAX_DELTA_DOWN;
     
+    console.log(`-> Previous minReq: ${previousMinReq}`);
+    
     // New staff edge case: first 2 recalcs get reduced delta
     if (isNewStaff) {
       base_max_delta_up = 1; // Reduced from 2 to 1
       base_max_delta_down = 0; // Reduced from 1 to 0
+      console.log(`-> New staff: delta limits reduced to up=${base_max_delta_up}, down=${base_max_delta_down}`);
+    }
+    
+    // TIMING LOCK: If Thursday or later and not Monday reset, lock to previous value
+    if (isThursdayOrLater && !isMondayReset) {
+      console.log(`-> TIMING LOCK: Thursday or later, locking minReq to previous value: ${previousMinReq}`);
+      console.log(`=== END DEBUG ===\n`);
+      return previousMinReq;
     }
     
     const max_delta_up = Math.max(0, base_max_delta_up - warnings);
     const max_delta_down = Math.max(0, base_max_delta_down - warnings);
+    console.log(`-> Warning-adjusted delta limits: up=${max_delta_up}, down=${max_delta_down}`);
 
     let delta = rawMin - previousMinReq;
+    console.log(`-> Raw delta: ${delta.toFixed(3)} (${rawMin.toFixed(3)} - ${previousMinReq})`);
+    
     delta = Math.max(-max_delta_down, Math.min(max_delta_up, delta));
+    console.log(`-> Clamped delta: ${delta.toFixed(3)}`);
+    
     smoothed = previousMinReq + delta;
+    console.log(`-> Smoothed: ${previousMinReq} + ${delta.toFixed(3)} = ${smoothed.toFixed(3)}`);
   }
 
   // Final clamp and rounding
-  return Math.max(2, Math.min(8, Math.ceil(smoothed)));
+  const final = Math.max(2, Math.min(8, Math.ceil(smoothed)));
+  console.log(`-> Final: clamp(${Math.ceil(smoothed)}, 2, 8) = ${final}`);
+  console.log(`=== END DEBUG ===\n`);
+  
+  return final;
 }
 
 /**

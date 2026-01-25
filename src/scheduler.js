@@ -146,6 +146,25 @@ async function recomputeLeaderboards(db, guild) {
 
     if (allRecruiterIds.size === 0) {
       console.log(`No recruiters found for region ${rg.key}`);
+      
+      // Still post a "No recruiters found" message to empty channels
+      const ch = guild.channels.cache.get(rg.channel);
+      if (ch) {
+        console.log(`Posting 'No recruiters found' message to ${rg.key} channel...`);
+        try {
+          const { makeLeaderboardEmbed } = require('./lib/messages');
+          const lang = process.env.DEFAULT_LANG || 'en';
+          const leaderboardData = makeLeaderboardEmbed([], rg.key, lang); // Empty array = no recruiters
+          
+          await upsertLeaderboardMessage(db, ch, rg.key, leaderboardData.content, null).catch((err) => {
+            console.error(`Failed to post 'no recruiters' message for ${rg.key}:`, err);
+          });
+          
+          console.log(`Successfully posted 'no recruiters' message for ${rg.key}`);
+        } catch (err) {
+          console.error(`Failed to create 'no recruiters' message for ${rg.key}:`, err);
+        }
+      }
       continue;
     }
     
