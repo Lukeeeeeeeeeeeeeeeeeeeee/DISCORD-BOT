@@ -1,6 +1,6 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
-const { REGIONS } = require('../constants');
+const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../constants');
 
 module.exports = {
   data: { name: 'leaderboard' },
@@ -20,7 +20,6 @@ module.exports = {
         }
         
         // Get all recruiters for this region using the same logic as scheduler
-        const { RECRUITER_ROLE_IDS, ROLE_IDS } = require('../constants');
         const recruiterRoleId = RECRUITER_ROLE_IDS[region];
         const recruiterRole = interaction.guild.roles.cache.get(recruiterRoleId);
         
@@ -112,8 +111,10 @@ module.exports = {
           
           const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
           const roleBase = getBaseRequirement(staffMember);
+
+          const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
           
-          const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
+          const minReq = isTrialRecruiter ? 3 : (previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
             roleBase,
             role: staffMember ? staffMember.roles.cache.first()?.id : null,
             recruits7d: stats7d.recruits7d,
@@ -123,7 +124,7 @@ module.exports = {
             previousMinReq,
             absent: !!absence,
             isNewStaff: false // Default to false for now
-          });
+          }));
 
           rows.push({
             ...r,
@@ -142,7 +143,6 @@ module.exports = {
       }
 
       // Global: get all recruiters from all regions
-      const { RECRUITER_ROLE_IDS, ROLE_IDS } = require('../constants');
       const allRecruiterIds = new Set();
       
       // Add all regional recruiters
@@ -187,6 +187,13 @@ module.exports = {
       }
 
       const recruiterMembers = Array.from(allRecruiterIds);
+
+      if (recruiterMembers.length === 0) {
+        const { makeLeaderboardEmbed } = require('../lib/messages');
+        const lang = interaction.locale || 'en';
+        const leaderboardData = makeLeaderboardEmbed([], 'GLOBAL', lang);
+        return interaction.reply({ content: leaderboardData.content, ephemeral: false });
+      }
       
       // Get global recruit data
       const placeholders = recruiterMembers.map(() => '?').join(',');
@@ -228,8 +235,10 @@ module.exports = {
         
         const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
         const roleBase = getBaseRequirement(staffMember);
+
+        const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
         
-        const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
+        const minReq = isTrialRecruiter ? 3 : (previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
           roleBase,
           role: staffMember ? staffMember.roles.cache.first()?.id : null,
           recruits7d: stats7d.recruits7d,
@@ -239,7 +248,7 @@ module.exports = {
           previousMinReq,
           absent: !!absence,
           isNewStaff: false // Default to false for now
-        });
+        }));
 
         rows.push({
           ...r,

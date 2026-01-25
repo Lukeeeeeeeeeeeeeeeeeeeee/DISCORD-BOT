@@ -187,7 +187,9 @@ async function recomputeLeaderboards(db, guild) {
         const staffMember = await guild.members.fetch(r.recruiter_id).catch(() => null);
         const roleBase = getBaseRequirement(staffMember);
 
-        const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
+        const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
+
+        const minReq = isTrialRecruiter ? 3 : (previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
           roleBase,
           role: staffMember ? staffMember.roles.cache.first()?.id : null,
           recruits7d,
@@ -197,7 +199,7 @@ async function recomputeLeaderboards(db, guild) {
           previousMinReq,
           absent: !!absence,
           isNewStaff: false // Default to false for now
-        });
+        }));
 
         rows.push({
           ...r,
@@ -314,14 +316,16 @@ function start(client, db) {
             'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
             recruiter.id
           );
-          
+
           // Get staff member for role calculation
           const guild = client.guilds.cache.get(process.env.GUILD_ID);
           const staffMember = await guild.members.fetch(recruiter.id).catch(() => null);
           const roleBase = getBaseRequirement(staffMember);
-          
+
+          const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
+
           // Calculate final MinReq for the week
-          const finalMinReq = calculateMinRecruitsFixed({
+          const finalMinReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
             roleBase,
             role: staffMember ? staffMember.roles.cache.first()?.id : null,
             recruits7d: currentStats.recruits7d,
@@ -332,7 +336,7 @@ function start(client, db) {
             absent: !!absence,
             isNewStaff: false
           });
-          
+
           // Store the final MinReq for this week
           await storeWeeklyCalculation(db, {
             recruiterId: recruiter.id,

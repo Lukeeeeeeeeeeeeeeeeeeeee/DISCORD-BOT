@@ -103,8 +103,10 @@ module.exports = {
       
       // Check if new staff (first 2 recalcs) - for now, default to false
       const newStaffCheck = false; // Fixed: was calling non-existent function
+
+      const isTrialRecruiter = !!targetMember && targetMember.roles.cache.has(require('../constants').ROLE_IDS.TRIAL_RECRUITER) && !targetMember.roles.cache.has(require('../constants').ROLE_IDS.AUTO_PROMOTE_ROLE);
       
-      const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
+      const minReq = isTrialRecruiter ? 3 : (previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
         roleBase,
         role: targetMember ? targetMember.roles.cache.first()?.id : null,
         recruits7d: stats7d.recruits7d,
@@ -114,7 +116,7 @@ module.exports = {
         previousMinReq,
         absent: !!absence,
         isNewStaff: newStaffCheck
-      });
+      }));
 
       const recentText = recruits.length ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT','')}) — ${r.points || 0} pts`).join('\n') : 'None';
 

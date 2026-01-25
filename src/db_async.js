@@ -89,6 +89,16 @@ async function init() {
     role_base INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS trial_fast_track (
+    recruiter_id TEXT PRIMARY KEY,
+    started_at INTEGER NOT NULL,
+    recruit1_id TEXT,
+    recruit2_id TEXT,
+    recruit3_id TEXT,
+    count INTEGER DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS absences (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recruiter_id TEXT NOT NULL,

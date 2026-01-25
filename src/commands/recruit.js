@@ -3,6 +3,101 @@ const { ROLE_IDS } = require('../constants');
 const db = require('../db_async');
 const { getActiveMultiplier, calculateRecruitPoints } = require('../lib/economy');
 
+async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
+  if (!recruiterMember || !recruiterMember.roles || !recruiterMember.roles.cache) return { promoted: false };
+  if (!recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) return { promoted: false };
+  if (recruiterMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE)) return { promoted: false };
+
+  const now = Date.now();
+  const windowMs = 9 * 24 * 60 * 60 * 1000;
+
+  let row = await db.get('SELECT * FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id);
+  const needsResetByTime = !row || (now - row.started_at) > windowMs;
+
+  if (needsResetByTime) {
+    await db.run(
+      'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, NULL, NULL, NULL, 0, ?)',
+      recruiterMember.id,
+      now,
+      now
+    );
+    row = await db.get('SELECT * FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id);
+  }
+
+  const trackedIds = [row.recruit1_id, row.recruit2_id, row.recruit3_id].filter(Boolean);
+  for (const id of trackedIds) {
+    const m = await guild.members.fetch(id).catch(() => null);
+    if (!m) {
+      await db.run(
+        'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, NULL, NULL, NULL, 0, ?)',
+        recruiterMember.id,
+        now,
+        now
+      );
+      row = await db.get('SELECT * FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id);
+      break;
+    }
+  }
+
+  if ([row.recruit1_id, row.recruit2_id, row.recruit3_id].includes(recruitedId)) {
+    return { promoted: false };
+  }
+
+  let count = row.count || 0;
+  const updates = { recruit1_id: row.recruit1_id, recruit2_id: row.recruit2_id, recruit3_id: row.recruit3_id };
+  if (!updates.recruit1_id) updates.recruit1_id = recruitedId;
+  else if (!updates.recruit2_id) updates.recruit2_id = recruitedId;
+  else if (!updates.recruit3_id) updates.recruit3_id = recruitedId;
+  else {
+    await db.run(
+      'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      recruiterMember.id,
+      row.started_at,
+      row.recruit1_id,
+      row.recruit2_id,
+      row.recruit3_id,
+      count,
+      now
+    );
+    return { promoted: false };
+  }
+
+  count = Math.min(3, count + 1);
+  await db.run(
+    'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    recruiterMember.id,
+    row.started_at,
+    updates.recruit1_id,
+    updates.recruit2_id,
+    updates.recruit3_id,
+    count,
+    now
+  );
+
+  if (count < 3) return { promoted: false };
+
+  const idsToCheck = [updates.recruit1_id, updates.recruit2_id, updates.recruit3_id].filter(Boolean);
+  for (const id of idsToCheck) {
+    const m = await guild.members.fetch(id).catch(() => null);
+    if (!m) {
+      await db.run(
+        'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, NULL, NULL, NULL, 0, ?)',
+        recruiterMember.id,
+        now,
+        now
+      );
+      return { promoted: false };
+    }
+  }
+
+  await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(() => {});
+  await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => {});
+  await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(() => {});
+
+  await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(() => {});
+  return { promoted: true };
+}
+
 module.exports = {
   data: { name: 'recruit' },
   async execute(interaction) {
@@ -96,8 +191,16 @@ module.exports = {
           throw e;
         }
 
+        try {
+          if (recruiterMember) {
+            await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id);
+          }
+        } catch (e) {
+          console.error('Trial fast-track update failed:', e);
+        }
+
         // Check for special-role auto-promotion: if they have the special role and got >=3 recruits in last 7 days
-        if (recruiterMember && recruiterMember.roles.cache.has(ROLE_IDS.SPECIAL_ROLE)) {
+        if (ROLE_IDS.SPECIAL_ROLE !== ROLE_IDS.TRIAL_RECRUITER && recruiterMember && recruiterMember.roles.cache.has(ROLE_IDS.SPECIAL_ROLE)) {
           const cutoff = Date.now() - (7*24*60*60*1000);
           const countRecentRow = await db.get('SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ?', interaction.user.id, cutoff);
           const countRecent = countRecentRow ? countRecentRow.c : 0;
@@ -119,15 +222,6 @@ module.exports = {
             }
           }
         }
-
-        // Log to invites channel overall + region and cross-post to central leaderboard channel (use embed)
-        const { CHANNELS } = require('../constants');
-        const channelOverall = interaction.guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
-        const channelRegion = interaction.guild.channels.cache.get(region === 'EU' ? CHANNELS.INVITES_EU : region === 'NA' ? CHANNELS.INVITES_NA : CHANNELS.INVITES_AS);
-        const { makeRecruitEmbed } = require('../lib/messages');
-        const embed = makeRecruitEmbed(interaction.user.id, member.id, region, ign, process.env.DEFAULT_LANG || 'en', { points, recruiterRole });
-        if (channelOverall) channelOverall.send({ embeds: [embed] }).catch(() => {});
-        if (channelRegion) channelRegion.send({ embeds: [embed] }).catch(() => {});
 
         try {
           const scheduler = require('../scheduler');
