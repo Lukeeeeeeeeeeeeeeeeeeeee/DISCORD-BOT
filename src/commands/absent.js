@@ -25,7 +25,12 @@ module.exports = {
       }
     }
 
-    const endDate = interaction.options.getString('date');
+    const endDateRaw = interaction.options.getString('date');
+    const endDate = (endDateRaw || '').trim().replace(/\u200B/g, '');
+
+    if (!endDate) {
+      return interaction.reply({ content: 'Invalid date format. Use YYYY-MM-DD format.', flags: 64 });
+    }
     
     // Validate ISO date format
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
