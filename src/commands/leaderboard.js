@@ -38,6 +38,12 @@ module.exports = {
           recruiterRole.members.forEach(member => {
             allRecruiterIds.add(member.id);
           });
+          
+          // Also check guild members directly who have the role (in case they can't access channel)
+          const guildMembersWithRole = interaction.guild.members.cache.filter(member => member.roles.cache.has(recruiterRoleId));
+          guildMembersWithRole.forEach(member => {
+            allRecruiterIds.add(member.id);
+          });
         }
         
         for (const roleId of staffRoleIds) {
@@ -130,6 +136,12 @@ module.exports = {
         const recruiterRole = interaction.guild.roles.cache.get(recruiterRoleId);
         if (recruiterRole) {
           recruiterRole.members.forEach(member => {
+            allRecruiterIds.add(member.id);
+          });
+          
+          // Also check guild members directly who have the role (in case they can't access channel)
+          const guildMembersWithRole = interaction.guild.members.cache.filter(member => member.roles.cache.has(recruiterRoleId));
+          guildMembersWithRole.forEach(member => {
             allRecruiterIds.add(member.id);
           });
         }

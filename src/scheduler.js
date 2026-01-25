@@ -117,6 +117,16 @@ async function recomputeLeaderboards(db, guild) {
         console.log(`  - Adding regional recruiter: ${member.user.tag} (${member.id})`);
         allRecruiterIds.add(member.id);
       });
+      
+      // Also check guild members directly who have the role (in case they can't access channel)
+      const guildMembersWithRole = guild.members.cache.filter(member => member.roles.cache.has(recruiterRoleId));
+      console.log(`Found ${guildMembersWithRole.size} total guild members with ${rg.key} recruiter role`);
+      guildMembersWithRole.forEach(member => {
+        if (!allRecruiterIds.has(member.id)) {
+          console.log(`  - Adding guild member with role: ${member.user.tag} (${member.id})`);
+          allRecruiterIds.add(member.id);
+        }
+      });
     } else {
       console.log(`No regional recruiter role found for ${rg.key}`);
     }
