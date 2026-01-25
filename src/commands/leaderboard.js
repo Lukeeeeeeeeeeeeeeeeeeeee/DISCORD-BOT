@@ -9,7 +9,7 @@ module.exports = {
     if (sub === 'show') {
       const scheduler = require('../scheduler');
       const region = interaction.options.getString('region');
-      const since = Date.now() - (7 * 24 * 60 * 60 * 1000);
+      const since = (typeof scheduler.getWeekStartUtcTs === 'function') ? scheduler.getWeekStartUtcTs() : (Date.now() - (7 * 24 * 60 * 60 * 1000));
       if (region) {
         if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.', flags: 64 });
         
@@ -98,7 +98,7 @@ module.exports = {
           const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
           const roleBase = getBaseRequirement(staffMember);
           
-          const minReq = calculateMinRecruitsFixed({
+          const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
             roleBase,
             role: staffMember ? staffMember.roles.cache.first()?.id : null,
             recruits7d: stats7d.recruits7d,
@@ -214,7 +214,7 @@ module.exports = {
         const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
         const roleBase = getBaseRequirement(staffMember);
         
-        const minReq = calculateMinRecruitsFixed({
+        const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
           roleBase,
           role: staffMember ? staffMember.roles.cache.first()?.id : null,
           recruits7d: stats7d.recruits7d,

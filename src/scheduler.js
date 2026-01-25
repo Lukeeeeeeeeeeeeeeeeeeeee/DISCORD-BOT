@@ -2,7 +2,15 @@ const cron = require('node-cron');
 const dayjs = require('dayjs');
 const { MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
-const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement } = require('./lib/recruiting-system');
+const { calculate7DayStats, getPreviousMinReq, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('./lib/recruiting-system');
+
+function getWeekStartUtcTs(now = new Date()) {
+  const day = now.getUTCDay();
+  const diffToMonday = (day + 6) % 7;
+  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
+  return weekStart.getTime();
+}
 
 async function computeStats(db, region, since=0) {
   // since: timestamp in ms. If zero, consider all-time; otherwise limit to recruits.created_at >= since
@@ -22,8 +30,7 @@ async function computeStats(db, region, since=0) {
 }
 
 async function applyFlags(db, guild) {
-  // use last 7 days as the weekly window
-  const sinceWindow = Date.now() - (7*24*60*60*1000);
+  const sinceWindow = getWeekStartUtcTs();
   for (const region of ['EU','NA','AS']) {
     const rows = await computeStats(db, region, sinceWindow);
     if (!rows.length) continue;
@@ -79,7 +86,7 @@ function formatLeaderboardMessage(rows, regionLabel) {
 async function recomputeLeaderboards(db, guild) {
   // For each of the region channels, update a single message with top recruiters
   const regions = [{key:'EU', channel: CHANNELS.INVITES_EU},{key:'NA', channel: CHANNELS.INVITES_NA},{key:'AS', channel: CHANNELS.INVITES_AS}];
-  const since = Date.now() - (7*24*60*60*1000);
+  const since = getWeekStartUtcTs();
   const { upsertLeaderboardMessage } = require('./lib/messages');
   
   // Ensure member cache is populated so role.members is accurate
@@ -198,8 +205,7 @@ async function recomputeLeaderboards(db, guild) {
       const staffMember = await guild.members.fetch(r.recruiter_id).catch(() => null);
       const roleBase = getBaseRequirement(staffMember);
       
-      // Calculate min req using new system
-      const minReq = calculateMinRecruitsFixed({
+      const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
         roleBase,
         role: staffMember ? staffMember.roles.cache.first()?.id : null,
         recruits7d,
@@ -325,7 +331,7 @@ function start(client, db) {
       timezone: 'UTC'
     });
 
-    // Cron: Monday at 00:05 UTC - Weekly MinReq and stats reset (5 minutes after recalculation)
+    // Cron: Monday at 00:05 UTC - Weekly MinReq and stats snapshot (5 minutes after recalculation)
     cron.schedule('5 0 * * 1', async () => {
       console.log('Starting weekly MinReq and stats reset...');
       try {
@@ -356,7 +362,16 @@ function start(client, db) {
           });
           
           // Store the final MinReq for this week
-          await storeWeeklyCalculation(db, recruiter.id, finalMinReq, currentStats.recruits7d, currentStats.retention);
+          await storeWeeklyCalculation(db, {
+            recruiterId: recruiter.id,
+            recruits7d: currentStats.recruits7d,
+            activityRate: currentStats.activityRate,
+            retention: currentStats.retention,
+            warnings: 0,
+            previousMinReq,
+            calculatedMinReq: finalMinReq,
+            roleBase
+          });
           
           console.log(`Stored weekly calculation for ${recruiter.id}: MinReq=${finalMinReq}, Recruits=${currentStats.recruits7d}`);
         }
@@ -454,6 +469,7 @@ function start(client, db) {
 }
 
 module.exports = {
+  getWeekStartUtcTs,
   start,
   applyFlags,
   recomputeLeaderboards,

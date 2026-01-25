@@ -7,47 +7,48 @@ module.exports = {
   data: { name: 'recruit' },
   async execute(interaction) {
     try {
+      await interaction.deferReply({ flags: 64 });
       const member = interaction.options.getUser('member');
       const region = interaction.options.getString('region');
       const ign = interaction.options.getString('ign');
 
       // Validate inputs
       if (!member || !region || !ign) {
-        return interaction.reply({ content: 'Missing required parameters. Please provide member, region, and ign.' });
+        return interaction.editReply({ content: 'Missing required parameters. Please provide member, region, and ign.' });
       }
 
       // Check if user has permission to recruit (basic check)
       const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       if (!guildMember) {
-        return interaction.reply({ content: 'Unable to verify your guild membership.' });
+        return interaction.editReply({ content: 'Unable to verify your guild membership.' });
       }
 
       // Check if user has required role to recruit (you can customize this)
       const ROLE_IDS = require('../constants').ROLE_IDS;
       if (!guildMember.roles.cache.has(ROLE_IDS.ROOKIE) && !guildMember.roles.cache.has(ROLE_IDS.VIP) && !guildMember.roles.cache.has(ROLE_IDS.MVP) && !guildMember.roles.cache.has(ROLE_IDS.CUSTOM) && !guildMember.permissions.has('Administrator')) {
-        return interaction.reply({ content: 'You do not have permission to recruit members. You need at least Rookie role or higher.' });
+        return interaction.editReply({ content: 'You do not have permission to recruit members. You need at least Rookie role or higher.' });
       }
 
       const recruitedGuildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-      if (!recruitedGuildMember) return interaction.reply({ content: 'Member not found in this guild.' });
+      if (!recruitedGuildMember) return interaction.editReply({ content: 'Member not found in this guild.' });
 
       // checks
-      if (recruitedGuildMember.user.bot) return interaction.reply({ content: "Cannot recruit bots." });
+      if (recruitedGuildMember.user.bot) return interaction.editReply({ content: "Cannot recruit bots." });
 
       const joinedAt = recruitedGuildMember.joinedAt;
       const now = new Date();
       const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-      if (minutesSinceJoin > 120) return interaction.reply({ content: 'Cannot give roles to someone who joined more than 2 hours ago.' });
+      if (minutesSinceJoin > 120) return interaction.editReply({ content: 'Cannot give roles to someone who joined more than 2 hours ago.' });
 
       const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000*60*60*24);
-      if (accountAgeDays < (30*6)) return interaction.reply({ content: 'Account must be at least 6 months old.' });
+      if (accountAgeDays < (30*6)) return interaction.editReply({ content: 'Account must be at least 6 months old.' });
 
       // already verified = has rookie
-      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return interaction.reply({ content: 'Member is already verified.' });
+      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return interaction.editReply({ content: 'Member is already verified.' });
 
       // check if recruited already
       const exist = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', member.id);
-      if (exist) return interaction.reply({ content: 'That member has already been recruited previously.' });
+      if (exist) return interaction.editReply({ content: 'That member has already been recruited previously.' });
 
       // assign onboarding role balancing
       const onboardingRoles = ROLE_IDS.ONBOARDING;
@@ -123,9 +124,11 @@ module.exports = {
         const { CHANNELS } = require('../constants');
         const channelOverall = interaction.guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
         const channelRegion = interaction.guild.channels.cache.get(region === 'EU' ? CHANNELS.INVITES_EU : region === 'NA' ? CHANNELS.INVITES_NA : CHANNELS.INVITES_AS);
-        const central = interaction.guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
-        // Do not post a per-recruit message in leaderboard channels to avoid creating new messages.
-        // Leaderboard messages are persistent and will be updated by recomputing leaderboards.
+        const { makeRecruitEmbed } = require('../lib/messages');
+        const embed = makeRecruitEmbed(interaction.user.id, member.id, region, ign, process.env.DEFAULT_LANG || 'en', { points, recruiterRole });
+        if (channelOverall) channelOverall.send({ embeds: [embed] }).catch(() => {});
+        if (channelRegion) channelRegion.send({ embeds: [embed] }).catch(() => {});
+
         try {
           const scheduler = require('../scheduler');
           await scheduler.recomputeLeaderboards(db, interaction.guild);
@@ -133,29 +136,32 @@ module.exports = {
           console.error('Failed updating leaderboards:', e);
         }
 
-        await interaction.reply({ content: `Successfully recruited ${member.tag} as ${region}. Awarded **${points}** points.`, flags: 64 });
+        return interaction.editReply({ content: `Successfully recruited ${member.tag} as ${region}. Awarded **${points}** points.` });
       } catch (err) {
         console.error('Recruit command error:', err);
-        
+
         // Handle specific errors
         if (err && err.message && err.message.includes('UNIQUE constraint failed')) {
-          return interaction.reply({ content: 'That member has already been recruited before and cannot be recruited again.', flags: 64 });
+          return interaction.editReply({ content: 'That member has already been recruited before and cannot be recruited again.' });
         }
-        
+
         if (err && err.message && err.message.includes('Missing Permissions')) {
-          return interaction.reply({ content: 'Missing permissions to assign roles. Please check bot permissions.', flags: 64 });
+          return interaction.editReply({ content: 'Missing permissions to assign roles. Please check bot permissions.' });
         }
-        
+
         if (err && err.message && err.message.includes('Unknown User')) {
-          return interaction.reply({ content: 'Unable to find one of the users mentioned.', flags: 64 });
+          return interaction.editReply({ content: 'Unable to find one of the users mentioned.' });
         }
-        
+
         // Generic error
-        return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.', flags: 64 });
+        return interaction.editReply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
       }
     } catch (err) {
       console.error('Recruit command error:', err);
-      return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
+      if (interaction.deferred || interaction.replied) {
+        return interaction.editReply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
+      }
+      return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.', flags: 64 });
     }
   }
 };

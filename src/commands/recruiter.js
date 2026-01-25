@@ -104,8 +104,7 @@ module.exports = {
       // Check if new staff (first 2 recalcs) - for now, default to false
       const newStaffCheck = false; // Fixed: was calling non-existent function
       
-      // Calculate min recruits using new system
-      const minReq = calculateMinRecruitsFixed({
+      const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
         roleBase,
         role: targetMember ? targetMember.roles.cache.first()?.id : null,
         recruits7d: stats7d.recruits7d,
@@ -148,7 +147,7 @@ module.exports = {
       // Additional info footnote
       embed.setFooter({ text: `7-Day Retention: ${Math.round(stats7d.retention * 100)}% • Last recruit: ${lastTs ? new Date(lastTs).toUTCString() : 'Never'}` });
 
-      return interaction.reply({ embeds: [embed], ephemeral: false });
+      return interaction.reply({ embeds: [embed], flags: 64 });
     }
 
     if (sub === 'buy') {
