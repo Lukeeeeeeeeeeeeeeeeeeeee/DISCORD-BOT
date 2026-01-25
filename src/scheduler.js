@@ -301,6 +301,19 @@ function start(client, db) {
           // Store current week's MinReq before reset
           const currentStats = await calculate7DayStats(db, recruiter.id);
           const previousMinReq = await getPreviousMinReq(db, recruiter.id);
+
+          // Get active warnings count
+          const warnings = await db.get(
+            'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+            recruiter.id, Date.now()
+          );
+          const activeWarnings = warnings ? warnings.c : 0;
+
+          // Check for active absence
+          const absence = await db.get(
+            'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+            recruiter.id
+          );
           
           // Get staff member for role calculation
           const guild = client.guilds.cache.get(process.env.GUILD_ID);
@@ -314,9 +327,9 @@ function start(client, db) {
             recruits7d: currentStats.recruits7d,
             activityRate: currentStats.activityRate,
             retention: currentStats.retention,
-            warnings: 0, // Use current warnings from database
+            warnings: activeWarnings,
             previousMinReq,
-            absent: false, // Check absence
+            absent: !!absence,
             isNewStaff: false
           });
           
@@ -326,7 +339,7 @@ function start(client, db) {
             recruits7d: currentStats.recruits7d,
             activityRate: currentStats.activityRate,
             retention: currentStats.retention,
-            warnings: 0,
+            warnings: activeWarnings,
             previousMinReq,
             calculatedMinReq: finalMinReq,
             roleBase

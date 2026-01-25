@@ -101,8 +101,8 @@ function calculateMinRecruitsFixed({
   
   // Check timing: only allow changes before Thursday, lock after until Monday
   const now = new Date();
-  const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, ..., 4 = Thursday, ..., 6 = Saturday
-  const hourOfDay = now.getHours();
+  const dayOfWeek = now.getUTCDay(); // 0 = Sunday, 1 = Monday, ..., 4 = Thursday, ..., 6 = Saturday
+  const hourOfDay = now.getUTCHours();
   const isBeforeThursday = dayOfWeek < 4; // Before Thursday
   const isThursdayOrLater = dayOfWeek >= 4; // Thursday or later
   const isMondayReset = dayOfWeek === 1 && hourOfDay < 1; // Monday before 1 AM

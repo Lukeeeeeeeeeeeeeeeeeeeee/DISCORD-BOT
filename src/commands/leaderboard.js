@@ -12,6 +12,12 @@ module.exports = {
       const since = (typeof scheduler.getWeekStartUtcTs === 'function') ? scheduler.getWeekStartUtcTs() : (Date.now() - (7 * 24 * 60 * 60 * 1000));
       if (region) {
         if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.', flags: 64 });
+
+        try {
+          await interaction.guild.members.fetch();
+        } catch (e) {
+          // best-effort
+        }
         
         // Get all recruiters for this region using the same logic as scheduler
         const { RECRUITER_ROLE_IDS, ROLE_IDS } = require('../constants');
@@ -45,17 +51,26 @@ module.exports = {
             allRecruiterIds.add(member.id);
           });
         }
-        
-        for (const roleId of staffRoleIds) {
-          const staffRole = interaction.guild.roles.cache.get(roleId);
-          if (staffRole) {
-            staffRole.members.forEach(member => {
+
+        if (region === 'EU') {
+          const extraRoleIds = [ROLE_IDS.RECRUITER, ROLE_IDS.TRIAL_RECRUITER, ...staffRoleIds];
+          for (const roleId of extraRoleIds) {
+            const role = interaction.guild.roles.cache.get(roleId);
+            if (!role) continue;
+            role.members.forEach(member => {
               allRecruiterIds.add(member.id);
             });
           }
         }
 
         const recruiterMembers = Array.from(allRecruiterIds);
+
+        if (recruiterMembers.length === 0) {
+          const { makeLeaderboardEmbed } = require('../lib/messages');
+          const lang = interaction.locale || 'en';
+          const leaderboardData = makeLeaderboardEmbed([], region, lang);
+          return interaction.reply({ content: leaderboardData.content, ephemeral: false });
+        }
         
         // Get recruit data for all recruiters
         const placeholders = recruiterMembers.map(() => '?').join(',');
