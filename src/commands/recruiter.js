@@ -9,8 +9,7 @@ const {
   storeWeeklyCalculation,
   calculateMinRecruitsFixed,
   getBaseRequirement,
-  hasModPlusPermissions,
-  isNewStaff
+  hasModPlusPermissions
 } = require('../lib/recruiting-system');
 
 module.exports = {
@@ -102,8 +101,8 @@ module.exports = {
       const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       const roleBase = getBaseRequirement(targetMember);
       
-      // Check if new staff (first 2 recalcs)
-      const newStaffCheck = await isNewStaff(db, member.id);
+      // Check if new staff (first 2 recalcs) - for now, default to false
+      const newStaffCheck = false;
       
       // Calculate min recruits using new system
       const minReq = calculateMinRecruitsFixed({
