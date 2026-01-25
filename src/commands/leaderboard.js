@@ -71,7 +71,7 @@ module.exports = {
         `, ...recruiterMembers, region, since);
 
         // Get 7-day stats and minReq for each recruiter
-        const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
+        const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
         const rows = [];
         
         for (const r of rowsBase) {
@@ -91,7 +91,6 @@ module.exports = {
           
           const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
           const roleBase = getBaseRequirement(staffMember);
-          const newStaffCheck = await isNewStaff(db, r.recruiter_id);
           
           const minReq = calculateMinRecruitsFixed({
             roleBase,
@@ -102,7 +101,7 @@ module.exports = {
             warnings: activeWarnings,
             previousMinReq,
             absent: !!absence,
-            isNewStaff: newStaffCheck
+            isNewStaff: false // Default to false for now
           });
 
           rows.push({
@@ -182,7 +181,7 @@ module.exports = {
       `, ...recruiterMembers, since);
 
       // Get 7-day stats and minReq for global
-      const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
+      const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
       const rows = [];
       
       for (const r of rowsBase) {
@@ -202,7 +201,6 @@ module.exports = {
         
         const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
         const roleBase = getBaseRequirement(staffMember);
-        const newStaffCheck = await isNewStaff(db, r.recruiter_id);
         
         const minReq = calculateMinRecruitsFixed({
           roleBase,
@@ -213,7 +211,7 @@ module.exports = {
           warnings: activeWarnings,
           previousMinReq,
           absent: !!absence,
-          isNewStaff: newStaffCheck
+          isNewStaff: false // Default to false for now
         });
 
         rows.push({

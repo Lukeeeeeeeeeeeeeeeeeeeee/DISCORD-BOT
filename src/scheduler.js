@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const dayjs = require('dayjs');
 const { MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
-const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
+const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement } = require('./lib/recruiting-system');
 
 async function computeStats(db, region, since=0) {
   // since: timestamp in ms. If zero, consider all-time; otherwise limit to recruits.created_at >= since
@@ -179,9 +179,6 @@ async function recomputeLeaderboards(db, guild) {
       const staffMember = await guild.members.fetch(r.recruiter_id).catch(() => null);
       const roleBase = getBaseRequirement(staffMember);
       
-      // Check if new staff
-      const newStaffCheck = await isNewStaff(db, r.recruiter_id);
-      
       // Calculate min req using new system
       const minReq = calculateMinRecruitsFixed({
         roleBase,
@@ -192,7 +189,7 @@ async function recomputeLeaderboards(db, guild) {
         warnings: activeWarnings,
         previousMinReq,
         absent: !!absence,
-        isNewStaff: newStaffCheck
+        isNewStaff: false // Default to false for now
       });
 
       rows.push({
