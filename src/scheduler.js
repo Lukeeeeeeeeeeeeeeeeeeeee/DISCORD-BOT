@@ -114,6 +114,9 @@ async function recomputeLeaderboards(db, guild) {
     console.log(`Processing region ${rg.key}...`);
     console.log(`Channel ID for ${rg.key}: ${rg.channel}`);
     
+    // Resolve central leaderboard channel once per region loop iteration
+    const central = guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
+
     // Region membership rules:
     // - NA/AS: only members with that regional recruiter role
     // - EU: members with EU recruiter role OR general recruiter/trial recruiter OR staff (default region)
@@ -135,145 +138,101 @@ async function recomputeLeaderboards(db, guild) {
     }
 
     console.log(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
-    
+
+    const { makeLeaderboardEmbed } = require('./lib/messages');
+    const lang = process.env.DEFAULT_LANG || 'en';
+    let leaderboardData;
+
     if (allRecruiterIds.size === 0) {
       console.log(`No recruiters found for region ${rg.key}`);
-      
-      // Still post a "No recruiters found" message to empty channels
-      const ch = guild.channels.cache.get(rg.channel);
-      if (ch) {
-        console.log(`Posting 'No recruiters found' message to ${rg.key} channel...`);
-        try {
-          const { makeLeaderboardEmbed } = require('./lib/messages');
-          const lang = process.env.DEFAULT_LANG || 'en';
-          const leaderboardData = makeLeaderboardEmbed([], rg.key, lang); // Empty array = no recruiters
-          
-          await upsertLeaderboardMessage(db, ch, rg.key, leaderboardData.content, null).catch((err) => {
-            console.error(`Failed to post 'no recruiters' message for ${rg.key}:`, err);
-          });
-          
-          console.log(`Successfully posted 'no recruiters' message for ${rg.key}`);
-        } catch (err) {
-          console.error(`Failed to create 'no recruiters' message for ${rg.key}:`, err);
-        }
-      }
-      continue;
+      leaderboardData = makeLeaderboardEmbed([], rg.key, lang);
     }
     
-    const recruiterMembers = Array.from(allRecruiterIds);
-    
-    // Build query to get all recruiters with their counts
-    const placeholders = recruiterMembers.map(() => '?').join(',');
-    const unionSelects = recruiterMembers.map(() => 'SELECT ? AS id').join(' UNION ALL ');
-    const rowsBase = await db.all(`
-      SELECT 
-        r.id AS recruiter_id, 
-        COALESCE(c.cnt, 0) AS cnt, 
-        COALESCE(db_rec.points, 0) AS points 
-      FROM (${unionSelects}) r
-      LEFT JOIN (
-        SELECT recruiter_id, COUNT(*) as cnt 
-        FROM recruits 
-        WHERE region = ? AND valid = 1 AND created_at >= ? 
-        GROUP BY recruiter_id
-      ) c ON c.recruiter_id = r.id 
-      LEFT JOIN recruiters db_rec ON db_rec.id = r.id
-      ORDER BY cnt DESC, points DESC
-    `, ...recruiterMembers, rg.key, since);
-    
-    const rows = [];
-    for (const r of rowsBase) {
-      // Region-specific counts: rowsBase.cnt is already last-7-days for this region.
-      const recruits7d = r.cnt || 0;
-      const retention = recruits7d > 0 ? 1 : 0;
-      const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
-      
-      // Check for active absence
-      const absence = await db.get(
-        'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
-        r.recruiter_id
-      );
-      
-      // Get active warnings count
-      const warnings = await db.get(
-        'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-        r.recruiter_id, Date.now()
-      );
-      const activeWarnings = warnings ? warnings.c : 0;
-      
-      // Get staff member for role calculation
-      const staffMember = await guild.members.fetch(r.recruiter_id).catch(() => null);
-      const roleBase = getBaseRequirement(staffMember);
-      
-      const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
-        roleBase,
-        role: staffMember ? staffMember.roles.cache.first()?.id : null,
-        recruits7d,
-        activityRate: recruits7d,
-        retention,
-        warnings: activeWarnings,
-        previousMinReq,
-        absent: !!absence,
-        isNewStaff: false // Default to false for now
-      });
+    let rows = [];
+    if (!leaderboardData) {
+      const recruiterMembers = Array.from(allRecruiterIds);
+      const unionSelects = recruiterMembers.map(() => 'SELECT ? AS id').join(' UNION ALL ');
+      const rowsBase = await db.all(`
+        SELECT 
+          r.id AS recruiter_id, 
+          COALESCE(c.cnt, 0) AS cnt, 
+          COALESCE(db_rec.points, 0) AS points 
+        FROM (${unionSelects}) r
+        LEFT JOIN (
+          SELECT recruiter_id, COUNT(*) as cnt 
+          FROM recruits 
+          WHERE region = ? AND valid = 1 AND created_at >= ? 
+          GROUP BY recruiter_id
+        ) c ON c.recruiter_id = r.id 
+        LEFT JOIN recruiters db_rec ON db_rec.id = r.id
+        ORDER BY cnt DESC, points DESC
+      `, ...recruiterMembers, rg.key, since);
 
-      rows.push({
-        ...r,
-        recruits7d,
-        retention,
-        minReq,
-        absence: !!absence
-      });
+      for (const r of rowsBase) {
+        const recruits7d = r.cnt || 0;
+        const retention = recruits7d > 0 ? 1 : 0;
+        const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
+
+        const absence = await db.get(
+          'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+          r.recruiter_id
+        );
+
+        const warnings = await db.get(
+          'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+          r.recruiter_id, Date.now()
+        );
+        const activeWarnings = warnings ? warnings.c : 0;
+
+        const staffMember = await guild.members.fetch(r.recruiter_id).catch(() => null);
+        const roleBase = getBaseRequirement(staffMember);
+
+        const minReq = previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
+          roleBase,
+          role: staffMember ? staffMember.roles.cache.first()?.id : null,
+          recruits7d,
+          activityRate: recruits7d,
+          retention,
+          warnings: activeWarnings,
+          previousMinReq,
+          absent: !!absence,
+          isNewStaff: false // Default to false for now
+        });
+
+        rows.push({
+          ...r,
+          recruits7d,
+          retention,
+          minReq,
+          absence: !!absence
+        });
+      }
+
+      leaderboardData = makeLeaderboardEmbed(rows, rg.key, lang);
+      console.log(`Generated leaderboard for ${rg.key} with ${rows.length} entries`);
+      console.log(`Content preview: ${leaderboardData.content.substring(0, 200)}...`);
     }
 
     const ch = guild.channels.cache.get(rg.channel);
     console.log(`Looking for channel ${rg.channel} for ${rg.key}...`);
     console.log(`Channel found: ${!!ch}`);
+
     if (ch) {
-      console.log(`Channel name: ${ch.name}`);
-      console.log(`Channel type: ${ch.type}`);
-    }
-    
-    if (!ch) {
-      console.log(`Channel not found for ${rg.key}: ${rg.channel}`);
-      continue;
-    }
-    
-    console.log(`Updating leaderboard for ${rg.key} in channel ${ch.name}...`);
-    
-    try {
-      // Update region channel message via helper using plain text
-      const { makeLeaderboardEmbed } = require('./lib/messages');
-      const lang = process.env.DEFAULT_LANG || 'en';
-      const leaderboardData = makeLeaderboardEmbed(rows, rg.key, lang);
-      
-      console.log(`Generated leaderboard for ${rg.key} with ${rows.length} entries`);
-      console.log(`Content preview: ${leaderboardData.content.substring(0, 200)}...`);
-      
+      console.log(`Updating leaderboard for ${rg.key} in channel ${ch.name}...`);
       await upsertLeaderboardMessage(db, ch, rg.key, leaderboardData.content, null).catch((err) => {
         console.error(`Failed to upsert message for ${rg.key}:`, err);
       });
+    } else {
+      console.log(`Channel not found for ${rg.key}: ${rg.channel} (skipping regional post)`);
+    }
 
-      console.log(`Successfully updated leaderboard for ${rg.key}`);
-
-      // Cross-post / update in central channel
-      try {
-        const { CHANNELS } = require('./constants');
-        const central = guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
-        if (central) {
-          console.log(`Cross-posting to central leaderboard...`);
-          await upsertLeaderboardMessage(db, central, rg.key, leaderboardData.content, null).catch((err) => {
-            console.error(`Failed to cross-post to central leaderboard:`, err);
-          });
-          console.log(`Successfully cross-posted to central leaderboard`);
-        } else {
-          console.log(`Central leaderboard channel not found: ${CHANNELS.CENTRAL_LEADERBOARD}`);
-        }
-      } catch (e) {
-        console.error('Error in cross-post:', e);
-      }
-    } catch (err) {
-      console.error('Leaderboard update failed for', rg.key, err);
+    if (central) {
+      console.log(`Cross-posting to central leaderboard for ${rg.key}...`);
+      await upsertLeaderboardMessage(db, central, rg.key, leaderboardData.content, null).catch((err) => {
+        console.error(`Failed to cross-post to central leaderboard for ${rg.key}:`, err);
+      });
+    } else {
+      console.log(`Central leaderboard channel not found: ${CHANNELS.CENTRAL_LEADERBOARD}`);
     }
   }
 }
