@@ -101,16 +101,12 @@ async function recomputeLeaderboards(db, guild) {
       ROLE_IDS.CHIEF_OF_WAR,
       ROLE_IDS.CHIEF_OF_COMMUNITY,
       ROLE_IDS.CHIEF_OF_RECRUITMENT,
-      ROLE_IDS.CO_LEADER,
-      ROLE_IDS.LEADER,
-      ROLE_IDS.HIGH_STAFF,
-      ROLE_IDS.STAFF
-    ];
+    ]; 
 
-    // Collect all potential recruiters
+    // Collect all potential recruiters - ONLY regional recruiters for this region
     const allRecruiterIds = new Set();
     
-    // Add regional recruiters
+    // Add regional recruiters ONLY - no staff members in regional leaderboards
     if (recruiterRole) {
       console.log(`Found ${recruiterRole.members.size} regional recruiters for ${rg.key}`);
       recruiterRole.members.forEach(member => {
@@ -129,17 +125,6 @@ async function recomputeLeaderboards(db, guild) {
       });
     } else {
       console.log(`No regional recruiter role found for ${rg.key}`);
-    }
-    
-    // Add staff members
-    for (const roleId of staffRoleIds) {
-      const staffRole = guild.roles.cache.get(roleId);
-      if (staffRole) {
-        console.log(`Found ${staffRole.members.size} staff members for role ${roleId}`);
-        staffRole.members.forEach(member => {
-          allRecruiterIds.add(member.id);
-        });
-      }
     }
 
     console.log(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
@@ -333,6 +318,51 @@ function start(client, db) {
         console.log('Weekly recruiter recalculation completed successfully');
       } catch (error) {
         console.error('Weekly recruiter recalculation failed:', error);
+      }
+    }, {
+      scheduled: true,
+      timezone: 'UTC'
+    });
+
+    // Cron: Monday at 00:05 UTC - Weekly MinReq and stats reset (5 minutes after recalculation)
+    cron.schedule('5 0 * * 1', async () => {
+      console.log('Starting weekly MinReq and stats reset...');
+      try {
+        // Reset weekly recruit counts and update MinReq for all recruiters
+        const recruiters = await db.all('SELECT id FROM recruiters');
+        
+        for (const recruiter of recruiters) {
+          // Store current week's MinReq before reset
+          const currentStats = await calculate7DayStats(db, recruiter.id);
+          const previousMinReq = await getPreviousMinReq(db, recruiter.id);
+          
+          // Get staff member for role calculation
+          const guild = client.guilds.cache.get(process.env.GUILD_ID);
+          const staffMember = await guild.members.fetch(recruiter.id).catch(() => null);
+          const roleBase = getBaseRequirement(staffMember);
+          
+          // Calculate final MinReq for the week
+          const finalMinReq = calculateMinRecruitsFixed({
+            roleBase,
+            role: staffMember ? staffMember.roles.cache.first()?.id : null,
+            recruits7d: currentStats.recruits7d,
+            activityRate: currentStats.activityRate,
+            retention: currentStats.retention,
+            warnings: 0, // Use current warnings from database
+            previousMinReq,
+            absent: false, // Check absence
+            isNewStaff: false
+          });
+          
+          // Store the final MinReq for this week
+          await storeWeeklyCalculation(db, recruiter.id, finalMinReq, currentStats.recruits7d, currentStats.retention);
+          
+          console.log(`Stored weekly calculation for ${recruiter.id}: MinReq=${finalMinReq}, Recruits=${currentStats.recruits7d}`);
+        }
+        
+        console.log('Weekly MinReq and stats reset completed successfully');
+      } catch (error) {
+        console.error('Weekly MinReq and stats reset failed:', error);
       }
     }, {
       scheduled: true,
