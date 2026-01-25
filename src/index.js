@@ -5,9 +5,13 @@ const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const db = require('./db_async');
 const scheduler = require('./scheduler');
 const { GUILD_ID } = require('./constants');
+const AntiNukeSystem = require('./lib/antinuke-system');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages] });
 client.commands = new Collection();
+
+// Create anti-nuke system instance
+const antiNukeSystem = new AntiNukeSystem();
 
 const commandsPath = path.join(__dirname, 'commands');
 const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
@@ -22,6 +26,13 @@ function onReady() {
   _readyCalled = true;
   console.log(`Logged in as ${client.user.tag}`);
   scheduler.start(client, db);
+
+  // Initialize anti-nuke system
+  antiNukeSystem.init(client).then(() => {
+    console.log('🛡️ Complete anti-nuke system with rollback ready!');
+  }).catch(err => {
+    console.error('❌ Failed to initialize anti-nuke:', err);
+  });
 
   // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
   const guildId = GUILD_ID;
