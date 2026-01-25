@@ -14,6 +14,17 @@ module.exports = {
       return interaction.reply({ content: 'MOD+ only.', flags: 64 });
     }
 
+    const targetUser = interaction.options.getUser('member') || interaction.user;
+    const targetId = targetUser.id;
+    const targetMention = `<@${targetId}>`;
+
+    if (interaction.guild) {
+      const targetMember = await interaction.guild.members.fetch(targetId).catch(() => null);
+      if (!targetMember) {
+        return interaction.reply({ content: 'That member is not in this server.', flags: 64 });
+      }
+    }
+
     const endDate = interaction.options.getString('date');
     
     // Validate ISO date format
@@ -41,26 +52,26 @@ module.exports = {
     try {
       const existingAbsence = await db.get(
         'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1',
-        interaction.user.id
+        targetId
       );
 
       if (existingAbsence) {
         // Update existing absence
         await db.run(
           'UPDATE absences SET end_date = ?, created_by = ? WHERE recruiter_id = ? AND active = 1',
-          endDate, interaction.user.id, interaction.user.id
+          endDate, interaction.user.id, targetId
         );
       } else {
         // Create new absence
         await db.run(
           'INSERT INTO absences (recruiter_id, start_date, end_date, created_at, created_by, active) VALUES (?, ?, ?, ?, ?, 1)',
-          interaction.user.id, today.toISOString().split('T')[0], endDate, Date.now(), interaction.user.id
+          targetId, today.toISOString().split('T')[0], endDate, Date.now(), interaction.user.id
         );
       }
 
       const embed = new EmbedBuilder()
         .setTitle('📅 Absence Set')
-        .setDescription(`Your recruiting requirements have been suspended until **${endDate}**`)
+        .setDescription(`${targetMention}'s recruiting requirements have been suspended until **${endDate}**`)
         .addFields(
           { name: 'Start Date', value: today.toISOString().split('T')[0], inline: true },
           { name: 'End Date', value: endDate, inline: true },

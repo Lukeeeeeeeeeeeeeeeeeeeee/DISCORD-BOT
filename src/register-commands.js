@@ -35,6 +35,7 @@ const commands = [
     .addUserOption(opt => opt.setName('member').setDescription('Member to revoke recruit status from').setRequired(true))
     .addStringOption(opt => opt.setName('reason').setDescription('Reason for revocation').setRequired(false)),
   new SlashCommandBuilder().setName('absent').setDescription('Set absence period for recruiting requirements (MOD+ only)')
+    .addUserOption(opt => opt.setName('member').setDescription('Member to set absence for (optional)').setRequired(false))
     .addStringOption(opt => opt.setName('date').setDescription('End date for absence (YYYY-MM-DD)').setRequired(true)),
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
     .addUserOption(opt=>opt.setName('member').setDescription('Member to check').setRequired(true)),
