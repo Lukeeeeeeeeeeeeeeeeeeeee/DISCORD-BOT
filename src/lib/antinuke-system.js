@@ -1,5 +1,5 @@
-const AntiNuke = require('./lib/antinuke');
-const AntiNukeRollback = require('./lib/antinuke-rollback');
+const AntiNuke = require('./antinuke');
+const AntiNukeRollback = require('./antinuke-rollback');
 
 class AntiNukeSystem {
   constructor() {
