@@ -15,13 +15,15 @@ async function createInviteTables() {
         expires_at INTEGER NOT NULL,
         used INTEGER DEFAULT 0,
         used_at INTEGER NULL,
-        used_by TEXT NULL,
-        INDEX idx_recruiter_id (recruiter_id),
-        INDEX idx_invite_code (invite_code),
-        INDEX idx_expires_at (expires_at),
-        INDEX idx_used (used)
+        used_by TEXT NULL
       )
     `);
+
+    // Create indexes separately
+    await db.run('CREATE INDEX IF NOT EXISTS idx_recruiter_id ON recruiter_invites (recruiter_id)');
+    await db.run('CREATE INDEX IF NOT EXISTS idx_invite_code ON recruiter_invites (invite_code)');
+    await db.run('CREATE INDEX IF NOT EXISTS idx_expires_at ON recruiter_invites (expires_at)');
+    await db.run('CREATE INDEX IF NOT EXISTS idx_used ON recruiter_invites (used)');
 
     console.log('✅ Recruiter invite tables created successfully');
     
