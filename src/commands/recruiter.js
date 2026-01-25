@@ -102,7 +102,7 @@ module.exports = {
       const roleBase = getBaseRequirement(targetMember);
       
       // Check if new staff (first 2 recalcs) - for now, default to false
-      const newStaffCheck = false;
+      const newStaffCheck = false; // Fixed: was calling non-existent function
       
       // Calculate min recruits using new system
       const minReq = calculateMinRecruitsFixed({
