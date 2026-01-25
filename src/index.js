@@ -7,7 +7,14 @@ const scheduler = require('./scheduler');
 const { GUILD_ID } = require('./constants');
 const AntiNukeSystem = require('./lib/antinuke-system');
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages] });
+const client = new Client({ intents: [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMembers,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.GuildModeration,
+  GatewayIntentBits.GuildWebhooks,
+  GatewayIntentBits.GuildInvites
+] });
 client.commands = new Collection();
 
 // Create anti-nuke system instance

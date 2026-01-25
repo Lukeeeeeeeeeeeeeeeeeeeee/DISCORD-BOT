@@ -35,139 +35,69 @@ class AntiNukeSystem {
 
   // Set up integration between anti-nuke and rollback
   setupIntegration() {
-    // Wrap anti-nuke actions with rollback tracking
-    const originalTrackAction = this.antiNuke.trackAction.bind(this.antiNuke);
-    
-    this.antiNuke.trackAction = (guildId, userId, actionType, details) => {
-      // Record pre-action state for rollback
+    // IMPORTANT:
+    // We only record rollback state for actions *performed by the anti-nuke system itself*.
+    // Tracking events (like a user banning/kicking/etc) should not be recorded for rollback,
+    // otherwise we end up storing corrupted/meaningless data.
+
+    const originalHandleRapidAction = this.antiNuke.handleRapidAction.bind(this.antiNuke);
+    this.antiNuke.handleRapidAction = async (guildId, userId, actionType, actions) => {
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
-      if (guild) {
-        this.rollback.recordPreActionState(guild, actionType, details);
+      const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
+
+      if (guild && member) {
+        this.rollback.recordPreActionState(guild, 'ban', member);
       }
 
-      // Execute original tracking
-      originalTrackAction(guildId, userId, actionType, details);
+      await originalHandleRapidAction(guildId, userId, actionType, actions);
 
-      // Record post-action state for rollback
-      if (guild) {
-        this.rollback.recordPostActionState(guild, actionType, details);
+      if (guild && member) {
+        this.rollback.recordPostActionState(guild, 'ban', member);
       }
     };
 
-    // Override ban handler to include rollback
-    const originalHandleBan = this.antiNuke.handleBan.bind(this.antiNuke);
-    this.antiNuke.handleBan = async (ban) => {
-      const guild = ban.guild;
-      const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'MEMBER_BAN_ADD' }).catch(() => null);
-      const executor = auditLogs?.entries.first()?.executor;
-      
-      if (!executor || executor.id === this.antiNuke.client.user.id) return;
+    const originalHandleBeastModeTrigger = this.antiNuke.handleBeastModeTrigger.bind(this.antiNuke);
+    this.antiNuke.handleBeastModeTrigger = async (guildId, userId, score) => {
+      const guild = this.antiNuke.client.guilds.cache.get(guildId);
+      const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
 
-      // Get target member before ban for rollback
-      const targetMember = await guild.members.fetch(ban.user.id).catch(() => null);
-      
-      // Record pre-action state
-      this.rollback.recordPreActionState(guild, 'ban', targetMember);
-      
-      // Execute original ban handling
-      await originalHandleBan(ban);
-      
-      // Record post-action state
-      this.rollback.recordPostActionState(guild, 'ban', targetMember);
+      if (guild && member) {
+        this.rollback.recordPreActionState(guild, 'ban', member);
+      }
+
+      await originalHandleBeastModeTrigger(guildId, userId, score);
+
+      if (guild && member) {
+        this.rollback.recordPostActionState(guild, 'ban', member);
+      }
     };
 
-    // Override kick handler to include rollback
-    const originalHandleKick = this.antiNuke.handleKick.bind(this.antiNuke);
-    this.antiNuke.handleKick = async (member) => {
-      const guild = member.guild;
-      const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'MEMBER_KICK' }).catch(() => null);
-      const executor = auditLogs?.entries.first()?.executor;
-      
-      if (!executor || executor.id === this.antiNuke.client.user.id) return;
-
-      // Record pre-action state
-      this.rollback.recordPreActionState(guild, 'kick', member);
-      
-      // Execute original kick handling
-      await originalHandleKick(member);
-      
-      // Record post-action state
-      this.rollback.recordPostActionState(guild, 'kick', member);
-    };
-
-    // Override channel delete handler to include rollback
-    const originalHandleChannelDelete = this.antiNuke.handleChannelDelete.bind(this.antiNuke);
-    this.antiNuke.handleChannelDelete = async (channel) => {
-      const guild = channel.guild;
-      const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'CHANNEL_DELETE' }).catch(() => null);
-      const executor = auditLogs?.entries.first()?.executor;
-      
-      if (!executor || executor.id === this.antiNuke.client.user.id) return;
-
-      // Record pre-action state
-      this.rollback.recordPreActionState(guild, 'channel_delete', channel);
-      
-      // Execute original channel delete handling
-      await originalHandleChannelDelete(channel);
-      
-      // Record post-action state
-      this.rollback.recordPostActionState(guild, 'channel_delete', channel);
-    };
-
-    // Override role delete handler to include rollback
-    const originalHandleRoleDelete = this.antiNuke.handleRoleDelete.bind(this.antiNuke);
-    this.antiNuke.handleRoleDelete = async (role) => {
-      const guild = role.guild;
-      const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'ROLE_DELETE' }).catch(() => null);
-      const executor = auditLogs?.entries.first()?.executor;
-      
-      if (!executor || executor.id === this.antiNuke.client.user.id) return;
-
-      // Record pre-action state
-      this.rollback.recordPreActionState(guild, 'role_delete', role);
-      
-      // Execute original role delete handling
-      await originalHandleRoleDelete(role);
-      
-      // Record post-action state
-      this.rollback.recordPostActionState(guild, 'role_delete', role);
-    };
-
-    // Override emergency mode handler to include rollback
     const originalHandleEmergencyMode = this.antiNuke.handleEmergencyMode.bind(this.antiNuke);
     this.antiNuke.handleEmergencyMode = async (guildId) => {
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
-      if (!guild) return;
+      if (guild) {
+        this.rollback.recordPreActionState(guild, 'emergency_lockdown', null);
+      }
 
-      // Record pre-action state
-      this.rollback.recordPreActionState(guild, 'emergency_lockdown', null);
-      
-      // Execute original emergency mode handling
       await originalHandleEmergencyMode(guildId);
-      
-      // Record post-action state
-      this.rollback.recordPostActionState(guild, 'emergency_lockdown', null);
+
+      if (guild) {
+        this.rollback.recordPostActionState(guild, 'emergency_lockdown', null);
+      }
     };
 
-    // Override bot addition handler to include rollback
-    const originalHandleMemberAdd = this.antiNuke.handleMemberAdd.bind(this.antiNuke);
-    this.antiNuke.handleMemberAdd = async (member) => {
-      if (!member.user.bot) return;
-      
-      const guild = member.guild;
-      const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'BOT_ADD' }).catch(() => null);
-      const executor = auditLogs?.entries.first()?.executor;
-      
-      if (!executor || executor.id === this.antiNuke.client.user.id) return;
+    const originalHandleMassBanLockdown = this.antiNuke.handleMassBanLockdown.bind(this.antiNuke);
+    this.antiNuke.handleMassBanLockdown = async (guildId) => {
+      const guild = this.antiNuke.client.guilds.cache.get(guildId);
+      if (guild) {
+        this.rollback.recordPreActionState(guild, 'role_permissions', null);
+      }
 
-      // Record pre-action state
-      this.rollback.recordPreActionState(guild, 'bot_add', member);
-      
-      // Execute original bot addition handling
-      await originalHandleMemberAdd(member);
-      
-      // Record post-action state
-      this.rollback.recordPostActionState(guild, 'bot_add', member);
+      await originalHandleMassBanLockdown(guildId);
+
+      if (guild) {
+        this.rollback.recordPostActionState(guild, 'role_permissions', null);
+      }
     };
 
     console.log('🔄 Anti-nuke rollback integration enabled');

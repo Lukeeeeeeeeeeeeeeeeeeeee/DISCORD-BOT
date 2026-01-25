@@ -72,6 +72,31 @@ class AntiNuke {
     ];
   }
 
+  async getRecentAuditExecutor(guild, type, targetId, maxAgeMs = 5000) {
+    const auditLogs = await guild.fetchAuditLogs({ limit: 6, type }).catch(() => null);
+    if (!auditLogs) return null;
+
+    const now = Date.now();
+    for (const entry of auditLogs.entries.values()) {
+      if (!entry || !entry.executor) continue;
+      const entryTargetId = entry.target?.id;
+      if (targetId && entryTargetId !== targetId) continue;
+      if (now - entry.createdTimestamp > maxAgeMs) continue;
+      return entry.executor;
+    }
+
+    return null;
+  }
+
+  async disableAllInvites(guild) {
+    const invites = await guild.invites.fetch().catch(() => null);
+    if (!invites) return;
+
+    for (const invite of invites.values()) {
+      await invite.delete('Anti-nuke: emergency mode invite lockdown').catch(() => {});
+    }
+  }
+
   // Initialize the anti-nuke system
   async init(client) {
     this.client = client;
@@ -306,8 +331,8 @@ class AntiNuke {
   // Handle ban events
   async handleBan(ban) {
     const guild = ban.guild;
-    const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'MEMBER_BAN_ADD' }).catch(() => null);
-    const executor = auditLogs?.entries.first()?.executor;
+
+    const executor = await this.getRecentAuditExecutor(guild, 'MEMBER_BAN_ADD', ban.user.id);
     
     if (!executor || executor.id === this.client.user.id) return;
     
@@ -319,9 +344,11 @@ class AntiNuke {
   // Handle kick events
   async handleKick(member) {
     const guild = member.guild;
-    const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'MEMBER_KICK' }).catch(() => null);
-    const executor = auditLogs?.entries.first()?.executor;
+
+    const executor = await this.getRecentAuditExecutor(guild, 'MEMBER_KICK', member.id);
     
+    // If there's no recent kick audit entry for this member, treat it as a normal leave
+    if (!executor) return;
     if (!executor || executor.id === this.client.user.id) return;
     
     this.trackAction(guild.id, executor.id, 'kick', { targetId: member.id });
@@ -330,8 +357,8 @@ class AntiNuke {
   // Handle channel deletion
   async handleChannelDelete(channel) {
     const guild = channel.guild;
-    const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'CHANNEL_DELETE' }).catch(() => null);
-    const executor = auditLogs?.entries.first()?.executor;
+
+    const executor = await this.getRecentAuditExecutor(guild, 'CHANNEL_DELETE', channel.id);
     
     if (!executor || executor.id === this.client.user.id) return;
     
@@ -344,8 +371,8 @@ class AntiNuke {
   // Handle role deletion
   async handleRoleDelete(role) {
     const guild = role.guild;
-    const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'ROLE_DELETE' }).catch(() => null);
-    const executor = auditLogs?.entries.first()?.executor;
+
+    const executor = await this.getRecentAuditExecutor(guild, 'ROLE_DELETE', role.id);
     
     if (!executor || executor.id === this.client.user.id) return;
     
@@ -360,8 +387,8 @@ class AntiNuke {
     if (!member.user.bot) return;
     
     const guild = member.guild;
-    const auditLogs = await guild.fetchAuditLogs({ limit: 1, type: 'BOT_ADD' }).catch(() => null);
-    const executor = auditLogs?.entries.first()?.executor;
+
+    const executor = await this.getRecentAuditExecutor(guild, 'BOT_ADD', member.id);
     
     if (!executor || executor.id === this.client.user.id) return;
     
@@ -403,8 +430,8 @@ class AntiNuke {
     );
     
     if (recentWebhooks.length >= this.THRESHOLDS.webhookCreate.count) {
-      const auditLogs = await guild.fetchAuditLogs({ limit: 5, type: 'WEBHOOK_CREATE' }).catch(() => null);
-      const executor = auditLogs?.entries.first()?.executor;
+
+      const executor = await this.getRecentAuditExecutor(guild, 'WEBHOOK_CREATE', null, 15000);
       
       if (!executor || executor.id === this.client.user.id) return;
       
@@ -478,10 +505,13 @@ class AntiNuke {
       
       // Lock down @everyone
       const everyoneRole = guild.roles.everyone;
-      await everyoneRole.setPermissions([]);
+      await everyoneRole.setPermissions([
+        PermissionsBitField.Flags.ViewChannel,
+        PermissionsBitField.Flags.ReadMessageHistory
+      ]);
       
       // Disable all invites
-      await guild.disableInvites();
+      await this.disableAllInvites(guild);
       
       this.emergencyMode.set(guildId, true);
       
@@ -503,15 +533,13 @@ class AntiNuke {
 
   // Remove dangerous permissions
   async removeDangerousPermissions(guild, emergencyMode = false) {
-    const permissions = emergencyMode 
-      ? [PermissionsBitField.Flags.ViewChannel] // Only allow view channels in emergency
-      : new PermissionsBitField(); // Remove all permissions
-    
     const roles = guild.roles.cache.filter(role => !role.managed);
     
     for (const role of roles) {
       try {
-        await role.setPermissions(permissions);
+        const currentPerms = new PermissionsBitField(role.permissions.bitfield);
+        const newPerms = currentPerms.remove(this.DANGEROUS_PERMISSIONS);
+        await role.setPermissions(newPerms);
       } catch (error) {
         // Skip roles that can't be modified
       }
