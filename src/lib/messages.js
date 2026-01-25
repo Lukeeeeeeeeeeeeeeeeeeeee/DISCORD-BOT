@@ -59,7 +59,14 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
 function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   const { MIN_LEADERBOARD_ENTRIES, REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
-  const info = REGION_INFO[regionLabel] || { emoji: '', color: 0xFFD700, name: regionLabel };
+  
+  let info;
+  if (regionLabel === 'GLOBAL') {
+    info = { emoji: '🌍', color: 0xFFD700, name: 'Global' };
+  } else {
+    info = REGION_INFO[regionLabel] || { emoji: '', color: 0xFFD700, name: regionLabel };
+  }
+  
   const title = `# ${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`;
 
   if (!rows || rows.length === 0) {
