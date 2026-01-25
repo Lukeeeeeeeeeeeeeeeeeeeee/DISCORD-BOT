@@ -82,67 +82,53 @@ async function recomputeLeaderboards(db, guild) {
   const since = Date.now() - (7*24*60*60*1000);
   const { upsertLeaderboardMessage } = require('./lib/messages');
   
+  // Ensure member cache is populated so role.members is accurate
+  try {
+    await guild.members.fetch();
+  } catch (e) {
+    console.error('Failed to fetch guild members for leaderboard computation:', e);
+  }
+
+  const staffRoleIds = [
+    ROLE_IDS.HELPER,
+    ROLE_IDS.HELPER_PLUS,
+    ROLE_IDS.MOD,
+    ROLE_IDS.CHIEF,
+    ROLE_IDS.CHIEF_OF_WAR,
+    ROLE_IDS.CHIEF_OF_COMMUNITY,
+    ROLE_IDS.CHIEF_OF_RECRUITMENT,
+    ROLE_IDS.HIGH_STAFF,
+    ROLE_IDS.STAFF,
+    ROLE_IDS.CO_LEADER,
+    ROLE_IDS.LEADER
+  ];
+  
   for (const rg of regions) {
     console.log(`Processing region ${rg.key}...`);
     console.log(`Channel ID for ${rg.key}: ${rg.channel}`);
     
-    // Get ALL recruiters (staff roles + regional recruiter roles)
+    // Region membership rules:
+    // - NA/AS: only members with that regional recruiter role
+    // - EU: members with EU recruiter role OR general recruiter/trial recruiter OR staff (default region)
     const recruiterRoleId = RECRUITER_ROLE_IDS[rg.key];
     const recruiterRole = guild.roles.cache.get(recruiterRoleId);
     console.log(`Recruiter role ID for ${rg.key}: ${recruiterRoleId}`);
     console.log(`Recruiter role found: ${!!recruiterRole}`);
-    
-    // Also get all staff members who can recruit
-    const staffRoleIds = [
-      ROLE_IDS.HELPER,
-      ROLE_IDS.HELPER_PLUS,
-      ROLE_IDS.MOD,
-      ROLE_IDS.CHIEF,
-      ROLE_IDS.CHIEF_OF_WAR,
-      ROLE_IDS.CHIEF_OF_COMMUNITY,
-      ROLE_IDS.CHIEF_OF_RECRUITMENT,
-    ]; 
 
-    // Collect all potential recruiters - regional recruiters + staff members
     const allRecruiterIds = new Set();
-    
-    // Add regional recruiters
-    if (recruiterRole) {
-      console.log(`Found ${recruiterRole.members.size} regional recruiters for ${rg.key}`);
-      recruiterRole.members.forEach(member => {
-        console.log(`  - Adding regional recruiter: ${member.user.tag} (${member.id})`);
-        allRecruiterIds.add(member.id);
-      });
-      
-      // Also check guild members directly who have the role (in case they can't access channel)
-      const guildMembersWithRole = guild.members.cache.filter(member => member.roles.cache.has(recruiterRoleId));
-      console.log(`Found ${guildMembersWithRole.size} total guild members with ${rg.key} recruiter role`);
-      guildMembersWithRole.forEach(member => {
-        if (!allRecruiterIds.has(member.id)) {
-          console.log(`  - Adding guild member with role: ${member.user.tag} (${member.id})`);
-          allRecruiterIds.add(member.id);
-        }
-      });
-    } else {
-      console.log(`No regional recruiter role found for ${rg.key}`);
-    }
-    
-    // Add staff members (they can recruit for any region)
-    for (const roleId of staffRoleIds) {
-      const staffRole = guild.roles.cache.get(roleId);
-      if (staffRole) {
-        console.log(`Found ${staffRole.members.size} staff members for role ${roleId}`);
-        staffRole.members.forEach(member => {
-          if (!allRecruiterIds.has(member.id)) {
-            console.log(`  - Adding staff member: ${member.user.tag} (${member.id})`);
-            allRecruiterIds.add(member.id);
-          }
-        });
+    if (recruiterRole) recruiterRole.members.forEach(m => allRecruiterIds.add(m.id));
+
+    if (rg.key === 'EU') {
+      const extraRoleIds = [ROLE_IDS.RECRUITER, ROLE_IDS.TRIAL_RECRUITER, ...staffRoleIds];
+      for (const roleId of extraRoleIds) {
+        const role = guild.roles.cache.get(roleId);
+        if (!role) continue;
+        role.members.forEach(m => allRecruiterIds.add(m.id));
       }
     }
 
     console.log(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
-
+    
     if (allRecruiterIds.size === 0) {
       console.log(`No recruiters found for region ${rg.key}`);
       
@@ -190,8 +176,9 @@ async function recomputeLeaderboards(db, guild) {
     
     const rows = [];
     for (const r of rowsBase) {
-      // Get 7-day stats using new system
-      const stats7d = await calculate7DayStats(db, r.recruiter_id);
+      // Region-specific counts: rowsBase.cnt is already last-7-days for this region.
+      const recruits7d = r.cnt || 0;
+      const retention = recruits7d > 0 ? 1 : 0;
       const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
       
       // Check for active absence
@@ -215,9 +202,9 @@ async function recomputeLeaderboards(db, guild) {
       const minReq = calculateMinRecruitsFixed({
         roleBase,
         role: staffMember ? staffMember.roles.cache.first()?.id : null,
-        recruits7d: stats7d.recruits7d,
-        activityRate: stats7d.activityRate,
-        retention: stats7d.retention,
+        recruits7d,
+        activityRate: recruits7d,
+        retention,
         warnings: activeWarnings,
         previousMinReq,
         absent: !!absence,
@@ -226,8 +213,8 @@ async function recomputeLeaderboards(db, guild) {
 
       rows.push({
         ...r,
-        recruits7d: stats7d.recruits7d,
-        retention: stats7d.retention,
+        recruits7d,
+        retention,
         minReq,
         absence: !!absence
       });
