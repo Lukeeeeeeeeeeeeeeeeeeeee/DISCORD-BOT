@@ -64,8 +64,7 @@ function calculateMinRecruitsRequired({
 
 function calculateRecruitPoints({ recruiterRole = 'NONE', multiplierValue = 1.0 } = {}) {
   const base = 1; // Base 1 point for every recruit
-  const roleBonus = ECONOMY_CONFIG.ROLE_POINTS[recruiterRole] || 0;
-  const total = Math.floor((base + roleBonus) * (multiplierValue || 1.0));
+  const total = Math.floor(base * (multiplierValue || 1.0));
   return total;
 }
 
