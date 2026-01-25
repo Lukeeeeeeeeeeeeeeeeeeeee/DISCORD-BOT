@@ -388,6 +388,24 @@ function start(client, db) {
       timezone: 'UTC'
     });
 
+    // Hourly cleanup: expired invites
+    cron.schedule('0 * * * *', async () => {
+      try {
+        const inviteCommand = require('./commands/invite');
+        const inviteSystem = await inviteCommand.init();
+        
+        if (inviteSystem) {
+          await inviteSystem.cleanupExpiredInvites();
+          console.log('🧹 Hourly invite cleanup completed');
+        }
+      } catch (error) {
+        console.error('Hourly invite cleanup failed:', error);
+      }
+    }, {
+      scheduled: true,
+      timezone: 'UTC'
+    });
+
     // Monthly reset: 1st of month 00:00 UTC
     cron.schedule('0 0 1 * *', async () => {
       try {

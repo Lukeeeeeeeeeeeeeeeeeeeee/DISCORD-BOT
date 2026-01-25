@@ -34,6 +34,18 @@ function onReady() {
     console.error('❌ Failed to initialize anti-nuke:', err);
   });
 
+  // Initialize invite system
+  const { createInviteTables } = require('./lib/create-invite-tables');
+  const inviteCommand = require('./commands/invite');
+  
+  createInviteTables().then(() => {
+    return inviteCommand.init();
+  }).then(() => {
+    console.log('🔗 Invite system ready!');
+  }).catch(err => {
+    console.error('❌ Failed to initialize invite system:', err);
+  });
+
   // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
   const guildId = GUILD_ID;
   if (guildId) {
@@ -75,6 +87,30 @@ client.on('interactionCreate', async interaction => {
       // otherwise log
       console.error('Failed to send error response for interaction:', err2);
     }
+  }
+});
+
+// Track invite usage when members join
+client.on('guildMemberAdd', async (member) => {
+  try {
+    // Get invite system instance
+    const inviteCommand = require('./commands/invite');
+    const inviteSystem = await inviteCommand.init();
+    
+    if (!inviteSystem) return;
+
+    // Fetch guild invites to find which one was used
+    const invites = await member.guild.invites.fetch();
+    
+    // This is a simplified approach - in production you'd want to track invite counts before/after
+    // For now, we'll just log that a member joined
+    console.log(`👋 Member ${member.user.tag} joined the server`);
+    
+    // TODO: Implement proper invite tracking by comparing invite counts
+    // This would require storing invite counts and comparing them when members join
+    
+  } catch (error) {
+    console.error('Error tracking invite usage:', error);
   }
 });
 
