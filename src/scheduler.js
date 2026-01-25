@@ -103,10 +103,10 @@ async function recomputeLeaderboards(db, guild) {
       ROLE_IDS.CHIEF_OF_RECRUITMENT,
     ]; 
 
-    // Collect all potential recruiters - ONLY regional recruiters for this region
+    // Collect all potential recruiters - regional recruiters + staff members
     const allRecruiterIds = new Set();
     
-    // Add regional recruiters ONLY - no staff members in regional leaderboards
+    // Add regional recruiters
     if (recruiterRole) {
       console.log(`Found ${recruiterRole.members.size} regional recruiters for ${rg.key}`);
       recruiterRole.members.forEach(member => {
@@ -125,6 +125,20 @@ async function recomputeLeaderboards(db, guild) {
       });
     } else {
       console.log(`No regional recruiter role found for ${rg.key}`);
+    }
+    
+    // Add staff members (they can recruit for any region)
+    for (const roleId of staffRoleIds) {
+      const staffRole = guild.roles.cache.get(roleId);
+      if (staffRole) {
+        console.log(`Found ${staffRole.members.size} staff members for role ${roleId}`);
+        staffRole.members.forEach(member => {
+          if (!allRecruiterIds.has(member.id)) {
+            console.log(`  - Adding staff member: ${member.user.tag} (${member.id})`);
+            allRecruiterIds.add(member.id);
+          }
+        });
+      }
     }
 
     console.log(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
