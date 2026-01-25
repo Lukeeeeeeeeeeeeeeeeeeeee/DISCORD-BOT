@@ -133,25 +133,25 @@ module.exports = {
           console.error('Failed updating leaderboards:', e);
         }
 
-        await interaction.reply({ content: `Successfully recruited ${member.tag} as ${region}. Awarded **${points}** points.` });
+        await interaction.reply({ content: `Successfully recruited ${member.tag} as ${region}. Awarded **${points}** points.`, flags: 64 });
       } catch (err) {
         console.error('Recruit command error:', err);
         
         // Handle specific errors
         if (err && err.message && err.message.includes('UNIQUE constraint failed')) {
-          return interaction.reply({ content: 'That member has already been recruited before and cannot be recruited again.' });
+          return interaction.reply({ content: 'That member has already been recruited before and cannot be recruited again.', flags: 64 });
         }
         
         if (err && err.message && err.message.includes('Missing Permissions')) {
-          return interaction.reply({ content: 'Missing permissions to assign roles. Please check bot permissions.' });
+          return interaction.reply({ content: 'Missing permissions to assign roles. Please check bot permissions.', flags: 64 });
         }
         
         if (err && err.message && err.message.includes('Unknown User')) {
-          return interaction.reply({ content: 'Unable to find one of the users mentioned.' });
+          return interaction.reply({ content: 'Unable to find one of the users mentioned.', flags: 64 });
         }
         
         // Generic error
-        return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
+        return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.', flags: 64 });
       }
     } catch (err) {
       console.error('Recruit command error:', err);

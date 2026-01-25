@@ -11,7 +11,7 @@ module.exports = {
   async execute(interaction) {
     // Admin/staff only
     if (!hasAdminOrStaffPermissions(interaction.member)) {
-      return interaction.reply({ content: 'Admin/Staff only.' });
+      return interaction.reply({ content: 'Admin/Staff only.', flags: 64 });
     }
 
     const member = interaction.options.getUser('member');
@@ -20,14 +20,14 @@ module.exports = {
     // Validate member exists
     const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
     if (!targetMember) {
-      return interaction.reply({ content: 'Member not found in this guild.' });
+      return interaction.reply({ content: 'Member not found in this guild.', flags: 64 });
     }
 
     try {
       // Get the recruit record to find region and recruiter info
       const recruit = await db.get('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1', member.id);
       if (!recruit) {
-        return interaction.reply({ content: 'No valid recruit record found for this member.' });
+        return interaction.reply({ content: 'No valid recruit record found for this member.', flags: 64 });
       }
 
       // Mark recruit as invalid in database
@@ -123,11 +123,11 @@ module.exports = {
         reason 
       });
 
-      return interaction.reply({ content: `Successfully revoked recruit status for ${member.tag}. ✅` });
+      return interaction.reply({ content: `Successfully revoked recruit status for ${member.tag}. ✅`, flags: 64 });
 
     } catch (error) {
       console.error('Failed to revoke recruit:', error);
-      return interaction.reply({ content: 'Failed to revoke recruit. Please try again later.' });
+      return interaction.reply({ content: 'Failed to revoke recruit. Please try again later.', flags: 64 });
     }
   }
 };

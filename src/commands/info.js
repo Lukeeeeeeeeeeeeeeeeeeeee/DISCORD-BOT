@@ -8,6 +8,6 @@ module.exports = {
 
     const recruiter = await interaction.guild.members.fetch(recruit.recruiter_id).catch(()=>null);
     const reply = `Recruit: ${member.tag}\nRecruiter: ${recruiter ? recruiter.user.tag : recruit.recruiter_id}\nRegion: ${recruit.region}\nIGN: ${recruit.ign}\nValid: ${recruit.valid ? 'Yes':'No'}`;
-    return interaction.reply({ content: reply, ephemeral: false });
+    return interaction.reply({ content: reply, flags: 64 });
   }
 };
