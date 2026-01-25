@@ -48,7 +48,7 @@ module.exports = {
             },
             { 
               name: '🔗 Invite Link', 
-              value: `[Click to copy](${status.url})`, 
+              value: `||${status.url}||`, 
               inline: false 
             }
           )
@@ -57,7 +57,7 @@ module.exports = {
             value: 'You must use this invite or wait for it to expire before creating a new one.',
             inline: false
           })
-          .setFooter({ text: 'Share this link with your recruit' })
+          .setFooter({ text: 'Right-click the link above and select "Copy Link"' })
           .setTimestamp();
 
         return interaction.reply({ embeds: [embed], flags: 64 });
@@ -109,7 +109,7 @@ module.exports = {
             },
             { 
               name: '🔗 Invite Link', 
-              value: `[Click to copy](${result.invite.url})`, 
+              value: `||${result.invite.url}||`, 
               inline: false 
             }
           )
@@ -118,7 +118,7 @@ module.exports = {
             value: '1. Share this invite link with your recruit\n2. They have 1 hour 30 minutes to use it\n3. The invite can only be used once\n4. After use, wait 1h 30m for next invite',
             inline: false
           })
-          .setFooter({ text: `Created by ${interaction.user.tag}` })
+          .setFooter({ text: `Created by ${interaction.user.tag} • Right-click link and select "Copy Link"` })
           .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
