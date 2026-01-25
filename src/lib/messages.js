@@ -60,20 +60,20 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   const { MIN_LEADERBOARD_ENTRIES, REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
   const info = REGION_INFO[regionLabel] || { emoji: '', color: 0xFFD700, name: regionLabel };
-  const title = `${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`;
+  const title = `# ${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`;
 
   if (!rows || rows.length === 0) {
     return { content: `${title}\n\nNo recruiters found.` };
   }
 
-  // Build a simple ordered list of all recruiters: rank. @user — N recruits — M pts
-  // Show all recruiters, even those with 0 weekly recruits
+  // Build the new format: 1. @user [amount]/[min] **RETENTION RATIO [%]**
   const lines = rows.map((r, i) => {
     const displayName = r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown';
-    const recruitCount = r.cnt || 0;
-    const points = (r.points || 0);
-    const minReq = r.minReq !== undefined ? ` — min: ${r.minReq}` : '';
-    return `${i+1}. ${displayName} — **${recruitCount}** recruits — **${points}** pts${minReq}`;
+    const recruitCount = r.recruits7d || r.cnt || 0;
+    const minReq = r.minReq !== undefined ? r.minReq : 0;
+    const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
+    
+    return `${i+1}. ${displayName} [${recruitCount}/${minReq}] **RETENTION RATIO [${retention}%]**`;
   });
   
   return { content: `${title}\n\n${lines.join('\n')}` };
