@@ -84,10 +84,13 @@ async function recomputeLeaderboards(db, guild) {
   
   for (const rg of regions) {
     console.log(`Processing region ${rg.key}...`);
+    console.log(`Channel ID for ${rg.key}: ${rg.channel}`);
     
     // Get ALL recruiters (staff roles + regional recruiter roles)
     const recruiterRoleId = RECRUITER_ROLE_IDS[rg.key];
     const recruiterRole = guild.roles.cache.get(recruiterRoleId);
+    console.log(`Recruiter role ID for ${rg.key}: ${recruiterRoleId}`);
+    console.log(`Recruiter role found: ${!!recruiterRole}`);
     
     // Also get all staff members who can recruit
     const staffRoleIds = [
@@ -111,6 +114,7 @@ async function recomputeLeaderboards(db, guild) {
     if (recruiterRole) {
       console.log(`Found ${recruiterRole.members.size} regional recruiters for ${rg.key}`);
       recruiterRole.members.forEach(member => {
+        console.log(`  - Adding regional recruiter: ${member.user.tag} (${member.id})`);
         allRecruiterIds.add(member.id);
       });
     } else {
@@ -202,6 +206,13 @@ async function recomputeLeaderboards(db, guild) {
     }
 
     const ch = guild.channels.cache.get(rg.channel);
+    console.log(`Looking for channel ${rg.channel} for ${rg.key}...`);
+    console.log(`Channel found: ${!!ch}`);
+    if (ch) {
+      console.log(`Channel name: ${ch.name}`);
+      console.log(`Channel type: ${ch.type}`);
+    }
+    
     if (!ch) {
       console.log(`Channel not found for ${rg.key}: ${rg.channel}`);
       continue;

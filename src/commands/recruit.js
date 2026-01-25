@@ -69,7 +69,7 @@ module.exports = {
         await recruitedGuildMember.roles.add(chosenRole);
 
         // set nickname
-        await recruitedGuildMember.setNickname(`${ign} | ${region}`).catch(()=>null);
+        await recruitedGuildMember.setNickname(`${ign} | ${region} 0/10`).catch(()=>null);
 
         // Determine recruiter role and active multiplier, compute points
         const recruiterMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
@@ -93,24 +93,6 @@ module.exports = {
         } catch (e) {
           await db.run('ROLLBACK');
           throw e;
-        }
-
-        // DM recruited member to confirm verification
-        try {
-          const { EmbedBuilder } = require('discord.js');
-          const verifyEmbed = new EmbedBuilder()
-            .setTitle('✅ Verified')
-            .setDescription('You have been verified and welcomed to the server!')
-            .addFields(
-              { name: 'Recruiter', value: `<@${interaction.user.id}>`, inline: true },
-              { name: 'Region', value: region, inline: true },
-              { name: 'Points Awarded', value: `${points}`, inline: true }
-            )
-            .setColor(0x00CC66)
-            .setTimestamp();
-          await recruitedGuildMember.send({ embeds: [verifyEmbed] }).catch(() => {});
-        } catch (e) {
-          console.error('Failed to DM verified member:', e);
         }
 
         // Check for special-role auto-promotion: if they have the special role and got >=3 recruits in last 7 days
