@@ -13,7 +13,6 @@ function hasRecruiterOrStaffPermissions(member) {
   
   // Check staff roles
   const staffRoles = [
-    ROLE_IDS.STAFF,
     ROLE_IDS.HELPER,
     ROLE_IDS.HELPER_PLUS,
     ROLE_IDS.HIGH_STAFF,
@@ -51,7 +50,6 @@ function hasAdminOrStaffPermissions(member) {
   
   // Check staff roles
   const staffRoles = [
-    ROLE_IDS.STAFF,
     ROLE_IDS.HELPER,
     ROLE_IDS.HELPER_PLUS,
     ROLE_IDS.HIGH_STAFF,

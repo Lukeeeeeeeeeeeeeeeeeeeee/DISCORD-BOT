@@ -11,8 +11,7 @@ const ROLE_HIERARCHY = {
   [ROLE_IDS.CHIEF_OF_WAR]: 2,
   [ROLE_IDS.CHIEF_OF_COMMUNITY]: 2,
   [ROLE_IDS.CHIEF_OF_RECRUITMENT]: 2,
-  [ROLE_IDS.HIGH_STAFF]: 2,
-  [ROLE_IDS.STAFF]: 1
+  [ROLE_IDS.HIGH_STAFF]: 2
 };
 
 // Base requirements by role
@@ -26,8 +25,7 @@ const ROLE_BASE_REQUIREMENTS = {
   [ROLE_IDS.CHIEF_OF_WAR]: 5,
   [ROLE_IDS.CHIEF_OF_COMMUNITY]: 5,
   [ROLE_IDS.CHIEF_OF_RECRUITMENT]: 5,
-  [ROLE_IDS.HIGH_STAFF]: 5,
-  [ROLE_IDS.STAFF]: 4
+  [ROLE_IDS.HIGH_STAFF]: 5
 };
 
 // Constants
@@ -80,6 +78,19 @@ function hasModPlusPermissions(member) {
   return getRoleLevel(member) >= 2;
 }
 
+async function isNewStaff(db, recruiterId) {
+  try {
+    const calculationCount = await db.get(
+      'SELECT COUNT(*) as c FROM weekly_calculations WHERE recruiter_id = ?',
+      recruiterId
+    );
+    return calculationCount ? calculationCount.c < 2 : true;
+  } catch (error) {
+    console.error('Error checking if new staff:', error);
+    return false;
+  }
+}
+
 /**
  * Calculate minimum recruits requirement using the new 7-day system
  * @param {Object} params - Calculation parameters
@@ -87,7 +98,7 @@ function hasModPlusPermissions(member) {
  */
 function calculateMinRecruitsFixed({
   roleBase,
-  role,
+  member,
   recruits7d,
   activityRate,
   retention,
@@ -96,95 +107,48 @@ function calculateMinRecruitsFixed({
   absent,
   isNewStaff = false
 } = {}) {
-  console.log(`\n=== MINREQ CALCULATION DEBUG ===`);
-  console.log(`Inputs: roleBase=${roleBase}, recruits7d=${recruits7d}, activityRate=${activityRate}, retention=${retention}, warnings=${warnings}, previousMinReq=${previousMinReq}, absent=${absent}, isNewStaff=${isNewStaff}`);
-  
-  // Check timing: only allow changes before Thursday, lock after until Monday
-  const now = new Date();
-  const dayOfWeek = now.getUTCDay(); // 0 = Sunday, 1 = Monday, ..., 4 = Thursday, ..., 6 = Saturday
-  const hourOfDay = now.getUTCHours();
-  const isBeforeThursday = dayOfWeek < 4; // Before Thursday
-  const isThursdayOrLater = dayOfWeek >= 4; // Thursday or later
-  const isMondayReset = dayOfWeek === 1 && hourOfDay < 1; // Monday before 1 AM
-  
-  console.log(`-> Timing check: day=${dayOfWeek}, hour=${hourOfDay}, beforeThursday=${isBeforeThursday}, thursdayOrLater=${isThursdayOrLater}, mondayReset=${isMondayReset}`);
-  
-  // Handle absence (MOD+ only)
-  if (absent && hasModPlusPermissions({ roles: { cache: new Map([[role, true]]) } })) {
-    console.log(`-> Absent with MOD+ permissions, minReq = 0`);
+  if (absent) {
     return 0;
   }
 
+  const roleLevel = member ? getRoleLevel(member) : 0;
+
   // Low-activity floor (CRITICAL FIX)
   if (recruits7d <= 1) {
-    const floor = hasModPlusPermissions({ roles: { cache: new Map([[role, true]]) } }) ? 3 : 2;
-    console.log(`-> Low activity floor (recruits7d=${recruits7d}), minReq = ${floor}`);
+    const floor = roleLevel >= 2 ? 3 : 2;
     return floor;
   }
 
   const target = TARGET_RECRUITS_PER_WEEK;
   const pressure = (target - activityRate) / target;
-  console.log(`-> target=${target}, activityRate=${activityRate}, pressure=${pressure.toFixed(3)}`);
 
   // Activity adjustment (dominant)
   const activityAdj = pressure * ACTIVITY_MAX_STEP;
-  console.log(`-> activityAdj = ${pressure.toFixed(3)} * ${ACTIVITY_MAX_STEP} = ${activityAdj.toFixed(3)}`);
 
   // Retention adjustment (secondary, only if volume ≥ 3)
   let retentionAdj = 0;
   if (recruits7d >= 3) {
     retentionAdj = pressure * retention * RETENTION_MAX_STEP;
-    console.log(`-> retentionAdj = ${pressure.toFixed(3)} * ${retention.toFixed(3)} * ${RETENTION_MAX_STEP} = ${retentionAdj.toFixed(3)}`);
-  } else {
-    console.log(`-> retentionAdj = 0 (recruits7d < 3)`);
   }
 
   const rawMin = roleBase + activityAdj + retentionAdj;
-  console.log(`-> rawMin = ${roleBase} + ${activityAdj.toFixed(3)} + ${retentionAdj.toFixed(3)} = ${rawMin.toFixed(3)}`);
 
   // Apply smoothing with warning-based delta limits
   let smoothed = rawMin;
 
   if (previousMinReq != null) {
-    let base_max_delta_up = BASE_MAX_DELTA_UP;
-    let base_max_delta_down = BASE_MAX_DELTA_DOWN;
-    
-    console.log(`-> Previous minReq: ${previousMinReq}`);
-    
-    // New staff edge case: first 2 recalcs get reduced delta
-    if (isNewStaff) {
-      base_max_delta_up = 1; // Reduced from 2 to 1
-      base_max_delta_down = 0; // Reduced from 1 to 0
-      console.log(`-> New staff: delta limits reduced to up=${base_max_delta_up}, down=${base_max_delta_down}`);
-    }
-    
-    // TIMING LOCK: If Thursday or later and not Monday reset, lock to previous value
-    if (isThursdayOrLater && !isMondayReset) {
-      console.log(`-> TIMING LOCK: Thursday or later, locking minReq to previous value: ${previousMinReq}`);
-      console.log(`=== END DEBUG ===\n`);
-      return previousMinReq;
-    }
-    
-    const max_delta_up = Math.max(0, base_max_delta_up - warnings);
-    const max_delta_down = Math.max(0, base_max_delta_down - warnings);
-    console.log(`-> Warning-adjusted delta limits: up=${max_delta_up}, down=${max_delta_down}`);
+    const baseMaxDeltaUp = isNewStaff ? 1 : BASE_MAX_DELTA_UP;
+    const baseMaxDeltaDown = isNewStaff ? 0 : BASE_MAX_DELTA_DOWN;
+    const maxDeltaUp = Math.max(0, baseMaxDeltaUp - warnings);
+    const maxDeltaDown = Math.max(0, baseMaxDeltaDown - warnings);
 
     let delta = rawMin - previousMinReq;
-    console.log(`-> Raw delta: ${delta.toFixed(3)} (${rawMin.toFixed(3)} - ${previousMinReq})`);
-    
-    delta = Math.max(-max_delta_down, Math.min(max_delta_up, delta));
-    console.log(`-> Clamped delta: ${delta.toFixed(3)}`);
-    
+    delta = Math.max(-maxDeltaDown, Math.min(maxDeltaUp, delta));
     smoothed = previousMinReq + delta;
-    console.log(`-> Smoothed: ${previousMinReq} + ${delta.toFixed(3)} = ${smoothed.toFixed(3)}`);
   }
 
   // Final clamp and rounding
-  const final = Math.max(2, Math.min(8, Math.ceil(smoothed)));
-  console.log(`-> Final: clamp(${Math.ceil(smoothed)}, 2, 8) = ${final}`);
-  console.log(`=== END DEBUG ===\n`);
-  
-  return final;
+  return Math.max(2, Math.min(8, Math.ceil(smoothed)));
 }
 
 /**
@@ -193,9 +157,10 @@ function calculateMinRecruitsFixed({
  * @param {string} recruiterId - Recruiter Discord ID
  * @returns {Object} - Activity and retention data
  */
-async function calculate7DayStats(db, recruiterId) {
+async function calculate7DayStats(db, recruiterId, guild = null) {
   const now = Date.now();
   const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
+  const fourteenDaysAgo = now - (14 * 24 * 60 * 60 * 1000);
 
   try {
     // Get recruits from last 7 days
@@ -209,21 +174,21 @@ async function calculate7DayStats(db, recruiterId) {
 
     // Calculate retention for 7-day window
     let retention = 0;
-    if (recruits7d > 0) {
-      // For new recruits, assume 100% retention until they leave
-      // For older recruits, check if they're still in the server
-      const retentionCutoff = now - (7 * 24 * 60 * 60 * 1000);
-      const retainedCount = recentRecruits.filter(recruit => {
-        // For recruits less than 7 days old, count as retained (they haven't had time to leave)
-        if ((now - recruit.created_at) < (7 * 24 * 60 * 60 * 1000)) {
-          return true;
+    if (guild) {
+      const retentionCohort = await db.all(
+        'SELECT recruited_id FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC',
+        recruiterId, fourteenDaysAgo, sevenDaysAgo
+      );
+
+      const cohortSize = retentionCohort.length;
+      if (cohortSize > 0) {
+        let retainedCount = 0;
+        for (const r of retentionCohort) {
+          const member = await guild.members.fetch(r.recruited_id).catch(() => null);
+          if (member) retainedCount++;
         }
-        // For older recruits, we'd need to check if they're still in server
-        // For now, assume they're retained unless we have data they left
-        return true;
-      }).length;
-      
-      retention = retainedCount / recruits7d;
+        retention = retainedCount / cohortSize;
+      }
     }
 
     return {
@@ -248,17 +213,21 @@ async function calculate7DayStats(db, recruiterId) {
  */
 async function storeWeeklyCalculation(db, data) {
   try {
+    const weekStart = data.weekStart ?? null;
+    const absent = data.absent ? 1 : 0;
     await db.run(`
       INSERT OR REPLACE INTO weekly_calculations 
-      (recruiter_id, timestamp, recruits7d, activity_rate, retention, warnings, previous_min_req, calculated_min_req, role_base)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (recruiter_id, timestamp, week_start, recruits7d, activity_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       data.recruiterId,
       Date.now(),
+      weekStart,
       data.recruits7d,
       data.activityRate,
       data.retention,
       data.warnings,
+      absent,
       data.previousMinReq,
       data.calculatedMinReq,
       data.roleBase
@@ -277,7 +246,7 @@ async function storeWeeklyCalculation(db, data) {
 async function getPreviousMinReq(db, recruiterId) {
   try {
     const row = await db.get(
-      'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? ORDER BY timestamp DESC LIMIT 1',
+      'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 1',
       recruiterId
     );
     return row ? row.calculated_min_req : null;
@@ -292,6 +261,7 @@ module.exports = {
   calculate7DayStats,
   storeWeeklyCalculation,
   getPreviousMinReq,
+  isNewStaff,
   getRoleLevel,
   getBaseRequirement,
   hasModPlusPermissions,

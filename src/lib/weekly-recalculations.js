@@ -6,33 +6,16 @@ const {
   storeWeeklyCalculation,
   calculateMinRecruitsFixed,
   getBaseRequirement,
-  hasModPlusPermissions,
-  ROLE_HIERARCHY
+  isNewStaff
 } = require('../lib/recruiting-system');
 const { CHANNELS, ROLE_IDS } = require('../constants');
-
-/**
- * Check if user is new staff (first 2 recalcs get reduced delta)
- */
-async function isNewStaff(db, recruiterId) {
-  try {
-    const calculationCount = await db.get(
-      'SELECT COUNT(*) as c FROM weekly_calculations WHERE recruiter_id = ?',
-      recruiterId
-    );
-    return calculationCount ? calculationCount.c < 2 : true;
-  } catch (error) {
-    console.error('Error checking if new staff:', error);
-    return false;
-  }
-}
 
 /**
  * Perform weekly recalculation for all recruiters
  * Runs every Monday at 00:00 UTC
  */
 async function performWeeklyRecalculations(guild) {
-  const database = await db;
+  const database = db;
   console.log('Starting weekly recruiter recalculation...');
   
   try {
@@ -47,8 +30,7 @@ async function performWeeklyRecalculations(guild) {
       ROLE_IDS.CHIEF_OF_RECRUITMENT,
       ROLE_IDS.CO_LEADER,
       ROLE_IDS.LEADER,
-      ROLE_IDS.HIGH_STAFF,
-      ROLE_IDS.STAFF
+      ROLE_IDS.HIGH_STAFF
     ];
 
     const allStaff = [];
@@ -70,7 +52,7 @@ async function performWeeklyRecalculations(guild) {
     for (const staffMember of allStaff) {
       try {
         // Get 7-day stats
-        const stats7d = await calculate7DayStats(database, staffMember.id);
+        const stats7d = await calculate7DayStats(database, staffMember.id, guild);
         const previousMinReq = await getPreviousMinReq(database, staffMember.id);
         
         // Check for active absence
@@ -95,7 +77,7 @@ async function performWeeklyRecalculations(guild) {
         // Calculate new min req
         const newMinReq = calculateMinRecruitsFixed({
           roleBase,
-          role: staffMember.roles.cache.first()?.id,
+          member: staffMember,
           recruits7d: stats7d.recruits7d,
           activityRate: stats7d.activityRate,
           retention: stats7d.retention,
@@ -108,10 +90,12 @@ async function performWeeklyRecalculations(guild) {
         // Store calculation
         await storeWeeklyCalculation(database, {
           recruiterId: staffMember.id,
+          weekStart: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate())).getTime(),
           recruits7d: stats7d.recruits7d,
           activityRate: stats7d.activityRate,
           retention: stats7d.retention,
           warnings: activeWarnings,
+          absent: !!absence,
           previousMinReq,
           calculatedMinReq: newMinReq,
           roleBase
@@ -304,22 +288,6 @@ async function handleExpiredAbsences(guild) {
 
   } catch (error) {
     console.error('Error handling expired absences:', error);
-  }
-}
-
-/**
- * Check if user is new staff (first 2 recalcs get reduced delta)
- */
-async function isNewStaff(db, recruiterId) {
-  try {
-    const calculationCount = await db.get(
-      'SELECT COUNT(*) as c FROM weekly_calculations WHERE recruiter_id = ?',
-      recruiterId
-    );
-    return calculationCount ? calculationCount.c < 2 : true;
-  } catch (error) {
-    console.error('Error checking if new staff:', error);
-    return false;
   }
 }
 

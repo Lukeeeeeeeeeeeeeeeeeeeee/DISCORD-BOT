@@ -29,7 +29,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
   if (record) {
     const msg = await channel.messages.fetch(record.message_id).catch(()=>null);
     if (msg) {
-      if (embed && typeof embed === 'object' && embed.embeds) {
+      if (embed && typeof embed === 'object' && typeof embed.toJSON === 'function') {
         await msg.edit({ content: content || null, embeds: [embed] });
       } else {
         await msg.edit(content);
@@ -37,7 +37,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
       await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), record.id);
       return msg;
     } else {
-      const m = embed && typeof embed === 'object' && embed.embeds ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
+      const m = embed && typeof embed === 'object' && typeof embed.toJSON === 'function' ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
       try {
         await db.run('UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?', m.id, Date.now(), record.id);
       } catch (e) {
@@ -46,7 +46,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
       return m;
     }
   } else {
-    const m = embed && typeof embed === 'object' && embed.embeds ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
+    const m = embed && typeof embed === 'object' && typeof embed.toJSON === 'function' ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
     try {
       await db.run('INSERT INTO leaderboard_messages (channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?)', channel.id, m.id, region, Date.now());
     } catch (e) {
@@ -67,35 +67,43 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
     info = REGION_INFO[regionLabel] || { emoji: '', color: 0xFFD700, name: regionLabel };
   }
   
-  const title = `# ${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`;
+  const title = `${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`;
+  const embed = new EmbedBuilder().setTitle(title).setColor(info.color).setTimestamp();
 
   if (!rows || rows.length === 0) {
-    return { content: `${title}\n\nNo recruiters found.` };
+    embed.setDescription('No recruiters found.');
+    return embed;
   }
 
-  // Build the new format: 1. @user [amount]/[min] **RETENTION RATIO [%]**
   const lines = rows.map((r, i) => {
     const displayName = r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown';
     const recruitCount = r.recruits7d || r.cnt || 0;
     const minReq = r.minReq !== undefined ? r.minReq : 0;
     const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
-    
-    return `${i+1}. ${displayName} [${recruitCount}/${minReq}] **RETENTION [${retention}%]**`;
+
+    return `${i + 1}. ${displayName} [${recruitCount}/${minReq}] **RETENTION [${retention}%]**`;
   });
-  
-  return { content: `${title}\n\n${lines.join('\n')}` };
+
+  const fieldName = t('leaderboard.title', lang, { region: info.name });
+  embed.addFields({ name: fieldName, value: lines.join('\n') });
+  return embed;
 }
 
 function makeWarningsEmbed(rows, lang='en') {
   const { t } = require('./i18n');
   const title = '⚠️ Warnings Leaderboard';
-  
+
+  const embed = new EmbedBuilder().setTitle(title).setColor(0xffaa00).setTimestamp();
+
   if (!rows || rows.length === 0) {
-    return { content: `${title}\n\nNo active warnings.` };
+    embed.setDescription('No active warnings.');
+    return embed;
   }
-  
-  const lines = rows.map((r, i) => `${i+1}. <@${r.recruiter_id}> — **${r.cnt}** warnings`).join('\n');
-  return { content: `${title}\n\n${lines}` };
+
+  const lines = rows.map((r, i) => `${i + 1}. <@${r.recruiter_id}> — **${r.cnt}** warnings`).join('\n');
+  embed.addFields({ name: 'Warnings', value: lines });
+  void t;
+  return embed;
 }
 
 module.exports = {

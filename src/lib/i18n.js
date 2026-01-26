@@ -5,7 +5,7 @@ function loadLocale(lang) {
   try {
     const p = path.join(__dirname, '..', 'locales', `${lang}.json`);
     if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p,'utf8'));
-  } catch (e) {}
+  } catch (e) { void e; }
   // fallback to en
   const en = path.join(__dirname, '..', 'locales', 'en.json');
   return JSON.parse(fs.readFileSync(en,'utf8'));
