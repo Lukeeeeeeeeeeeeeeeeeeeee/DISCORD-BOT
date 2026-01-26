@@ -85,7 +85,25 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   });
 
   const fieldName = t('leaderboard.title', lang, { region: info.name });
-  embed.addFields({ name: fieldName, value: lines.join('\n') });
+  const chunks = [];
+  let current = '';
+  for (const line of lines) {
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length > 1024) {
+      if (current) chunks.push(current);
+      current = line;
+    } else {
+      current = next;
+    }
+  }
+  if (current) chunks.push(current);
+
+  const maxFields = 25;
+  const toRender = chunks.slice(0, maxFields);
+  for (let i = 0; i < toRender.length; i++) {
+    const name = i === 0 ? fieldName : `${fieldName} (${i + 1})`;
+    embed.addFields({ name, value: toRender[i] });
+  }
   return embed;
 }
 
