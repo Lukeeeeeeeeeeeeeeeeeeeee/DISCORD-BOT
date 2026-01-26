@@ -268,19 +268,213 @@ async function recomputeWarningsLeaderboard(db, guild) {
   }
 }
 
+async function runWeeklySnapshotAndReset(db, client) {
+  console.log('Starting weekly MinReq and stats reset...');
+  try {
+    const weekStart = getWeekStartUtcTs();
+
+    // One-time announcement per week in the overall invites channel
+    try {
+      const announceKey = `weekly_reset_announce_${weekStart}`;
+      const existing = await db.get('SELECT key FROM system_events WHERE key = ?', announceKey);
+      if (!existing) {
+        await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', announceKey, Date.now());
+        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+        const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
+        if (ch) {
+          await ch.send('@everyone Weekly invite/recruit tables have been reset for the new week.').catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.error('Weekly reset announcement failed:', e);
+    }
+
+    // Reset weekly recruit counts and update MinReq for all recruiters
+    const recruiters = await db.all('SELECT id FROM recruiters');
+
+    for (const recruiter of recruiters) {
+      const currentStats = await calculate7DayStats(db, recruiter.id);
+      const previousMinReq = await getPreviousMinReq(db, recruiter.id);
+
+      const warnings = await db.get(
+        'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+        recruiter.id, Date.now()
+      );
+      const activeWarnings = warnings ? warnings.c : 0;
+
+      const absence = await db.get(
+        'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+        recruiter.id
+      );
+
+      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      const staffMember = guild ? await guild.members.fetch(recruiter.id).catch(() => null) : null;
+      const roleBase = getBaseRequirement(staffMember);
+
+      const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
+
+      const finalMinReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
+        roleBase,
+        role: staffMember ? staffMember.roles.cache.first()?.id : null,
+        recruits7d: currentStats.recruits7d,
+        activityRate: currentStats.activityRate,
+        retention: currentStats.retention,
+        warnings: activeWarnings,
+        previousMinReq,
+        absent: !!absence,
+        isNewStaff: false
+      });
+
+      await storeWeeklyCalculation(db, {
+        recruiterId: recruiter.id,
+        recruits7d: currentStats.recruits7d,
+        activityRate: currentStats.activityRate,
+        retention: currentStats.retention,
+        warnings: activeWarnings,
+        previousMinReq,
+        calculatedMinReq: finalMinReq,
+        roleBase
+      });
+
+      console.log(`Stored weekly calculation for ${recruiter.id}: MinReq=${finalMinReq}, Recruits=${currentStats.recruits7d}`);
+    }
+
+    // Mark weekly snapshot complete so we can catch up if the bot was down
+    try {
+      const snapKey = `weekly_snapshot_${weekStart}`;
+      await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', snapKey, Date.now());
+    } catch (e) {
+      console.error('Failed to persist weekly snapshot marker:', e);
+    }
+
+    // Ensure leaderboards reflect the new week window immediately
+    try {
+      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      if (guild) await recomputeLeaderboards(db, guild);
+    } catch (e) {
+      console.error('Failed to recompute leaderboards after weekly snapshot:', e);
+    }
+
+    console.log('Weekly MinReq and stats reset completed successfully');
+  } catch (error) {
+    console.error('Weekly MinReq and stats reset failed:', error);
+  }
+}
+
+async function reconcileTrialRecruiters(db, client) {
+  try {
+    const guild = client.guilds.cache.get(process.env.GUILD_ID);
+    if (!guild) return;
+    const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
+    if (!trialRole) return;
+
+    const now = Date.now();
+    const windowStart = now - (9 * 24 * 60 * 60 * 1000);
+    const members = Array.from(trialRole.members.values());
+    for (const recruiterMember of members) {
+      if (recruiterMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE)) continue;
+
+      const recent = await db.all(
+        'SELECT recruited_id FROM recruits WHERE recruiter_id = ? AND valid = 1 AND created_at >= ? ORDER BY created_at DESC LIMIT 3',
+        recruiterMember.id, windowStart
+      );
+      if (!recent || recent.length < 3) continue;
+
+      let allStillInGuild = true;
+      for (const r of recent) {
+        try {
+          const m = await guild.members.fetch(r.recruited_id);
+          if (!m) { allStillInGuild = false; break; }
+        } catch (e) {
+          if (e && (e.code === 10007 || (e.message || '').toLowerCase().includes('unknown member'))) {
+            allStillInGuild = false;
+            break;
+          }
+          // If we can't verify due to transient errors, do not promote
+          allStillInGuild = false;
+          break;
+        }
+      }
+      if (!allStillInGuild) continue;
+
+      await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(() => {});
+      await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => {});
+      await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(() => {});
+
+      // After promotion, store a fresh weekly calculation so minReq transitions off trial=3
+      try {
+        const currentStats = await calculate7DayStats(db, recruiterMember.id);
+        const warnings = await db.get(
+          'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+          recruiterMember.id, Date.now()
+        );
+        const activeWarnings = warnings ? warnings.c : 0;
+        const absence = await db.get(
+          'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+          recruiterMember.id
+        );
+        const roleBase = getBaseRequirement(recruiterMember);
+        const calculatedMinReq = calculateMinRecruitsFixed({
+          roleBase,
+          role: recruiterMember.roles.cache.first()?.id,
+          recruits7d: currentStats.recruits7d,
+          activityRate: currentStats.activityRate,
+          retention: currentStats.retention,
+          warnings: activeWarnings,
+          previousMinReq: null,
+          absent: !!absence,
+          isNewStaff: false
+        });
+        await storeWeeklyCalculation(db, {
+          recruiterId: recruiterMember.id,
+          recruits7d: currentStats.recruits7d,
+          activityRate: currentStats.activityRate,
+          retention: currentStats.retention,
+          warnings: activeWarnings,
+          previousMinReq: null,
+          calculatedMinReq,
+          roleBase
+        });
+      } catch (e) {
+        console.error('Failed to store weekly calc after trial promotion:', e);
+      }
+
+      await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(() => {});
+      console.log('Auto-promoted trial recruiter (reconciled):', recruiterMember.id);
+    }
+  } catch (e) {
+    console.error('Trial recruiter reconcile failed:', e);
+  }
+}
+
 function start(client, db) {
-    // run immediately on start and then schedule weekly
-    client.once('ready', ()=>{
-      applyFlags(db, client.guilds.cache.get(process.env.GUILD_ID));
-      recomputeLeaderboards(db, client.guilds.cache.get(process.env.GUILD_ID));
-    });
+    // scheduler.start() is called from index.js after the client is ready,
+    // so don't wait for a second ready event here.
+    (async () => {
+      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      if (!guild) return;
+      await applyFlags(db, guild).catch(() => {});
+      await reconcileTrialRecruiters(db, client).catch(() => {});
+      await recomputeLeaderboards(db, guild).catch(() => {});
+
+      // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
+      try {
+        const weekStart = getWeekStartUtcTs();
+        const snapKey = `weekly_snapshot_${weekStart}`;
+        const existing = await db.get('SELECT key FROM system_events WHERE key = ?', snapKey);
+        const scheduledTs = weekStart + (5 * 60 * 1000);
+        if (!existing && Date.now() >= scheduledTs) {
+          await runWeeklySnapshotAndReset(db, client);
+        }
+      } catch (e) {
+        console.error('Weekly snapshot catch-up check failed:', e);
+      }
+    })();
 
     // Cron: Monday at 00:00 UTC - Weekly recruiter recalculation
     cron.schedule('0 0 * * 1', async () => {
       const guild = client.guilds.cache.get(process.env.GUILD_ID);
       if (!guild) return;
-      
-      console.log('Starting weekly recruiter recalculation...');
       try {
         await performWeeklyRecalculations(guild);
         console.log('Weekly recruiter recalculation completed successfully');
@@ -294,68 +488,7 @@ function start(client, db) {
 
     // Cron: Monday at 00:05 UTC - Weekly MinReq and stats snapshot (5 minutes after recalculation)
     cron.schedule('5 0 * * 1', async () => {
-      console.log('Starting weekly MinReq and stats reset...');
-      try {
-        // Reset weekly recruit counts and update MinReq for all recruiters
-        const recruiters = await db.all('SELECT id FROM recruiters');
-        
-        for (const recruiter of recruiters) {
-          // Store current week's MinReq before reset
-          const currentStats = await calculate7DayStats(db, recruiter.id);
-          const previousMinReq = await getPreviousMinReq(db, recruiter.id);
-
-          // Get active warnings count
-          const warnings = await db.get(
-            'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-            recruiter.id, Date.now()
-          );
-          const activeWarnings = warnings ? warnings.c : 0;
-
-          // Check for active absence
-          const absence = await db.get(
-            'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
-            recruiter.id
-          );
-
-          // Get staff member for role calculation
-          const guild = client.guilds.cache.get(process.env.GUILD_ID);
-          const staffMember = await guild.members.fetch(recruiter.id).catch(() => null);
-          const roleBase = getBaseRequirement(staffMember);
-
-          const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
-
-          // Calculate final MinReq for the week
-          const finalMinReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
-            roleBase,
-            role: staffMember ? staffMember.roles.cache.first()?.id : null,
-            recruits7d: currentStats.recruits7d,
-            activityRate: currentStats.activityRate,
-            retention: currentStats.retention,
-            warnings: activeWarnings,
-            previousMinReq,
-            absent: !!absence,
-            isNewStaff: false
-          });
-
-          // Store the final MinReq for this week
-          await storeWeeklyCalculation(db, {
-            recruiterId: recruiter.id,
-            recruits7d: currentStats.recruits7d,
-            activityRate: currentStats.activityRate,
-            retention: currentStats.retention,
-            warnings: activeWarnings,
-            previousMinReq,
-            calculatedMinReq: finalMinReq,
-            roleBase
-          });
-          
-          console.log(`Stored weekly calculation for ${recruiter.id}: MinReq=${finalMinReq}, Recruits=${currentStats.recruits7d}`);
-        }
-        
-        console.log('Weekly MinReq and stats reset completed successfully');
-      } catch (error) {
-        console.error('Weekly MinReq and stats reset failed:', error);
-      }
+      await runWeeklySnapshotAndReset(db, client);
     }, {
       scheduled: true,
       timezone: 'UTC'

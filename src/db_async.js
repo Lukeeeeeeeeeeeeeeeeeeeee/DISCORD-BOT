@@ -108,6 +108,11 @@ async function init() {
     created_by TEXT NOT NULL,
     active INTEGER DEFAULT 1
   );
+
+  CREATE TABLE IF NOT EXISTS system_events (
+    key TEXT PRIMARY KEY,
+    timestamp INTEGER NOT NULL
+  );
   `);
 
   try {

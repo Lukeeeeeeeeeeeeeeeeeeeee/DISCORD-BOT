@@ -45,14 +45,12 @@ class InviteSystem {
       const member = await guild.members.fetch(userId).catch(() => null);
       if (!member) return false;
 
-      const { ROLE_IDS } = require('../constants');
+      const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
       const recruiterRoles = [
         ROLE_IDS.TRIAL_RECRUITER,
         ROLE_IDS.RECRUITER,
-        ROLE_IDS.RECRUITER_EU,
-        ROLE_IDS.RECRUITER_NA,
-        ROLE_IDS.RECRUITER_AS
-      ];
+        ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
+      ].filter(Boolean);
 
       return recruiterRoles.some(roleId => member.roles.cache.has(roleId));
     } catch (error) {

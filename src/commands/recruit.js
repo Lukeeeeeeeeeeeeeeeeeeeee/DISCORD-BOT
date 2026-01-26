@@ -2,6 +2,46 @@ const dayjs = require('dayjs');
 const { ROLE_IDS } = require('../constants');
 const db = require('../db_async');
 const { getActiveMultiplier, calculateRecruitPoints } = require('../lib/economy');
+const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
+
+async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
+  try {
+    const currentStats = await calculate7DayStats(db, recruiterMember.id);
+    const warnings = await db.get(
+      'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+      recruiterMember.id, Date.now()
+    );
+    const activeWarnings = warnings ? warnings.c : 0;
+    const absence = await db.get(
+      'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+      recruiterMember.id
+    );
+    const roleBase = getBaseRequirement(recruiterMember);
+    const calculatedMinReq = calculateMinRecruitsFixed({
+      roleBase,
+      role: recruiterMember.roles.cache.first()?.id,
+      recruits7d: currentStats.recruits7d,
+      activityRate: currentStats.activityRate,
+      retention: currentStats.retention,
+      warnings: activeWarnings,
+      previousMinReq: null,
+      absent: !!absence,
+      isNewStaff: false
+    });
+    await storeWeeklyCalculation(db, {
+      recruiterId: recruiterMember.id,
+      recruits7d: currentStats.recruits7d,
+      activityRate: currentStats.activityRate,
+      retention: currentStats.retention,
+      warnings: activeWarnings,
+      previousMinReq: null,
+      calculatedMinReq,
+      roleBase
+    });
+  } catch (e) {
+    console.error('Failed to store weekly calc after trial promotion:', e);
+  }
+}
 
 async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
   if (!recruiterMember || !recruiterMember.roles || !recruiterMember.roles.cache) return { promoted: false };
@@ -74,9 +114,20 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
     now
   );
 
-  if (count < 3) return { promoted: false };
+  const windowStart = Math.max(row.started_at || now, now - windowMs);
+  const recent = await db.all(
+    'SELECT recruited_id FROM recruits WHERE recruiter_id = ? AND valid = 1 AND created_at >= ? ORDER BY created_at DESC LIMIT 3',
+    recruiterMember.id,
+    windowStart
+  );
 
-  const idsToCheck = [updates.recruit1_id, updates.recruit2_id, updates.recruit3_id].filter(Boolean);
+  const shouldPromote = (count >= 3) || (recent && recent.length >= 3);
+  if (!shouldPromote) return { promoted: false };
+
+  const idsToCheck = (recent && recent.length >= 3)
+    ? recent.map(r => r.recruited_id)
+    : [updates.recruit1_id, updates.recruit2_id, updates.recruit3_id].filter(Boolean);
+
   for (const id of idsToCheck) {
     const m = await guild.members.fetch(id).catch(() => null);
     if (!m) {
@@ -93,6 +144,8 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
   await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(() => {});
   await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => {});
   await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(() => {});
+
+  await storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember);
 
   await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(() => {});
   return { promoted: true };
