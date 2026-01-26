@@ -1,5 +1,4 @@
 const db = require('../db_async');
-const { EmbedBuilder } = require('discord.js');
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../constants');
 
 module.exports = {
@@ -65,10 +64,10 @@ module.exports = {
         const recruiterMembers = Array.from(allRecruiterIds);
 
         if (recruiterMembers.length === 0) {
-          const { makeLeaderboardEmbed } = require('../lib/messages');
+          const { makeLeaderboardText } = require('../lib/messages');
           const lang = interaction.locale || 'en';
-          const leaderboardData = makeLeaderboardEmbed([], region, lang);
-          return interaction.reply({ content: leaderboardData.content, ephemeral: false });
+          const text = makeLeaderboardText([], region, lang);
+          return interaction.reply({ content: text, ephemeral: false });
         }
         
         // Get recruit data for all recruiters
@@ -135,11 +134,10 @@ module.exports = {
           });
         }
 
-        const { makeLeaderboardEmbed } = require('../lib/messages');
+        const { makeLeaderboardText } = require('../lib/messages');
         const lang = interaction.locale || 'en';
-        const leaderboardData = makeLeaderboardEmbed(rows, region, lang);
-        
-        return interaction.reply({ content: leaderboardData.content, ephemeral: false });
+        const text = makeLeaderboardText(rows, region, lang);
+        return interaction.reply({ content: text, ephemeral: false });
       }
 
       // Global: get all recruiters from all regions
@@ -189,10 +187,10 @@ module.exports = {
       const recruiterMembers = Array.from(allRecruiterIds);
 
       if (recruiterMembers.length === 0) {
-        const { makeLeaderboardEmbed } = require('../lib/messages');
+        const { makeLeaderboardText } = require('../lib/messages');
         const lang = interaction.locale || 'en';
-        const leaderboardData = makeLeaderboardEmbed([], 'GLOBAL', lang);
-        return interaction.reply({ content: leaderboardData.content, ephemeral: false });
+        const text = makeLeaderboardText([], 'GLOBAL', lang);
+        return interaction.reply({ content: text, ephemeral: false });
       }
       
       // Get global recruit data
@@ -259,11 +257,10 @@ module.exports = {
         });
       }
 
-      const { makeLeaderboardEmbed } = require('../lib/messages');
+      const { makeLeaderboardText } = require('../lib/messages');
       const lang = interaction.locale || 'en';
-      const leaderboardData = makeLeaderboardEmbed(rows, 'GLOBAL', lang);
-      
-      return interaction.reply({ content: leaderboardData.content, ephemeral: false });
+      const text = makeLeaderboardText(rows, 'GLOBAL', lang);
+      return interaction.reply({ content: text, ephemeral: false });
     }
 
     if (sub === 'init') {

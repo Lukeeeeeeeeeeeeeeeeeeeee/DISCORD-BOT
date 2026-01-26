@@ -87,7 +87,7 @@ async function recomputeLeaderboards(db, guild) {
   // For each of the region channels, update a single message with top recruiters
   const regions = [{key:'EU', channel: CHANNELS.INVITES_EU},{key:'NA', channel: CHANNELS.INVITES_NA},{key:'AS', channel: CHANNELS.INVITES_AS}];
   const since = getWeekStartUtcTs();
-  const { upsertLeaderboardMessage } = require('./lib/messages');
+  const { upsertLeaderboardMessage, makeLeaderboardText } = require('./lib/messages');
   
   // Ensure member cache is populated so role.members is accurate
   try {
@@ -153,18 +153,16 @@ async function recomputeLeaderboards(db, guild) {
 
     console.log(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
 
-    const { makeLeaderboardEmbed } = require('./lib/messages');
     const lang = process.env.DEFAULT_LANG || 'en';
-    let leaderboardEmbed;
-
+    let leaderboardText;
 
     if (allRecruiterIds.size === 0) {
       console.log(`No recruiters found for region ${rg.key}`);
-      leaderboardEmbed = makeLeaderboardEmbed([], rg.key, lang);
+      leaderboardText = makeLeaderboardText([], rg.key, lang);
     }
     
     let rows = [];
-    if (!leaderboardEmbed) {
+    if (!leaderboardText) {
       const recruiterMembers = Array.from(allRecruiterIds);
       const unionSelects = recruiterMembers.map(() => 'SELECT ? AS id').join(' UNION ALL ');
       const rowsBase = await db.all(`
@@ -254,10 +252,9 @@ async function recomputeLeaderboards(db, guild) {
         });
       }
 
-      leaderboardEmbed = makeLeaderboardEmbed(rows, rg.key, lang);
+      leaderboardText = makeLeaderboardText(rows, rg.key, lang);
       console.log(`Generated leaderboard for ${rg.key} with ${rows.length} entries`);
     }
-
 
     const ch = guild.channels.cache.get(rg.channel);
     console.log(`Looking for channel ${rg.channel} for ${rg.key}...`);
@@ -265,17 +262,16 @@ async function recomputeLeaderboards(db, guild) {
 
     if (ch) {
       console.log(`Updating leaderboard for ${rg.key} in channel ${ch.name}...`);
-      await upsertLeaderboardMessage(db, ch, rg.key, null, leaderboardEmbed).catch((err) => {
+      await upsertLeaderboardMessage(db, ch, rg.key, leaderboardText, null).catch((err) => {
         console.error(`Failed to upsert message for ${rg.key}:`, err);
       });
     } else {
       console.log(`Channel not found for ${rg.key}: ${rg.channel} (skipping regional post)`);
     }
 
-
     if (central) {
       console.log(`Cross-posting to central leaderboard for ${rg.key}...`);
-      await upsertLeaderboardMessage(db, central, rg.key, null, leaderboardEmbed).catch((err) => {
+      await upsertLeaderboardMessage(db, central, rg.key, leaderboardText, null).catch((err) => {
         console.error(`Failed to cross-post to central leaderboard for ${rg.key}:`, err);
       });
     } else {

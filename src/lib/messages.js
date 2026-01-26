@@ -23,6 +23,48 @@ function makeRecruitEmbed(recruiter, recruited, region, ign, lang='en', meta = {
   return embed;
 }
 
+function makeLeaderboardText(rows, regionLabel, lang='en') {
+  const { REGION_INFO } = require('../constants');
+  const { t } = require('./i18n');
+
+  let info;
+  if (regionLabel === 'GLOBAL') {
+    info = { emoji: '🌍', name: 'Global' };
+  } else {
+    info = REGION_INFO[regionLabel] || { emoji: '', name: regionLabel };
+  }
+
+  const title = `${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`.trim();
+  if (!rows || rows.length === 0) {
+    const msg = `${title}\nNo recruiters found.`;
+    return msg.length > 2000 ? msg.slice(0, 1997) + '...' : msg;
+  }
+
+  const lines = rows.map((r, i) => {
+    const displayName = r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown';
+    const recruitCount = r.recruits7d || r.cnt || 0;
+    const minReq = r.minReq !== undefined ? r.minReq : 0;
+    const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
+    return `${i + 1}. ${displayName} [${recruitCount}/${minReq}] RETENTION [${retention}%]`;
+  });
+
+  const out = [title, ...lines];
+  let text = out.join('\n');
+  if (text.length <= 2000) return text;
+
+  // Fit as many lines as possible into a single message
+  const kept = [title];
+  for (const line of lines) {
+    const next = kept.concat(line).join('\n');
+    if (next.length > 1950) break;
+    kept.push(line);
+  }
+  const remaining = lines.length - (kept.length - 1);
+  if (remaining > 0) kept.push(`...and ${remaining} more`);
+  text = kept.join('\n');
+  return text.length > 2000 ? text.slice(0, 1997) + '...' : text;
+}
+
 async function upsertLeaderboardMessage(db, channel, region, content, embed) {
   // record keyed by channel_id + region
   const record = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, region);
@@ -128,5 +170,6 @@ module.exports = {
   makeRecruitEmbed,
   upsertLeaderboardMessage,
   makeLeaderboardEmbed,
+  makeLeaderboardText,
   makeWarningsEmbed
 };
