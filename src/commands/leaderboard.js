@@ -32,8 +32,7 @@ module.exports = {
           ROLE_IDS.CHIEF_OF_RECRUITMENT,
           ROLE_IDS.CO_LEADER,
           ROLE_IDS.LEADER,
-          ROLE_IDS.HIGH_STAFF,
-          ROLE_IDS.STAFF
+          ROLE_IDS.HIGH_STAFF
         ];
 
         const allRecruiterIds = new Set();
@@ -90,12 +89,13 @@ module.exports = {
         `, ...recruiterMembers, region, since);
 
         // Get 7-day stats and minReq for each recruiter
-        const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
+        const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
         const rows = [];
         
         for (const r of rowsBase) {
-          const stats7d = await calculate7DayStats(db, r.recruiter_id);
+          const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild);
           const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
+          const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
           
           const absence = await db.get(
             'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
@@ -113,17 +113,17 @@ module.exports = {
 
           const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
           
-          const minReq = isTrialRecruiter ? 3 : (previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
+          const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
             roleBase,
-            role: staffMember ? staffMember.roles.cache.first()?.id : null,
+            member: staffMember,
             recruits7d: stats7d.recruits7d,
             activityRate: stats7d.activityRate,
             retention: stats7d.retention,
             warnings: activeWarnings,
             previousMinReq,
             absent: !!absence,
-            isNewStaff: false // Default to false for now
-          }));
+            isNewStaff: newStaffCheck
+          });
 
           rows.push({
             ...r,
@@ -171,8 +171,7 @@ module.exports = {
         ROLE_IDS.CHIEF_OF_RECRUITMENT,
         ROLE_IDS.CO_LEADER,
         ROLE_IDS.LEADER,
-        ROLE_IDS.HIGH_STAFF,
-        ROLE_IDS.STAFF
+        ROLE_IDS.HIGH_STAFF
       ];
 
       for (const roleId of staffRoleIds) {
@@ -213,12 +212,13 @@ module.exports = {
       `, ...recruiterMembers, since);
 
       // Get 7-day stats and minReq for global
-      const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
+      const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
       const rows = [];
       
       for (const r of rowsBase) {
-        const stats7d = await calculate7DayStats(db, r.recruiter_id);
+        const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild);
         const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
+        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
         
         const absence = await db.get(
           'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
@@ -236,17 +236,17 @@ module.exports = {
 
         const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
         
-        const minReq = isTrialRecruiter ? 3 : (previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
+        const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
           roleBase,
-          role: staffMember ? staffMember.roles.cache.first()?.id : null,
+          member: staffMember,
           recruits7d: stats7d.recruits7d,
           activityRate: stats7d.activityRate,
           retention: stats7d.retention,
           warnings: activeWarnings,
           previousMinReq,
           absent: !!absence,
-          isNewStaff: false // Default to false for now
-        }));
+          isNewStaff: newStaffCheck
+        });
 
         rows.push({
           ...r,

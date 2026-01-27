@@ -6,9 +6,10 @@ const {
   storeWeeklyCalculation,
   calculateMinRecruitsFixed,
   getBaseRequirement,
-  isNewStaff
+  isNewStaff,
+  getRoleLevel
 } = require('../lib/recruiting-system');
-const { CHANNELS, ROLE_IDS } = require('../constants');
+const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 
 /**
  * Perform weekly recalculation for all recruiters
@@ -19,7 +20,7 @@ async function performWeeklyRecalculations(guild) {
   console.log('Starting weekly recruiter recalculation...');
   
   try {
-    // Get all recruiters (staff roles)
+    // Get all recruiters (staff roles + recruiter roles)
     const staffRoleIds = [
       ROLE_IDS.HELPER,
       ROLE_IDS.HELPER_PLUS,
@@ -33,8 +34,16 @@ async function performWeeklyRecalculations(guild) {
       ROLE_IDS.HIGH_STAFF
     ];
 
+    const recruiterRoleIds = [
+      ROLE_IDS.RECRUITER,
+      ROLE_IDS.TRIAL_RECRUITER,
+      ...Object.values(RECRUITER_ROLE_IDS)
+    ];
+
+    const allRoleIds = [...staffRoleIds, ...recruiterRoleIds];
+
     const allStaff = [];
-    for (const roleId of staffRoleIds) {
+    for (const roleId of allRoleIds) {
       const role = guild.roles.cache.get(roleId);
       if (role) {
         role.members.forEach(member => {
@@ -114,11 +123,14 @@ async function performWeeklyRecalculations(guild) {
         
         results.push(result);
 
-        // Send DM notification
-        await sendWeeklyRecalculationDM(result);
+        const roleLevel = getRoleLevel(staffMember);
+        if (roleLevel > 0) {
+          // Send DM notification
+          await sendWeeklyRecalculationDM(result);
 
-        // Post minReq and retention to invite channels
-        await postRetentionToInviteChannels(guild, result);
+          // Post minReq and retention to invite channels
+          await postRetentionToInviteChannels(guild, result);
+        }
 
       } catch (error) {
         console.error(`Error recalculating for staff ${staffMember.id}:`, error);

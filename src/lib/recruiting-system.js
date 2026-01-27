@@ -115,6 +115,13 @@ function calculateMinRecruitsFixed({
 
   // Low-activity floor (CRITICAL FIX)
   if (recruits7d <= 1) {
+    // Do not immediately drop brand-new recruiters/staff to 2.
+    // Only apply the low-activity floor after the recruiter has weekly history.
+    if (isNewStaff || previousMinReq == null) {
+      const base = (roleBase != null ? roleBase : 4);
+      return Math.max(2, Math.min(8, Math.ceil(base)));
+    }
+
     const floor = roleLevel >= 2 ? 3 : 2;
     return floor;
   }

@@ -7,9 +7,11 @@ const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
  */
 function hasRecruiterOrStaffPermissions(member) {
   if (!member) return false;
+  const hasPermissions = !!member.permissions && typeof member.permissions.has === 'function';
+  const hasRoleCache = !!member.roles && !!member.roles.cache && typeof member.roles.cache.has === 'function';
   
   // Check Discord admin permission
-  if (member.permissions.has('Administrator')) return true;
+  if (hasPermissions && member.permissions.has('Administrator')) return true;
   
   // Check staff roles
   const staffRoles = [
@@ -33,7 +35,8 @@ function hasRecruiterOrStaffPermissions(member) {
   ];
   
   const allAllowedRoles = [...staffRoles, ...recruiterRoles];
-  
+
+  if (!hasRoleCache) return false;
   return allAllowedRoles.some(roleId => member.roles.cache.has(roleId));
 }
 
@@ -44,9 +47,11 @@ function hasRecruiterOrStaffPermissions(member) {
  */
 function hasAdminOrStaffPermissions(member) {
   if (!member) return false;
+  const hasPermissions = !!member.permissions && typeof member.permissions.has === 'function';
+  const hasRoleCache = !!member.roles && !!member.roles.cache && typeof member.roles.cache.has === 'function';
   
   // Check Discord admin permission
-  if (member.permissions.has('Administrator')) return true;
+  if (hasPermissions && member.permissions.has('Administrator')) return true;
   
   // Check staff roles
   const staffRoles = [
@@ -62,6 +67,7 @@ function hasAdminOrStaffPermissions(member) {
     ROLE_IDS.LEADER
   ];
   
+  if (!hasRoleCache) return false;
   return staffRoles.some(roleId => member.roles.cache.has(roleId));
 }
 

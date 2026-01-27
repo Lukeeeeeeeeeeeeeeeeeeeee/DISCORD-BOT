@@ -1,8 +1,12 @@
 const cron = require('node-cron');
 const dayjs = require('dayjs');
-const { MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
+const { GUILD_ID, MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
-const { calculate7DayStats, getPreviousMinReq, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('./lib/recruiting-system');
+const { calculate7DayStats, getPreviousMinReq, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
+
+function resolveGuildId() {
+  return process.env.GUILD_ID || GUILD_ID;
+}
 
 function getWeekStartUtcTs(now = new Date()) {
   const day = now.getUTCDay();
@@ -194,6 +198,13 @@ async function recomputeLeaderboards(db, guild) {
 
         const roleBase = getBaseRequirement(member);
 
+        let newStaffCheck = false;
+        try {
+          newStaffCheck = await isNewStaff(db, r.recruiter_id);
+        } catch (e) {
+          newStaffCheck = false;
+        }
+
         let previousMinReq = null;
         try {
           previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
@@ -240,7 +251,7 @@ async function recomputeLeaderboards(db, guild) {
           warnings: activeWarnings,
           previousMinReq,
           absent: !!absence,
-          isNewStaff: false
+          isNewStaff: newStaffCheck
         });
 
         rows.push({
@@ -321,7 +332,7 @@ async function runWeeklySnapshotAndReset(db, client) {
       const existing = await db.get('SELECT key FROM system_events WHERE key = ?', announceKey);
       if (!existing) {
         await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', announceKey, Date.now());
-        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+        const guild = client.guilds.cache.get(resolveGuildId());
         const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
         if (ch) {
           await ch.send('@everyone Weekly invite/recruit tables have been reset for the new week.').catch(() => {});
@@ -332,11 +343,18 @@ async function runWeeklySnapshotAndReset(db, client) {
     }
 
     const recruiters = await db.all('SELECT id FROM recruiters');
-    const guild = client.guilds.cache.get(process.env.GUILD_ID);
+    const guild = client.guilds.cache.get(resolveGuildId());
 
     for (const recruiter of recruiters) {
       const currentStats = await calculate7DayStats(db, recruiter.id, guild || null);
       const previousMinReq = await getPreviousMinReq(db, recruiter.id);
+
+      let newStaffCheck = false;
+      try {
+        newStaffCheck = await isNewStaff(db, recruiter.id);
+      } catch (e) {
+        newStaffCheck = false;
+      }
 
       const warnings = await db.get(
         'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
@@ -363,7 +381,7 @@ async function runWeeklySnapshotAndReset(db, client) {
         warnings: activeWarnings,
         previousMinReq,
         absent: !!absence,
-        isNewStaff: false
+        isNewStaff: newStaffCheck
       });
 
       await storeWeeklyCalculation(db, {
@@ -462,7 +480,7 @@ async function runWeeklySnapshotAndReset(db, client) {
 
 async function reconcileTrialRecruiters(db, client) {
   try {
-    const guild = client.guilds.cache.get(process.env.GUILD_ID);
+    const guild = client.guilds.cache.get(resolveGuildId());
     if (!guild) return;
     const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
     if (!trialRole) return;
@@ -550,7 +568,7 @@ function start(client, db) {
     // scheduler.start() is called from index.js after the client is ready,
     // so don't wait for a second ready event here.
     (async () => {
-      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      const guild = client.guilds.cache.get(resolveGuildId());
       if (!guild) return;
       await applyFlags(db, guild).catch(() => {});
       await reconcileTrialRecruiters(db, client).catch(() => {});
@@ -572,7 +590,7 @@ function start(client, db) {
 
     // Cron: Monday at 00:00 UTC - Weekly recruiter recalculation
     cron.schedule('0 0 * * 1', async () => {
-      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      const guild = client.guilds.cache.get(resolveGuildId());
       if (!guild) return;
       try {
         await performWeeklyRecalculations(guild);
@@ -595,7 +613,7 @@ function start(client, db) {
 
     // Cron: Sunday at 12:00 UTC
     cron.schedule('0 12 * * 0', async () => {
-      const guild = client.guilds.cache.get(process.env.GUILD_ID);
+      const guild = client.guilds.cache.get(resolveGuildId());
       if (!guild) return;
       // Recompute statistics, check for members who left and mark recruits invalid
       // Remove recruits where member left
@@ -632,7 +650,7 @@ function start(client, db) {
         }
 
         // Recompute leaderboards to reflect any changes
-        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+        const guild = client.guilds.cache.get(resolveGuildId());
         if (guild) await module.exports.recomputeLeaderboards(db, guild);
       } catch (e) {
         console.error('Daily maintenance failed', e);
@@ -664,7 +682,7 @@ function start(client, db) {
     cron.schedule('0 0 1 * *', async () => {
       try {
         await db.run('UPDATE recruiters SET points = 0');
-        const guild = client.guilds.cache.get(process.env.GUILD_ID);
+        const guild = client.guilds.cache.get(resolveGuildId());
         if (guild) {
           const ch = guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
           if (ch) ch.send('Monthly recruiter points reset to 0.').catch(()=>{});

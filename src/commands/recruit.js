@@ -183,23 +183,12 @@ module.exports = {
         return respond({ content: 'Unable to verify your guild membership.', flags: 64 });
       }
 
-      // Check if user has required role to recruit (you can customize this)
-      const ROLE_IDS = require('../constants').ROLE_IDS;
+      // Only recruiters (incl trial/regional) or staff/admin can recruit.
       // In tests we run with minimal mocks; skip strict permission enforcement there.
       if (process.env.NODE_ENV !== 'test') {
-        const hasRoleCache = !!guildMember.roles && !!guildMember.roles.cache && typeof guildMember.roles.cache.has === 'function';
-        const hasPermissions = !!guildMember.permissions && typeof guildMember.permissions.has === 'function';
-        const hasRookieOrHigher =
-          (hasRoleCache && (
-            guildMember.roles.cache.has(ROLE_IDS.ROOKIE) ||
-            guildMember.roles.cache.has(ROLE_IDS.VIP) ||
-            guildMember.roles.cache.has(ROLE_IDS.MVP) ||
-            guildMember.roles.cache.has(ROLE_IDS.CUSTOM)
-          ));
-        const isAdmin = hasPermissions && guildMember.permissions.has('Administrator');
-
-        if ((hasRoleCache || hasPermissions) && !hasRookieOrHigher && !isAdmin) {
-          return respond({ content: 'You do not have permission to recruit members. You need at least Rookie role or higher.', flags: 64 });
+        const { hasRecruiterOrStaffPermissions } = require('../lib/permissions');
+        if (!hasRecruiterOrStaffPermissions(guildMember)) {
+          return respond({ content: 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter/Regional Recruiter).', flags: 64 });
         }
       }
 
