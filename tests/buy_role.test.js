@@ -4,12 +4,12 @@ const fs = require('fs');
 
 function makeInteraction(){
   const reply = jest.fn();
-  const options = { getSubcommand: () => 'buy', getString: (k) => 'vip-role' };
+  const options = { getSubcommand: () => 'buy', getString: (_k) => 'vip-role' };
   const member = {
     id: 'RBUY',
     roles: { add: jest.fn().mockResolvedValue(true) }
   };
-  const guild = { members: { fetch: jest.fn(async (id)=> member) } };
+  const guild = { members: { fetch: jest.fn(async (_id)=> member) } };
   const interaction = { options, reply, user: { id: 'RBUY', tag: 'Buyer#0001' }, member: { permissions: { has: () => false } }, guild };
   return { interaction, member };
 }
@@ -29,8 +29,8 @@ describe('buy role items', () => {
     await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?)', 'RBUY', 30, 0, 0, 4);
   });
   afterEach(async () => {
-    try { await db.close(); } catch (e) {}
-    try { fs.unlinkSync(dbPath); } catch (e) {}
+    try { await db.close(); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
 
   test('buy vip-role deducts points and assigns role', async () => {

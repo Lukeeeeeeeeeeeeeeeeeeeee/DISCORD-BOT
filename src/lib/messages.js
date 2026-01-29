@@ -99,7 +99,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
 }
 
 function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
-  const { MIN_LEADERBOARD_ENTRIES, REGION_INFO } = require('../constants');
+  const { REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
   
   let info;
@@ -149,7 +149,7 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   return embed;
 }
 
-function makeWarningsEmbed(rows, lang='en') {
+function makeWarningsEmbed(rows, _lang='en') {
   const { t } = require('./i18n');
   const title = '⚠️ Warnings Leaderboard';
 

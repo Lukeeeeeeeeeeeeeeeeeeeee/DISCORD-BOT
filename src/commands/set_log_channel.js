@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const AntiNuke = require('../lib/antinuke');
+const { hasAdministrator } = require('../lib/permissions');
 
 module.exports = {
   data: {
@@ -16,7 +16,7 @@ module.exports = {
   },
   async execute(interaction) {
     // Check admin permissions
-    if (!interaction.member.permissions.has('Administrator')) {
+    if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ 
         content: '❌ Administrator permission required.', 
         flags: 64 

@@ -1,5 +1,4 @@
 const { makeLeaderboardEmbed } = require('../src/lib/messages');
-const { MIN_LEADERBOARD_ENTRIES } = require('../src/constants');
 
 describe('makeLeaderboardEmbed', () => {
   test('returns no-recruits embed for empty rows', () => {

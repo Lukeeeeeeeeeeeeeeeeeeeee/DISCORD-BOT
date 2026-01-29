@@ -1,7 +1,7 @@
 jest.setTimeout(10000);
 function makeInteraction(sub='multiplier-list'){
   const reply = jest.fn();
-  const options = { getSubcommand: () => sub, getUser: (k) => null };
+  const options = { getSubcommand: () => sub, getUser: (_k) => null };
   const interaction = { options, reply, user: { id: 'R1', tag: 'Recruiter#0001' }, member: { permissions: { has: () => true } } };
   return { interaction, reply };
 }

@@ -131,6 +131,12 @@ class AntiNuke {
   // Save persistent data
   async saveData() {
     try {
+      try {
+        await fs.mkdir(path.dirname(this.DATA_FILE), { recursive: true });
+      } catch (e) {
+        void e;
+      }
+
       const data = {
         whitelist: Array.from(this.whitelist),
         logChannels: Object.fromEntries(this.logChannels)
@@ -204,7 +210,9 @@ class AntiNuke {
     
     // Check for auto-ban threshold
     if (newScore >= this.BEAST_MODE_THRESHOLD) {
-      this.handleBeastModeTrigger(guildId, userId, newScore);
+      this.handleBeastModeTrigger(guildId, userId, newScore).catch((e) => {
+        console.error('Beast mode trigger failed:', e);
+      });
     }
   }
 
@@ -245,7 +253,7 @@ class AntiNuke {
         
         // Reset score after ban
         const guildScores = this.beastModeTracker.get(guildId);
-        guildScores.set(userId, 0);
+        if (guildScores) guildScores.set(userId, 0);
       }
     } catch (error) {
       this.logAction(guildId, {
@@ -477,7 +485,6 @@ class AntiNuke {
   // Check emergency thresholds
   checkEmergencyThresholds(guildId) {
     const banCount = this.hourlyBanTracker.get(guildId) || 0;
-    const now = Date.now();
     
     for (const threshold of this.THRESHOLDS.emergency) {
       // This would need more sophisticated time tracking for different windows
@@ -532,7 +539,7 @@ class AntiNuke {
   }
 
   // Remove dangerous permissions
-  async removeDangerousPermissions(guild, emergencyMode = false) {
+  async removeDangerousPermissions(guild, _emergencyMode = false) {
     const roles = guild.roles.cache.filter(role => !role.managed);
     
     for (const role of roles) {
@@ -752,7 +759,7 @@ class AntiNuke {
     const oneDayAgo = now - (24 * 60 * 60 * 1000);
     
     // Clean action tracker
-    for (const [guildId, guildTracker] of this.actionTracker) {
+    for (const guildTracker of this.actionTracker.values()) {
       for (const [userId, actions] of guildTracker) {
         const filteredActions = actions.filter(action => action.timestamp > oneDayAgo);
         if (filteredActions.length === 0) {
@@ -897,7 +904,7 @@ class AntiNuke {
         const channel = guild.channels.cache.get(channelData.id);
         if (channel) {
           // Clear existing overwrites
-          for (const [id, overwrite] of channel.permissionOverwrites.cache) {
+          for (const overwrite of channel.permissionOverwrites.cache.values()) {
             await overwrite.delete();
           }
           

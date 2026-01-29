@@ -25,7 +25,7 @@ describe('member leave handling', () => {
     process.env.DATABASE_PATH = dbPath;
   });
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) {}
+    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
 
   test('removes recruit and deducts points from recruiter', async () => {

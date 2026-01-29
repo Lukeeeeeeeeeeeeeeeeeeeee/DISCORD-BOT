@@ -1,15 +1,13 @@
 const db = require('../db_async');
-const { SlashCommandBuilder } = require('@discordjs/builders');
 const { EmbedBuilder } = require('discord.js');
 const { PURCHASE_ITEMS } = require('../constants');
-const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions } = require('../lib/permissions');
+const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions, hasAdministrator } = require('../lib/permissions');
 const { 
   calculate7DayStats, 
   getPreviousMinReq, 
-  storeWeeklyCalculation,
   calculateMinRecruitsFixed,
   getBaseRequirement,
-  hasModPlusPermissions
+  isNewStaff
 } = require('../lib/recruiting-system');
 
 module.exports = {
@@ -94,10 +92,7 @@ module.exports = {
     }
 
     if (sub === 'multiplier-apply') {
-      if (!interaction.member || !interaction.member.permissions || !interaction.member.permissions.has('Administrator')) {
-        const hasAdmin = !!interaction.member && !!interaction.member.permissions && typeof interaction.member.permissions.has === 'function' && interaction.member.permissions.has('Administrator');
-        if (!hasAdmin) return interaction.reply({ content: 'Admin/Staff only.', flags: 64 });
-      }
+      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.', flags: 64 });
 
       const getUser = (key) => (interaction.options && typeof interaction.options.getUser === 'function' ? interaction.options.getUser(key) : null);
       const getString = (key) => (interaction.options && typeof interaction.options.getString === 'function' ? interaction.options.getString(key) : null);
@@ -153,10 +148,7 @@ module.exports = {
     }
 
     if (sub === 'multiplier-reset') {
-      if (!interaction.member || !interaction.member.permissions || !interaction.member.permissions.has('Administrator')) {
-        const hasAdmin = !!interaction.member && !!interaction.member.permissions && typeof interaction.member.permissions.has === 'function' && interaction.member.permissions.has('Administrator');
-        if (!hasAdmin) return interaction.reply({ content: 'Admin/Staff only.', flags: 64 });
-      }
+      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.', flags: 64 });
 
       let target = interaction.options.getUser('member') || interaction.options.getUser('user') || interaction.options.getUser('target') || interaction.options.getUser('recruiter');
       if (!target) {
@@ -219,20 +211,9 @@ module.exports = {
       const totalAllRow = await db.get('SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND valid = 1', member.id);
       const totalAll = totalAllRow ? totalAllRow.c : 0;
 
-      // Last 28 days stats
-      const since28 = Date.now() - (28*24*60*60*1000);
-      const recentRows = await db.all('SELECT * FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND valid = 1', member.id, since28);
-      const total28 = recentRows.length;
-      // distinct weeks in last 28 days
-      const weekStarts = new Set(recentRows.map(r => Math.floor((r.created_at - since28) / (7*24*60*60*1000))));
-      const distinctWeeks = Math.max(1, Math.min(4, weekStarts.size || 1));
-
       // Last recruit timestamp
       const lastRow = await db.get('SELECT created_at FROM recruits WHERE recruiter_id = ? AND valid = 1 ORDER BY created_at DESC LIMIT 1', member.id);
       const lastTs = lastRow ? lastRow.created_at : null;
-      const daysSinceLast = lastTs ? Math.floor((Date.now() - lastTs) / (24*60*60*1000)) : null;
-
-      const flags = await db.get('SELECT COUNT(*) as c FROM flags WHERE recruiter_id = ?', member.id);
       const warnings = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', member.id, Date.now());
 
       // Active multiplier and multiplier history
@@ -244,30 +225,6 @@ module.exports = {
       const purchases = await db.all('SELECT * FROM purchases WHERE recruiter_id = ? ORDER BY created_at DESC LIMIT 5', member.id);
       const recentFlags = await db.all('SELECT * FROM flags WHERE recruiter_id = ? ORDER BY created_at DESC LIMIT 5', member.id);
       const recentWarnings = await db.all('SELECT * FROM warnings WHERE recruiter_id = ? ORDER BY created_at DESC LIMIT 5', member.id);
-
-      // Attempt to compute retention via message-scan (fallback to heuristic true)
-      let retention = null;
-      try {
-        const recruitedIds = recentRows.map(r => r.recruited_id);
-        retention = recruitedIds.length ? await econ.computeRetentionFromGuild(interaction.guild, recruitedIds, 7, 15, { fallbackToHeuristic: true }) : 0;
-      } catch (e) {
-        retention = -1;
-      }
-
-      // Determine recruiter role by fetching guild member (best-effort)
-      let recruiterRole = 'UNKNOWN';
-      try {
-        const recMember = await interaction.guild.members.fetch(member.id).catch(()=>null);
-        if (recMember) {
-          const ROLE_IDS = require('../constants').ROLE_IDS;
-          if (recMember.roles.cache.has(ROLE_IDS.VIP)) recruiterRole = 'VIP';
-          else if (recMember.roles.cache.has(ROLE_IDS.MVP)) recruiterRole = 'MVP';
-          else if (recMember.roles.cache.has(ROLE_IDS.CUSTOM)) recruiterRole = 'CUSTOM';
-          else recruiterRole = 'NONE';
-        }
-      } catch (e) {
-        recruiterRole = 'UNKNOWN';
-      }
 
       // Get 7-day stats using new system
       const stats7d = await calculate7DayStats(db, member.id);
@@ -283,22 +240,33 @@ module.exports = {
       const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       const roleBase = getBaseRequirement(targetMember);
       
-      // Check if new staff (first 2 recalcs) - for now, default to false
-      const newStaffCheck = false; // Fixed: was calling non-existent function
+      // Check if new staff (first 2 recalcs) - consider when people begin recruiting
+      let newStaffCheck = false;
+      try {
+        newStaffCheck = await isNewStaff(db, member.id);
+      } catch (e) {
+        newStaffCheck = false;
+      }
+      // Also consider if they've never recruited anyone (brand new recruiter)
+      if (totalAll === 0) {
+        newStaffCheck = true;
+      }
 
       const isTrialRecruiter = !!targetMember && targetMember.roles.cache.has(require('../constants').ROLE_IDS.TRIAL_RECRUITER) && !targetMember.roles.cache.has(require('../constants').ROLE_IDS.AUTO_PROMOTE_ROLE);
-      
-      const minReq = isTrialRecruiter ? 3 : (previousMinReq != null ? previousMinReq : calculateMinRecruitsFixed({
-        roleBase,
-        member: targetMember,
-        recruits7d: stats7d.recruits7d,
-        activityRate: stats7d.activityRate,
-        retention: stats7d.retention,
-        warnings: warnings ? warnings.c : 0,
-        previousMinReq,
-        absent: !!absence,
-        isNewStaff: newStaffCheck
-      }));
+
+      const minReq = isTrialRecruiter
+        ? 3
+        : calculateMinRecruitsFixed({
+            roleBase,
+            member: targetMember,
+            recruits7d: stats7d.recruits7d,
+            activityRate: stats7d.activityRate,
+            retention: stats7d.retention,
+            warnings: warnings ? warnings.c : 0,
+            previousMinReq,
+            absent: !!absence,
+            isNewStaff: newStaffCheck
+          });
 
       const recentText = recruits.length ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT','')}) — ${r.points || 0} pts`).join('\n') : 'None';
 
@@ -317,9 +285,9 @@ module.exports = {
         )
         .addFields(
           { name: 'Recent recruits (last 5)', value: recentText || 'None' },
-          { name: 'Status', value: absence ? `📅 Absent until ${absence.end_date}` : '✅ Active', inline: true }
+          { name: 'Status', value: absence ? `📅 Absent until ${absence.end_date}` : (totalAll === 0 ? '🆕 New Recruiter' : (stats7d.recruits7d >= minReq ? '✅ Active' : `⚠️ Inactive (${stats7d.recruits7d}/${minReq})`)), inline: true }
         )
-        .setColor(absence ? 0xFFAA00 : 0x00CC66)
+        .setColor(absence ? 0xFFAA00 : (totalAll === 0 ? 0x00AAFF : (stats7d.recruits7d >= minReq ? 0x00CC66 : 0xFF4444)))
         .setTimestamp();
 
       // Add compact summaries for purchases/multipliers if present
@@ -346,13 +314,13 @@ module.exports = {
       // Check if user has permission to buy (basic check)
       const ROLE_IDS = require('../constants').ROLE_IDS;
       const hasRole = (roleId) => !!roleId && !!guildMember && !!guildMember.roles && !!guildMember.roles.cache && typeof guildMember.roles.cache.has === 'function' && guildMember.roles.cache.has(roleId);
-      const isAdmin = !!guildMember && !!guildMember.permissions && typeof guildMember.permissions.has === 'function' && guildMember.permissions.has('Administrator');
+      const isAdmin = hasAdministrator(guildMember);
       const hasRoleCache = !!guildMember && !!guildMember.roles && !!guildMember.roles.cache && typeof guildMember.roles.cache.has === 'function';
       const hasPermissions = !!guildMember && !!guildMember.permissions && typeof guildMember.permissions.has === 'function';
 
       // In production, roles.cache and permissions exist. In tests/mocks they may not.
-      if ((hasRoleCache || hasPermissions) && !hasRole(ROLE_IDS.ROOKIE) && !hasRole(ROLE_IDS.VIP) && !hasRole(ROLE_IDS.MVP) && !hasRole(ROLE_IDS.CUSTOM) && !isAdmin) {
-        return interaction.reply({ content: 'You need at least Rookie role to purchase items.', flags: 64 });
+      if ((hasRoleCache || hasPermissions) && !hasRecruiterOrStaffPermissions(guildMember) && !hasRole(ROLE_IDS.ROOKIE) && !hasRole(ROLE_IDS.VIP) && !hasRole(ROLE_IDS.MVP) && !hasRole(ROLE_IDS.CUSTOM) && !isAdmin) {
+        return interaction.reply({ content: 'You need to be verified (Rookie+) or a recruiter/staff to purchase items.', flags: 64 });
       }
       
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', userId);

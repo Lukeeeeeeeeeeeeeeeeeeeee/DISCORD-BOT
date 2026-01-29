@@ -1,5 +1,6 @@
 const { PermissionsBitField } = require('discord.js');
 const { CHANNELS } = require('../constants');
+const { hasAdministrator } = require('../lib/permissions');
 
 // Tunables
 const DEFAULT_MAX = 30; // default recipients cap
@@ -13,9 +14,9 @@ const cooldowns = new Map();
 
 module.exports = {
   data: { name: 'dm' },
-  async execute(interaction, client, db) {
+  async execute(interaction, _client, _db) {
     // admin only
-    if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
+    if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin only.', flags: 64 });
 
     const perms = interaction.member.permissions || interaction.member.permissionsIn?.(interaction.channel);
     const isAdmin = perms && perms.has && perms.has(PermissionsBitField.Flags.Administrator);

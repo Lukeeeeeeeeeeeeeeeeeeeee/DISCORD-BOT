@@ -43,8 +43,8 @@ describe('warnings leaderboard', () => {
     `);
   });
   afterEach(async () => {
-    try { await db.close(); } catch (e) {}
-    try { fs.unlinkSync(dbPath); } catch (e) {}
+    try { await db.close(); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
 
   test('recomputeWarningsLeaderboard posts/upserts a leaderboard message', async () => {

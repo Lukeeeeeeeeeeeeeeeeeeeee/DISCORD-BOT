@@ -15,6 +15,6 @@ test('db is created at DATABASE_PATH when required', () => {
   // Clean up
   try {
     if (db && typeof db.close === 'function') db.close();
-  } catch (e) {}
-  try { fs.unlinkSync(dbPath); } catch (e) {}
+  } catch (e) { void e; }
+  try { fs.unlinkSync(dbPath); } catch (e) { void e; }
 });

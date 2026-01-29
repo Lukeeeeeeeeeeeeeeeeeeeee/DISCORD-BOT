@@ -1,18 +1,19 @@
 const fs = require('fs');
 const path = require('path');
-const { EmbedBuilder, PermissionsBitField } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
+const { hasAdministrator } = require('../lib/permissions');
 
 module.exports = {
   data: { name: 'status' },
   async execute(interaction) {
-    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) return interaction.reply({ content: 'Administrator permission required.', flags: 64 });
+    if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Administrator permission required.', flags: 64 });
 
     const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'recruiter.db');
     let dbSize = 'N/A';
     try {
       const s = fs.statSync(DB_PATH);
       dbSize = `${Math.round(s.size/1024)} KB`;
-    } catch (e) { }
+    } catch (e) { void e; }
 
     const backupsDir = path.join(path.dirname(DB_PATH), 'backups');
     let lastBackup = 'None';
@@ -22,7 +23,7 @@ module.exports = {
         files.sort((a,b)=>b.t-a.t);
         lastBackup = files[0].f;
       }
-    } catch (e) { }
+    } catch (e) { void e; }
 
     const uptime = `${Math.round(process.uptime())}s`;
 

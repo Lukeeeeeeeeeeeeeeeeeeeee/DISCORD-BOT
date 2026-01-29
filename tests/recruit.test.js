@@ -44,7 +44,7 @@ function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member
     joinedAt: new Date(Date.now() - (30 * 60 * 1000)), // joined 30 minutes ago
     roles: {
       cache: {
-        has: (id) => false
+        has: (_id) => false
       },
       add: jest.fn().mockResolvedValue(true),
       remove: jest.fn().mockResolvedValue(true)
@@ -59,7 +59,7 @@ function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member
   };
 
   const options = {
-    getUser: (k) => ({ id: member.id, tag: member.tag }),
+    getUser: (_k) => ({ id: member.id, tag: member.tag }),
     getString: (k) => (k === 'region' ? region : (k === 'ign' ? ign : undefined))
   };
 
@@ -90,18 +90,18 @@ describe('/recruit command', () => {
     const cnt = cntRow ? cntRow.c : 0;
     if (cnt !== 0) {
       // reset DB file if unexpected rows exist
-      try { fs.unlinkSync(dbPath); } catch (e) {}
+      try { fs.unlinkSync(dbPath); } catch (e) { void e; }
       delete require.cache[require.resolve('../src/db_async.js')];
       await require('../src/db_async').exec('SELECT 1');
     }
   });
 
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) {}
+    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
 
   test('successfully recruits a member and updates DB and roles', async () => {
-    const { interaction, guildMember, recruiterMember, channelsCache } = makeInteraction();
+    const { interaction, guildMember, channelsCache } = makeInteraction();
     // ensure guild members.fetch returns our guildMember
     interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
     // load db and module
@@ -199,7 +199,7 @@ describe('/recruit command', () => {
     const spy = jest.spyOn(econ, 'computeRetentionFromGuild').mockResolvedValue(0.75);
 
     // create interaction for recruiter info
-    const options = { getSubcommand: () => 'info', getUser: (k) => ({ id: 'R1', tag: 'Recruiter#0001' }) };
+    const options = { getSubcommand: () => 'info', getUser: (_k) => ({ id: 'R1', tag: 'Recruiter#0001' }) };
     const reply = jest.fn();
     const guild = { members: { fetch: jest.fn(async (id)=> ({ id, roles: { cache: { has: () => false } } })) } };
     const interaction = { options, reply, user: { id: 'R1', tag: 'Recruiter#0001' }, member: { permissions: { has: () => true } }, guild };

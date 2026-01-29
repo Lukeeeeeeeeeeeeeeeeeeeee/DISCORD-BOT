@@ -12,7 +12,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for ban actions with rollback tracking
-  async trackBan(guild, executor, target) {
+  async trackBan(guild, _executor, target) {
     // Record pre-action state
     this.rollback.recordPreActionState(guild, 'ban', target);
     
@@ -24,7 +24,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for kick actions with rollback tracking
-  async trackKick(guild, executor, target) {
+  async trackKick(guild, _executor, target) {
     this.rollback.recordPreActionState(guild, 'kick', target);
     
     // ... your existing kick logic here ...
@@ -33,7 +33,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for channel deletion with rollback tracking
-  async trackChannelDelete(guild, executor, channel) {
+  async trackChannelDelete(guild, _executor, channel) {
     this.rollback.recordPreActionState(guild, 'channel_delete', channel);
     
     // ... your existing channel delete logic here ...
@@ -42,7 +42,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for role deletion with rollback tracking
-  async trackRoleDelete(guild, executor, role) {
+  async trackRoleDelete(guild, _executor, role) {
     this.rollback.recordPreActionState(guild, 'role_delete', role);
     
     // ... your existing role delete logic here ...
@@ -51,7 +51,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for role permission changes with rollback tracking
-  async trackRolePermissionsChange(guild, executor) {
+  async trackRolePermissionsChange(guild, _executor) {
     this.rollback.recordPreActionState(guild, 'role_permissions', null);
     
     // ... your existing role permission logic here ...
@@ -60,7 +60,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for emergency lockdown with rollback tracking
-  async trackEmergencyLockdown(guild, executor) {
+  async trackEmergencyLockdown(guild, _executor) {
     this.rollback.recordPreActionState(guild, 'emergency_lockdown', null);
     
     // ... your existing emergency lockdown logic here ...
@@ -69,7 +69,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for bot addition with rollback tracking
-  async trackBotAdd(guild, executor, bot) {
+  async trackBotAdd(guild, _executor, bot) {
     this.rollback.recordPreActionState(guild, 'bot_add', bot);
     
     // ... your existing bot addition logic here ...
@@ -78,7 +78,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for webhook creation with rollback tracking
-  async trackWebhookCreate(guild, executor, webhook) {
+  async trackWebhookCreate(guild, _executor, webhook) {
     this.rollback.recordPreActionState(guild, 'webhook_create', webhook);
     
     // ... your existing webhook creation logic here ...
@@ -87,7 +87,7 @@ class AntiNukeWithRollback {
   }
 
   // Wrapper for member prune with rollback tracking
-  async trackMemberPrune(guild, executor, prunedMembers) {
+  async trackMemberPrune(guild, _executor, prunedMembers) {
     this.rollback.recordPreActionState(guild, 'member_prune', prunedMembers);
     
     // ... your existing member prune logic here ...

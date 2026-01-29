@@ -62,7 +62,7 @@ function calculateMinRecruitsRequired({
   return Math.max(2, Math.min(8, minReq));
 }
 
-function calculateRecruitPoints({ recruiterRole = 'NONE', multiplierValue = 1.0 } = {}) {
+function calculateRecruitPoints({ recruiterRole: _recruiterRole = 'NONE', multiplierValue = 1.0 } = {}) {
   const base = 1; // Base 1 point for every recruit
   const total = Math.floor(base * (multiplierValue || 1.0));
   return total;

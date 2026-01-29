@@ -4,7 +4,7 @@ const fs = require('fs');
 
 const makeTempDbPath = () => path.join(require('os').tmpdir(), `recruiter-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 
-function makeGuildMock(db) {
+function makeGuildMock(_db) {
   // Create mock channels with send and message store
   const createChannel = (id) => {
     const messages = new Map();
@@ -54,13 +54,12 @@ describe('scheduler recompute & persistence', () => {
     `);
   });
   afterEach(async () => {
-    try { await db.close(); } catch (e) {}
-    try { fs.unlinkSync(dbPath); } catch (e) {}
+    try { await db.close(); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
 
   test('recomputeLeaderboards writes leaderboard_messages on new messages', async () => {
     const scheduler = require('../src/scheduler');
-    const { upsertLeaderboardMessage } = require('../src/lib/messages');
 
     // Insert some recruits into EU
     const now = Date.now();

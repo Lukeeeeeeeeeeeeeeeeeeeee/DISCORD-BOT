@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const AntiNuke = require('../lib/antinuke');
+const { hasAdministrator } = require('../lib/permissions');
 
 module.exports = {
   data: {
@@ -27,7 +27,7 @@ module.exports = {
   },
   async execute(interaction) {
     // Check admin permissions
-    if (!interaction.member.permissions.has('Administrator')) {
+    if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ 
         content: '❌ Administrator permission required.', 
         flags: 64 
@@ -47,7 +47,7 @@ module.exports = {
 
     try {
       switch (action) {
-        case 'add':
+        case 'add': {
           if (!targetUser) {
             return interaction.reply({ 
               content: '❌ User parameter is required for add action.', 
@@ -84,8 +84,9 @@ module.exports = {
           });
 
           return interaction.reply({ embeds: [addEmbed], flags: 64 });
+        }
 
-        case 'remove':
+        case 'remove': {
           if (!targetUser) {
             return interaction.reply({ 
               content: '❌ User parameter is required for remove action.', 
@@ -122,8 +123,9 @@ module.exports = {
           });
 
           return interaction.reply({ embeds: [removeEmbed], flags: 64 });
+        }
 
-        case 'list':
+        case 'list': {
           const whitelist = antiNuke.getWhitelist();
           
           if (whitelist.length === 0) {
@@ -159,6 +161,8 @@ module.exports = {
             .setTimestamp();
 
           return interaction.reply({ embeds: [listEmbed], flags: 64 });
+
+        }
 
         default:
           return interaction.reply({ 

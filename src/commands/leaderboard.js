@@ -1,5 +1,6 @@
 const db = require('../db_async');
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../constants');
+const { hasAdministrator } = require('../lib/permissions');
 
 module.exports = {
   data: { name: 'leaderboard' },
@@ -70,7 +71,6 @@ module.exports = {
         }
         
         // Get recruit data for all recruiters
-        const placeholders = recruiterMembers.map(() => '?').join(',');
         const unionSelects = recruiterMembers.map(() => 'SELECT ? AS id').join(' UNION ALL ');
         const rowsBase = await db.all(`
           SELECT 
@@ -193,7 +193,6 @@ module.exports = {
       }
       
       // Get global recruit data
-      const placeholders = recruiterMembers.map(() => '?').join(',');
       const unionSelects = recruiterMembers.map(() => 'SELECT ? AS id').join(' UNION ALL ');
       const rowsBase = await db.all(`
         SELECT 
@@ -265,7 +264,7 @@ module.exports = {
 
     if (sub === 'init') {
       // admin only
-      if (!interaction.member.permissions.has('Administrator')) return interaction.reply({ content: 'Admin only.', flags: 64 });
+      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin only.', flags: 64 });
       try {
         const scheduler = require('../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);

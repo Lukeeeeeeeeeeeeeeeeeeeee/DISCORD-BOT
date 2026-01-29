@@ -1,4 +1,12 @@
 const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
+const { PermissionsBitField } = require('discord.js');
+
+function hasAdministrator(member) {
+  if (!member) return false;
+  const hasPermissions = !!member.permissions && typeof member.permissions.has === 'function';
+  if (!hasPermissions) return false;
+  return member.permissions.has(PermissionsBitField.Flags.Administrator) || member.permissions.has('Administrator');
+}
 
 /**
  * Check if a user has recruiter or staff permissions
@@ -7,11 +15,10 @@ const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
  */
 function hasRecruiterOrStaffPermissions(member) {
   if (!member) return false;
-  const hasPermissions = !!member.permissions && typeof member.permissions.has === 'function';
   const hasRoleCache = !!member.roles && !!member.roles.cache && typeof member.roles.cache.has === 'function';
   
   // Check Discord admin permission
-  if (hasPermissions && member.permissions.has('Administrator')) return true;
+  if (hasAdministrator(member)) return true;
   
   // Check staff roles
   const staffRoles = [
@@ -47,11 +54,10 @@ function hasRecruiterOrStaffPermissions(member) {
  */
 function hasAdminOrStaffPermissions(member) {
   if (!member) return false;
-  const hasPermissions = !!member.permissions && typeof member.permissions.has === 'function';
   const hasRoleCache = !!member.roles && !!member.roles.cache && typeof member.roles.cache.has === 'function';
   
   // Check Discord admin permission
-  if (hasPermissions && member.permissions.has('Administrator')) return true;
+  if (hasAdministrator(member)) return true;
   
   // Check staff roles
   const staffRoles = [
@@ -73,5 +79,6 @@ function hasAdminOrStaffPermissions(member) {
 
 module.exports = {
   hasRecruiterOrStaffPermissions,
-  hasAdminOrStaffPermissions
+  hasAdminOrStaffPermissions,
+  hasAdministrator
 };

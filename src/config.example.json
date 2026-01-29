@@ -9,7 +9,6 @@
       "NA": "1331020555566059622",
       "AS": "1331020556144869438"
     },
-    "special_role": "1459956798172827933",
     "auto_promote_role": "1331020565879984198"
   },
   "channels": {
@@ -21,6 +20,6 @@
   },
   "limits": {
     "max_join_age_minutes": 120,
-    "min_account_age_days": 30*6
+    "min_account_age_days": 180
   }
 }

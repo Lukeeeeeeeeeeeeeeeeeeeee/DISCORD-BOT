@@ -26,7 +26,7 @@ describe('upsertLeaderboardMessage', () => {
       send: jest.fn(async (opts) => ({ id: 'm-1', content: opts.content, embeds: opts.embeds }))
     };
 
-    const res = await upsertLeaderboardMessage(db, channel, 'EU', 'hello', null);
+    await upsertLeaderboardMessage(db, channel, 'EU', 'hello', null);
     expect(channel.send).toHaveBeenCalled();
     const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, 'EU');
     expect(row).toBeDefined();
@@ -41,11 +41,11 @@ describe('upsertLeaderboardMessage', () => {
     let edited = false;
     const channel = {
       id: 'chan-2',
-      messages: { fetch: jest.fn(async (id) => ({ id, edit: async (content) => { edited = true; return { id }; } })) },
-      send: jest.fn(async (opts) => ({ id: 'm-new' }))
+      messages: { fetch: jest.fn(async (id) => ({ id, edit: async (_content) => { edited = true; return { id }; } })) },
+      send: jest.fn(async (_opts) => ({ id: 'm-new' }))
     };
 
-    const res = await upsertLeaderboardMessage(db, channel, 'NA', 'updated', null);
+    await upsertLeaderboardMessage(db, channel, 'NA', 'updated', null);
     expect(edited).toBe(true);
     const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, 'NA');
     expect(row.message_id).toBe('m-2');

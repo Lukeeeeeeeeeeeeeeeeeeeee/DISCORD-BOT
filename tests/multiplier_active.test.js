@@ -4,7 +4,7 @@ const fs = require('fs');
 
 function makeInteraction(sub='multiplier-active'){
   const reply = jest.fn();
-  const options = { getSubcommand: () => sub, getUser: (k) => null };
+  const options = { getSubcommand: () => sub, getUser: (_k) => null };
   const interaction = { options, reply, user: { id: 'R1', tag: 'Recruiter#0001' }, member: { permissions: { has: () => true } } };
   return { interaction, reply };
 }
@@ -24,8 +24,8 @@ describe('multiplier-active admin', () => {
     await db.run('INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', 'A', 1.25, 'm1.25_14d', Date.now(), Date.now() + (14*24*60*60*1000));
   });
   afterEach(async () => {
-    try { await db.close(); } catch (e) {}
-    try { fs.unlinkSync(dbPath); } catch (e) {}
+    try { await db.close(); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
   test('multiplier-active returns embed with list', async () => {
     const { interaction } = makeInteraction('multiplier-active');

@@ -6,6 +6,15 @@ class AntiNukeRollback {
     this.rollbackData = new Map(); // guildId -> rollback data
     this.ROLLBACK_FILE = path.join(__dirname, '../data/antinuke_rollback.json');
     this.OWNER_ID = '1381692847018868778';
+    this._saveQueue = Promise.resolve();
+  }
+
+  async ensureDataDir() {
+    try {
+      await fs.mkdir(path.dirname(this.ROLLBACK_FILE), { recursive: true });
+    } catch (e) {
+      void e;
+    }
   }
 
   // Initialize rollback system
@@ -23,12 +32,17 @@ class AntiNukeRollback {
 
   // Save rollback data to file
   async saveRollbackData() {
-    try {
-      const data = Object.fromEntries(this.rollbackData);
-      await fs.writeFile(this.ROLLBACK_FILE, JSON.stringify(data, null, 2));
-    } catch (error) {
-      console.error('❌ Failed to save rollback data:', error);
-    }
+    this._saveQueue = this._saveQueue.then(async () => {
+      try {
+        await this.ensureDataDir();
+        const data = Object.fromEntries(this.rollbackData);
+        await fs.writeFile(this.ROLLBACK_FILE, JSON.stringify(data, null, 2));
+      } catch (error) {
+        console.error('❌ Failed to save rollback data:', error);
+      }
+    });
+
+    return this._saveQueue;
   }
 
   // Record state before anti-nuke action
@@ -67,9 +81,14 @@ class AntiNukeRollback {
     if (!guildData) return;
 
     // Find the most recent action of this type that doesn't have a postState
-    const action = guildData.actions
-      .reverse()
-      .find(a => a.actionType === actionType && !a.postState && !a.reverted);
+    let action = null;
+    for (let i = guildData.actions.length - 1; i >= 0; i--) {
+      const a = guildData.actions[i];
+      if (a.actionType === actionType && !a.postState && !a.reverted) {
+        action = a;
+        break;
+      }
+    }
 
     if (action) {
       action.postState = this.captureState(guild, actionType, targetData);
@@ -96,7 +115,7 @@ class AntiNukeRollback {
           id: targetData.id,
           tag: targetData.user?.tag,
           roles: targetData.roles?.cache.map(r => r.id),
-          joinedAt: targetData.joinedAt,
+          joinedAt: targetData.joinedAt ? targetData.joinedAt.getTime() : null,
           nickname: targetData.nickname
         } : null;
         break;
@@ -245,7 +264,7 @@ class AntiNukeRollback {
   }
 
   // Rollback individual action
-  async rollbackAction(guild, action, client) {
+  async rollbackAction(guild, action, _client) {
     const { actionType, preState } = action;
 
     switch (actionType) {
@@ -301,13 +320,9 @@ class AntiNukeRollback {
       return { success: false, error: 'No member data to restore' };
     }
 
-    try {
-      // Note: We can't restore a kicked member unless we have an invite
-      // This is a limitation of Discord API
-      return { success: false, error: 'Cannot restore kicked members (Discord API limitation)' };
-    } catch (error) {
-      return { success: false, error: `Failed to restore member: ${error.message}` };
-    }
+    // Note: We can't restore a kicked member unless we have an invite
+    // This is a limitation of Discord API
+    return { success: false, error: 'Cannot restore kicked members (Discord API limitation)' };
   }
 
   async rollbackChannelDelete(guild, preState) {
@@ -373,7 +388,7 @@ class AntiNukeRollback {
         roleData.unicodeEmoji = preState.role.emoji;
       }
 
-      const newRole = await guild.roles.create(roleData);
+      await guild.roles.create(roleData);
       return { success: true, action: 'Restored role', target: preState.role.name };
     } catch (error) {
       return { success: false, error: `Failed to restore role: ${error.message}` };
@@ -420,7 +435,7 @@ class AntiNukeRollback {
         const channel = guild.channels.cache.get(channelData.id);
         if (channel) {
           // Clear existing overwrites
-          for (const [id, overwrite] of channel.permissionOverwrites.cache) {
+          for (const overwrite of channel.permissionOverwrites.cache.values()) {
             await overwrite.delete();
           }
           
@@ -486,12 +501,8 @@ class AntiNukeRollback {
       return { success: false, error: 'No prune data to restore' };
     }
 
-    try {
-      // Note: Like kicks, we can't restore pruned members
-      return { success: false, error: 'Cannot restore pruned members (Discord API limitation)' };
-    } catch (error) {
-      return { success: false, error: `Failed to restore pruned members: ${error.message}` };
-    }
+    // Note: Like kicks, we can't restore pruned members
+    return { success: false, error: 'Cannot restore pruned members (Discord API limitation)' };
   }
 
   // Get rollback status for a guild

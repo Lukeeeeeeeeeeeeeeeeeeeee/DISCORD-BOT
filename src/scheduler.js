@@ -1,11 +1,27 @@
 const cron = require('node-cron');
-const dayjs = require('dayjs');
 const { GUILD_ID, MIN_RECRUITS_FOR_AUTO, EXEMPT_TOP_PERCENT, REPEATED_FLAGS_TO_WARN, ESCALATION_WINDOW_WEEKS, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
 const { calculate7DayStats, getPreviousMinReq, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
 
+const DEBUG_SCHEDULER = process.env.DEBUG_SCHEDULER === '1';
+
+function debugLog(...args) {
+  if (DEBUG_SCHEDULER) console.log(...args);
+}
+
 function resolveGuildId() {
   return process.env.GUILD_ID || GUILD_ID;
+}
+
+async function resolveGuild(client) {
+  const guildId = resolveGuildId();
+  if (!client || !client.guilds) return null;
+  const cached = client.guilds.cache ? client.guilds.cache.get(guildId) : null;
+  if (cached) return cached;
+  if (typeof client.guilds.fetch === 'function') {
+    return client.guilds.fetch(guildId).catch(() => null);
+  }
+  return null;
 }
 
 function getWeekStartUtcTs(now = new Date()) {
@@ -116,8 +132,8 @@ async function recomputeLeaderboards(db, guild) {
   ];
   
   for (const rg of regions) {
-    console.log(`Processing region ${rg.key}...`);
-    console.log(`Channel ID for ${rg.key}: ${rg.channel}`);
+    debugLog(`Processing region ${rg.key}...`);
+    debugLog(`Channel ID for ${rg.key}: ${rg.channel}`);
     
     // Resolve central leaderboard channel once per region loop iteration
     const central = guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD);
@@ -131,8 +147,8 @@ async function recomputeLeaderboards(db, guild) {
       // - EU: members with EU recruiter role OR general recruiter/trial recruiter OR staff (default region)
       const recruiterRoleId = RECRUITER_ROLE_IDS[rg.key];
       const recruiterRole = guild.roles.cache.get(recruiterRoleId);
-      console.log(`Recruiter role ID for ${rg.key}: ${recruiterRoleId}`);
-      console.log(`Recruiter role found: ${!!recruiterRole}`);
+      debugLog(`Recruiter role ID for ${rg.key}: ${recruiterRoleId}`);
+      debugLog(`Recruiter role found: ${!!recruiterRole}`);
 
       if (recruiterRole) recruiterRole.members.forEach(m => allRecruiterIds.add(m.id));
 
@@ -155,13 +171,13 @@ async function recomputeLeaderboards(db, guild) {
     }
 
 
-    console.log(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
+    debugLog(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
 
     const lang = process.env.DEFAULT_LANG || 'en';
     let leaderboardText;
 
     if (allRecruiterIds.size === 0) {
-      console.log(`No recruiters found for region ${rg.key}`);
+      debugLog(`No recruiters found for region ${rg.key}`);
       leaderboardText = makeLeaderboardText([], rg.key, lang);
     }
     
@@ -264,29 +280,29 @@ async function recomputeLeaderboards(db, guild) {
       }
 
       leaderboardText = makeLeaderboardText(rows, rg.key, lang);
-      console.log(`Generated leaderboard for ${rg.key} with ${rows.length} entries`);
+      debugLog(`Generated leaderboard for ${rg.key} with ${rows.length} entries`);
     }
 
     const ch = guild.channels.cache.get(rg.channel);
-    console.log(`Looking for channel ${rg.channel} for ${rg.key}...`);
-    console.log(`Channel found: ${!!ch}`);
+    debugLog(`Looking for channel ${rg.channel} for ${rg.key}...`);
+    debugLog(`Channel found: ${!!ch}`);
 
     if (ch) {
-      console.log(`Updating leaderboard for ${rg.key} in channel ${ch.name}...`);
+      debugLog(`Updating leaderboard for ${rg.key} in channel ${ch.name}...`);
       await upsertLeaderboardMessage(db, ch, rg.key, leaderboardText, null).catch((err) => {
         console.error(`Failed to upsert message for ${rg.key}:`, err);
       });
     } else {
-      console.log(`Channel not found for ${rg.key}: ${rg.channel} (skipping regional post)`);
+      debugLog(`Channel not found for ${rg.key}: ${rg.channel} (skipping regional post)`);
     }
 
     if (central) {
-      console.log(`Cross-posting to central leaderboard for ${rg.key}...`);
+      debugLog(`Cross-posting to central leaderboard for ${rg.key}...`);
       await upsertLeaderboardMessage(db, central, rg.key, leaderboardText, null).catch((err) => {
         console.error(`Failed to cross-post to central leaderboard for ${rg.key}:`, err);
       });
     } else {
-      console.log(`Central leaderboard channel not found: ${CHANNELS.CENTRAL_LEADERBOARD}`);
+      debugLog(`Central leaderboard channel not found: ${CHANNELS.CENTRAL_LEADERBOARD}`);
     }
   }
 }
@@ -322,7 +338,7 @@ async function recomputeWarningsLeaderboard(db, guild) {
 }
 
 async function runWeeklySnapshotAndReset(db, client) {
-  console.log('Starting weekly MinReq and stats reset...');
+  debugLog('Starting weekly MinReq and stats reset...');
   try {
     const weekStart = getWeekStartUtcTs();
 
@@ -332,7 +348,7 @@ async function runWeeklySnapshotAndReset(db, client) {
       const existing = await db.get('SELECT key FROM system_events WHERE key = ?', announceKey);
       if (!existing) {
         await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', announceKey, Date.now());
-        const guild = client.guilds.cache.get(resolveGuildId());
+        const guild = await resolveGuild(client);
         const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
         if (ch) {
           await ch.send('@everyone Weekly invite/recruit tables have been reset for the new week.').catch(() => {});
@@ -343,7 +359,7 @@ async function runWeeklySnapshotAndReset(db, client) {
     }
 
     const recruiters = await db.all('SELECT id FROM recruiters');
-    const guild = client.guilds.cache.get(resolveGuildId());
+    const guild = await resolveGuild(client);
 
     for (const recruiter of recruiters) {
       const currentStats = await calculate7DayStats(db, recruiter.id, guild || null);
@@ -397,7 +413,7 @@ async function runWeeklySnapshotAndReset(db, client) {
         roleBase
       });
 
-      console.log(`Stored weekly calculation for ${recruiter.id}: MinReq=${finalMinReq}, Recruits=${currentStats.recruits7d}`);
+      debugLog(`Stored weekly calculation for ${recruiter.id}: MinReq=${finalMinReq}, Recruits=${currentStats.recruits7d}`);
     }
 
     // Auto-warning: missed quota in >=2 of last 3 weekly snapshots (absence weeks ignored)
@@ -472,7 +488,7 @@ async function runWeeklySnapshotAndReset(db, client) {
       console.error('Failed to recompute leaderboards after weekly snapshot:', e);
     }
 
-    console.log('Weekly MinReq and stats reset completed successfully');
+    debugLog('Weekly MinReq and stats reset completed successfully');
   } catch (error) {
     console.error('Weekly MinReq and stats reset failed:', error);
   }
@@ -480,7 +496,7 @@ async function runWeeklySnapshotAndReset(db, client) {
 
 async function reconcileTrialRecruiters(db, client) {
   try {
-    const guild = client.guilds.cache.get(resolveGuildId());
+    const guild = await resolveGuild(client);
     if (!guild) return;
     const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
     if (!trialRole) return;
@@ -496,7 +512,6 @@ async function reconcileTrialRecruiters(db, client) {
         recruiterMember.id, windowStart
       );
       if (!recent || recent.length < 3) continue;
-
       let allStillInGuild = true;
       for (const r of recent) {
         try {
@@ -518,6 +533,26 @@ async function reconcileTrialRecruiters(db, client) {
       await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => {});
       await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(() => {});
 
+      // Add regional recruiter role based on top region in the last 9 days (best-effort)
+      try {
+        const rows = await db.all(
+          'SELECT region, COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND valid = 1 GROUP BY region ORDER BY c DESC',
+          recruiterMember.id,
+          windowStart
+        );
+        const topRegion = rows && rows.length ? rows[0].region : null;
+        const regionalRoleId = topRegion ? RECRUITER_ROLE_IDS[topRegion] : null;
+        if (regionalRoleId) await recruiterMember.roles.add(regionalRoleId).catch(() => {});
+      } catch (e) {
+        void e;
+      }
+
+      try {
+        await db.run('UPDATE recruiters SET promoted = 1 WHERE id = ?', recruiterMember.id);
+      } catch (e) {
+        void e;
+      }
+
       // After promotion, store a fresh weekly calculation so minReq transitions off trial=3
       try {
         const currentStats = await calculate7DayStats(db, recruiterMember.id);
@@ -533,7 +568,7 @@ async function reconcileTrialRecruiters(db, client) {
         const roleBase = getBaseRequirement(recruiterMember);
         const calculatedMinReq = calculateMinRecruitsFixed({
           roleBase,
-          role: recruiterMember.roles.cache.first()?.id,
+          member: recruiterMember,
           recruits7d: currentStats.recruits7d,
           activityRate: currentStats.activityRate,
           retention: currentStats.retention,
@@ -557,7 +592,7 @@ async function reconcileTrialRecruiters(db, client) {
       }
 
       await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(() => {});
-      console.log('Auto-promoted trial recruiter (reconciled):', recruiterMember.id);
+      debugLog('Auto-promoted trial recruiter (reconciled):', recruiterMember.id);
     }
   } catch (e) {
     console.error('Trial recruiter reconcile failed:', e);
@@ -568,11 +603,11 @@ function start(client, db) {
     // scheduler.start() is called from index.js after the client is ready,
     // so don't wait for a second ready event here.
     (async () => {
-      const guild = client.guilds.cache.get(resolveGuildId());
+      const guild = await resolveGuild(client);
       if (!guild) return;
-      await applyFlags(db, guild).catch(() => {});
-      await reconcileTrialRecruiters(db, client).catch(() => {});
-      await recomputeLeaderboards(db, guild).catch(() => {});
+      await applyFlags(db, guild).catch((e) => console.error('applyFlags failed:', e));
+      await reconcileTrialRecruiters(db, client).catch((e) => console.error('reconcileTrialRecruiters failed:', e));
+      await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
 
       // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
       try {
@@ -590,11 +625,11 @@ function start(client, db) {
 
     // Cron: Monday at 00:00 UTC - Weekly recruiter recalculation
     cron.schedule('0 0 * * 1', async () => {
-      const guild = client.guilds.cache.get(resolveGuildId());
+      const guild = await resolveGuild(client);
       if (!guild) return;
       try {
         await performWeeklyRecalculations(guild);
-        console.log('Weekly recruiter recalculation completed successfully');
+        debugLog('Weekly recruiter recalculation completed successfully');
       } catch (error) {
         console.error('Weekly recruiter recalculation failed:', error);
       }
@@ -613,16 +648,17 @@ function start(client, db) {
 
     // Cron: Sunday at 12:00 UTC
     cron.schedule('0 12 * * 0', async () => {
-      const guild = client.guilds.cache.get(resolveGuildId());
+      const guild = await resolveGuild(client);
       if (!guild) return;
       // Recompute statistics, check for members who left and mark recruits invalid
       // Remove recruits where member left
       const recruits = await db.all('SELECT * FROM recruits WHERE valid = 1');
       for (const r of recruits) {
-        guild.members.fetch(r.recruited_id).catch(async ()=>{
-          // member not found, mark invalid and recompute
+        try {
+          await guild.members.fetch(r.recruited_id);
+        } catch (e) {
           await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', r.id);
-        });
+        }
       }
 
       // Apply flags and leaderboard recompute
@@ -650,7 +686,7 @@ function start(client, db) {
         }
 
         // Recompute leaderboards to reflect any changes
-        const guild = client.guilds.cache.get(resolveGuildId());
+        const guild = await resolveGuild(client);
         if (guild) await module.exports.recomputeLeaderboards(db, guild);
       } catch (e) {
         console.error('Daily maintenance failed', e);
@@ -668,7 +704,7 @@ function start(client, db) {
         
         if (inviteSystem) {
           await inviteSystem.cleanupExpiredInvites();
-          console.log('🧹 Hourly invite cleanup completed');
+          debugLog('Hourly invite cleanup completed');
         }
       } catch (error) {
         console.error('Hourly invite cleanup failed:', error);
@@ -682,7 +718,7 @@ function start(client, db) {
     cron.schedule('0 0 1 * *', async () => {
       try {
         await db.run('UPDATE recruiters SET points = 0');
-        const guild = client.guilds.cache.get(resolveGuildId());
+        const guild = await resolveGuild(client);
         if (guild) {
           const ch = guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
           if (ch) ch.send('Monthly recruiter points reset to 0.').catch(()=>{});

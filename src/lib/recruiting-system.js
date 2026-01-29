@@ -1,4 +1,5 @@
 const { ROLE_IDS } = require('../constants');
+const { hasAdministrator } = require('./permissions');
 
 // Role hierarchy for permissions
 const ROLE_HIERARCHY = {
@@ -75,6 +76,7 @@ function getBaseRequirement(member) {
  * @returns {boolean} - True if user has MOD+ permissions
  */
 function hasModPlusPermissions(member) {
+  if (hasAdministrator(member)) return true;
   return getRoleLevel(member) >= 2;
 }
 
@@ -86,6 +88,10 @@ async function isNewStaff(db, recruiterId) {
     );
     return calculationCount ? calculationCount.c < 2 : true;
   } catch (error) {
+    const msg = (error && error.message) ? String(error.message) : '';
+    if (msg.toLowerCase().includes('no such table: weekly_calculations')) {
+      return true;
+    }
     console.error('Error checking if new staff:', error);
     return false;
   }
@@ -258,6 +264,10 @@ async function getPreviousMinReq(db, recruiterId) {
     );
     return row ? row.calculated_min_req : null;
   } catch (error) {
+    const msg = (error && error.message) ? String(error.message) : '';
+    if (msg.toLowerCase().includes('no such table: weekly_calculations')) {
+      return null;
+    }
     console.error('Error getting previous min req:', error);
     return null;
   }

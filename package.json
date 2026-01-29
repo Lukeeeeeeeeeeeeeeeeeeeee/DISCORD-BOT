@@ -8,7 +8,8 @@
     "register-commands": "node src/register-commands.js",
     "backup": "node scripts/backup-db.js",
     "lint": "eslint . --ext .js",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "require-walk": "node scripts/require-walk.js"
   },
   "devDependencies": {
     "eslint": "^8.50.0",

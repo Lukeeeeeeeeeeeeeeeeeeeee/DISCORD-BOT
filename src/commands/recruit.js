@@ -1,4 +1,3 @@
-const dayjs = require('dayjs');
 const { ROLE_IDS } = require('../constants');
 const db = require('../db_async');
 const { getActiveMultiplier, calculateRecruitPoints } = require('../lib/economy');
@@ -7,6 +6,7 @@ const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, g
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
   try {
     const currentStats = await calculate7DayStats(db, recruiterMember.id);
+
     const warnings = await db.get(
       'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
       recruiterMember.id, Date.now()
@@ -19,7 +19,7 @@ async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
     const roleBase = getBaseRequirement(recruiterMember);
     const calculatedMinReq = calculateMinRecruitsFixed({
       roleBase,
-      role: recruiterMember.roles.cache.first()?.id,
+      member: recruiterMember,
       recruits7d: currentStats.recruits7d,
       activityRate: currentStats.activityRate,
       retention: currentStats.retention,
@@ -28,6 +28,7 @@ async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
       absent: !!absence,
       isNewStaff: false
     });
+
     await storeWeeklyCalculation(db, {
       recruiterId: recruiterMember.id,
       recruits7d: currentStats.recruits7d,
@@ -141,9 +142,29 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
     }
   }
 
+  let recruiterRoleId = null;
+  try {
+    const rows = await db.all(
+      'SELECT region, COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND valid = 1 GROUP BY region ORDER BY c DESC',
+      recruiterMember.id,
+      windowStart
+    );
+    const topRegion = rows && rows.length ? rows[0].region : null;
+    recruiterRoleId = topRegion ? require('../constants').RECRUITER_ROLE_IDS[topRegion] : null;
+  } catch (e) {
+    recruiterRoleId = null;
+  }
+
   await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(() => {});
   await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => {});
   await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(() => {});
+  if (recruiterRoleId) await recruiterMember.roles.add(recruiterRoleId).catch(() => {});
+
+  try {
+    await db.run('UPDATE recruiters SET promoted = 1 WHERE id = ?', recruiterMember.id);
+  } catch (e) {
+    void e;
+  }
 
   await storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember);
 
@@ -200,6 +221,7 @@ module.exports = {
 
       const joinedAt = recruitedGuildMember.joinedAt;
       const now = new Date();
+      if (!joinedAt) return respond({ content: 'Unable to verify when that member joined. Please try again.', flags: 64 });
       const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
       if (minutesSinceJoin > 120) return respond({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', flags: 64 });
 
@@ -273,30 +295,6 @@ module.exports = {
           }
         } catch (e) {
           console.error('Trial fast-track update failed:', e);
-        }
-
-        // Check for special-role auto-promotion: if they have the special role and got >=3 recruits in last 7 days
-        if (ROLE_IDS.SPECIAL_ROLE !== ROLE_IDS.TRIAL_RECRUITER && recruiterMember && recruiterMember.roles.cache.has(ROLE_IDS.SPECIAL_ROLE)) {
-          const cutoff = Date.now() - (7*24*60*60*1000);
-          const countRecentRow = await db.get('SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ?', interaction.user.id, cutoff);
-          const countRecent = countRecentRow ? countRecentRow.c : 0;
-          if (countRecent >= 3) {
-            const recRow = await db.get('SELECT promoted FROM recruiters WHERE id = ?', interaction.user.id);
-            if (!recRow || !recRow.promoted) {
-              // determine top region in the last 7 days
-              const rows = await db.all('SELECT region, COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ? GROUP BY region ORDER BY c DESC', interaction.user.id, cutoff);
-              const topRegion = rows.length ? rows[0].region : region;
-              const recruiterRoleId = require('../constants').RECRUITER_ROLE_IDS[topRegion];
-
-              // swap roles
-              await recruiterMember.roles.remove(ROLE_IDS.SPECIAL_ROLE).catch(() => {});
-              await recruiterMember.roles.remove(ROLE_IDS.ROOKIE).catch(() => {});
-              await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => {});
-              if (recruiterRoleId) await recruiterMember.roles.add(recruiterRoleId).catch(() => {});
-
-              await db.run('UPDATE recruiters SET promoted = 1 WHERE id = ?', interaction.user.id);
-            }
-          }
         }
 
         try {

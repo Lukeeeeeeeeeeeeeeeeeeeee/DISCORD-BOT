@@ -6,6 +6,7 @@ const db = require('./db_async');
 const scheduler = require('./scheduler');
 const { GUILD_ID } = require('./constants');
 const AntiNukeSystem = require('./lib/antinuke-system');
+const { dispatchCommand } = require('./lib/command-dispatcher');
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
@@ -76,7 +77,7 @@ client.on('interactionCreate', async interaction => {
   const cmd = client.commands.get(interaction.commandName);
   if (!cmd) return;
   try {
-    await cmd.execute(interaction);
+    await dispatchCommand(cmd, interaction, { client, db });
   } catch (err) {
     // If the interaction itself failed because it's unknown/expired (10062), ignore silently
     if (err && err.code === 10062) return;
@@ -106,9 +107,6 @@ client.on('guildMemberAdd', async (member) => {
     
     if (!inviteSystem) return;
 
-    // Fetch guild invites to find which one was used
-    const invites = await member.guild.invites.fetch();
-    
     // This is a simplified approach - in production you'd want to track invite counts before/after
     // For now, we'll just log that a member joined
     console.log(`👋 Member ${member.user.tag} joined the server`);

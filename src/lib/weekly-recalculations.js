@@ -11,6 +11,14 @@ const {
 } = require('../lib/recruiting-system');
 const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 
+function getWeekStartUtcTs(now = new Date()) {
+  const day = now.getUTCDay();
+  const diffToMonday = (day + 6) % 7;
+  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
+  return weekStart.getTime();
+}
+
 /**
  * Perform weekly recalculation for all recruiters
  * Runs every Monday at 00:00 UTC
@@ -18,6 +26,8 @@ const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 async function performWeeklyRecalculations(guild) {
   const database = db;
   console.log('Starting weekly recruiter recalculation...');
+
+  const weekStart = getWeekStartUtcTs();
   
   try {
     // Get all recruiters (staff roles + recruiter roles)
@@ -99,7 +109,7 @@ async function performWeeklyRecalculations(guild) {
         // Store calculation
         await storeWeeklyCalculation(database, {
           recruiterId: staffMember.id,
-          weekStart: new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate())).getTime(),
+          weekStart,
           recruits7d: stats7d.recruits7d,
           activityRate: stats7d.activityRate,
           retention: stats7d.retention,

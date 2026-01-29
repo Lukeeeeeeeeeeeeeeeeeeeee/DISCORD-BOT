@@ -26,7 +26,7 @@ describe('multiplier purchase and admin application', () => {
     process.env.DATABASE_PATH = dbPath;
   });
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) {}
+    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
 
   test('recruiter can buy a multiplier when they have enough points', async () => {
@@ -38,7 +38,7 @@ describe('multiplier purchase and admin application', () => {
     const reply = jest.fn();
     const options = {
       getSubcommand: () => 'buy',
-      getString: (k) => 'm1.15_14d'
+      getString: (_k) => 'm1.15_14d'
     };
     const interaction = { options, user: { id: 'R1' }, reply, member: { permissions: { has: () => true } } };
 
@@ -75,8 +75,9 @@ describe('multiplier purchase and admin application', () => {
     const optionsApply = {
       getSubcommand: () => 'multiplier-apply',
       getUser: () => ({ id: 'R2', tag: 'User#0002' }),
-      getString: (k) => 'm1.5_7d'
+      getString: (_k) => 'm1.5_7d'
     };
+
     const interactionApply = { options: optionsApply, user: { id: 'Admin' }, member: { permissions: { has: () => true } }, guild: { channels: { cache: new Map() } }, reply };
     // Clear cached modules so they re-init with our DB path
     delete require.cache[require.resolve('../src/db_async.js')];

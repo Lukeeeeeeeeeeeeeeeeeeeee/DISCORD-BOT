@@ -1,5 +1,4 @@
 const db = require('../db_async');
-const { SlashCommandBuilder } = require('@discordjs/builders');
 const { EmbedBuilder } = require('discord.js');
 const { hasAdminOrStaffPermissions } = require('../lib/permissions');
 

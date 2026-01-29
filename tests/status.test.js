@@ -17,8 +17,8 @@ describe('/status command', () => {
     require('../src/db.js');
   });
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) {}
-    try { const bdir = path.join(path.dirname(dbPath),'backups'); fs.rmdirSync(bdir,{recursive:true}); } catch (e) {}
+    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { const bdir = path.join(path.dirname(dbPath),'backups'); fs.rmdirSync(bdir,{recursive:true}); } catch (e) { void e; }
   });
 
   test('returns status embed with counts and backup info', async () => {
