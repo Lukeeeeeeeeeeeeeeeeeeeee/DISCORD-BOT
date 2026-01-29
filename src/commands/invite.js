@@ -7,22 +7,13 @@ let inviteSystem = null;
 module.exports = {
   data: {
     name: 'invite',
-    description: 'Create a time-limited invite link (Recruiters only)'
+    description: 'Create a time-limited invite link'
   },
   async execute(interaction) {
     // Initialize invite system if not already done
     if (!inviteSystem) {
       inviteSystem = new InviteSystem();
       await inviteSystem.init();
-    }
-
-    // Check if user is a recruiter
-    const isRecruiter = await inviteSystem.isRecruiter(interaction.user.id, interaction.guild);
-    if (!isRecruiter) {
-      return interaction.reply({ 
-        content: '❌ This command is only available to recruiters (Trial, EU, NA, AS).', 
-        flags: 64 
-      });
     }
 
     try {

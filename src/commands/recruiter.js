@@ -10,6 +10,41 @@ const {
   isNewStaff
 } = require('../lib/recruiting-system');
 
+function toUnixSeconds(ms) {
+  return Math.floor(ms / 1000);
+}
+
+function safeDaysLeftFromEndDate(endDateStr) {
+  if (!endDateStr) return null;
+  const d = new Date(`${endDateStr}T23:59:59.000Z`);
+  const diffMs = d.getTime() - Date.now();
+  if (!Number.isFinite(diffMs)) return null;
+  return Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+}
+
+async function computeRetentionCounts({ db, guild, recruiterId, cohortStartMs, cohortEndMs, cap = 30 } = {}) {
+  if (!db || !guild || !recruiterId) return { cohortSize: 0, retained: 0, sampled: false };
+
+  const rows = await db.all(
+    'SELECT recruited_id, created_at FROM recruits WHERE recruiter_id = ? AND valid = 1 AND created_at >= ? AND created_at < ? ORDER BY created_at DESC',
+    recruiterId,
+    cohortStartMs,
+    cohortEndMs
+  );
+
+  const cohortSize = rows ? rows.length : 0;
+  const slice = rows && rows.length > cap ? rows.slice(0, cap) : (rows || []);
+  const sampled = !!rows && rows.length > cap;
+
+  let retained = 0;
+  for (const r of slice) {
+    const m = await guild.members.fetch(r.recruited_id).catch(() => null);
+    if (m) retained++;
+  }
+
+  return { cohortSize, retained, sampled };
+}
+
 module.exports = {
   data: { name: 'recruiter' },
   async execute(interaction) {
@@ -205,6 +240,10 @@ module.exports = {
         return interaction.reply({ content: 'You can only view your own recruiter info.', flags: 64 });
       }
 
+      if (!interaction.guild) {
+        return interaction.reply({ content: 'This command can only be used in a server.', flags: 64 });
+      }
+
       // Basic rows
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', member.id);
       const recruits = await db.all('SELECT * FROM recruits WHERE recruiter_id = ? ORDER BY created_at DESC LIMIT 5', member.id);
@@ -214,7 +253,8 @@ module.exports = {
       // Last recruit timestamp
       const lastRow = await db.get('SELECT created_at FROM recruits WHERE recruiter_id = ? AND valid = 1 ORDER BY created_at DESC LIMIT 1', member.id);
       const lastTs = lastRow ? lastRow.created_at : null;
-      const warnings = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', member.id, Date.now());
+      const activeWarningsRow = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', member.id, Date.now());
+      const totalWarningsRow = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0', member.id);
 
       // Active multiplier and multiplier history
       const econ = require('../lib/economy');
@@ -262,7 +302,7 @@ module.exports = {
             recruits7d: stats7d.recruits7d,
             activityRate: stats7d.activityRate,
             retention: stats7d.retention,
-            warnings: warnings ? warnings.c : 0,
+            warnings: activeWarningsRow ? activeWarningsRow.c : 0,
             previousMinReq,
             absent: !!absence,
             isNewStaff: newStaffCheck
@@ -280,7 +320,8 @@ module.exports = {
           { name: 'Active Multiplier', value: mul && mul.type ? `${mul.type} — ×${mul.value}` : 'None', inline: true },
           { name: 'Total recruits (all time)', value: `${totalAll}`, inline: true },
           { name: 'Recruits (7 days)', value: `${stats7d.recruits7d}`, inline: true },
-          { name: 'Warnings (active)', value: `${warnings ? warnings.c : 0}`, inline: true },
+          { name: 'Warnings (active)', value: `${activeWarningsRow ? activeWarningsRow.c : 0}`, inline: true },
+          { name: 'Warnings (all time)', value: `${totalWarningsRow ? totalWarningsRow.c : 0}`, inline: true },
           { name: 'Min recruits required', value: `${minReq}`, inline: true }
         )
         .addFields(
@@ -289,6 +330,81 @@ module.exports = {
         )
         .setColor(absence ? 0xFFAA00 : (totalAll === 0 ? 0x00AAFF : (stats7d.recruits7d >= minReq ? 0x00CC66 : 0xFF4444)))
         .setTimestamp();
+
+      if (absence) {
+        const daysLeft = safeDaysLeftFromEndDate(absence.end_date);
+        embed.addFields({
+          name: 'Absence details',
+          value: `Until **${absence.end_date}**${Number.isFinite(daysLeft) ? ` (${daysLeft}d left)` : ''}\nSet by: <@${absence.created_by}>`,
+          inline: false
+        });
+      }
+
+      const now = Date.now();
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+      const cohort7d = await computeRetentionCounts({
+        db,
+        guild: interaction.guild,
+        recruiterId: member.id,
+        cohortStartMs: now - (14 * 24 * 60 * 60 * 1000),
+        cohortEndMs: now - (7 * 24 * 60 * 60 * 1000),
+        cap: 25
+      });
+      const retention7dPct = cohort7d.cohortSize > 0 ? Math.round((cohort7d.retained / cohort7d.cohortSize) * 100) : 0;
+
+      const allTimeEligible = await db.all(
+        'SELECT recruited_id, created_at FROM recruits WHERE recruiter_id = ? AND valid = 1 AND created_at <= ? ORDER BY created_at DESC',
+        member.id,
+        now - sevenDaysMs
+      );
+      const allTimeCohortSize = allTimeEligible ? allTimeEligible.length : 0;
+      const allTimeSlice = allTimeEligible && allTimeEligible.length > 30 ? allTimeEligible.slice(0, 30) : (allTimeEligible || []);
+      const allTimeSampled = !!allTimeEligible && allTimeEligible.length > 30;
+      let allTimeRetained = 0;
+      for (const r of allTimeSlice) {
+        const m = await interaction.guild.members.fetch(r.recruited_id).catch(() => null);
+        if (m) allTimeRetained++;
+      }
+      const retentionAllPct = allTimeCohortSize > 0 ? Math.round((allTimeRetained / allTimeCohortSize) * 100) : 0;
+
+      embed.addFields({
+        name: 'Retention (7d cohort)',
+        value: cohort7d.cohortSize > 0
+          ? `${retention7dPct}% (${cohort7d.retained}/${cohort7d.cohortSize})${cohort7d.sampled ? ' (sampled)' : ''}`
+          : 'N/A',
+        inline: true
+      });
+      embed.addFields({
+        name: 'Retention (all time, ≥7d old)',
+        value: allTimeCohortSize > 0
+          ? `${retentionAllPct}% (${allTimeRetained}/${allTimeCohortSize})${allTimeSampled ? ' (sampled)' : ''}`
+          : 'N/A',
+        inline: true
+      });
+
+      const oldestCandidates = await db.all(
+        'SELECT recruited_id, created_at FROM recruits WHERE recruiter_id = ? AND valid = 1 ORDER BY created_at ASC LIMIT 30',
+        member.id
+      );
+      const retainedDurations = [];
+      for (const r of (oldestCandidates || [])) {
+        const m = await interaction.guild.members.fetch(r.recruited_id).catch(() => null);
+        if (!m) continue;
+        const days = Math.floor((now - r.created_at) / (24 * 60 * 60 * 1000));
+        retainedDurations.push({ recruitedId: r.recruited_id, createdAt: r.created_at, days });
+      }
+      retainedDurations.sort((a, b) => b.days - a.days);
+      const topN = totalAll >= 10 ? 5 : 3;
+      const topRetained = retainedDurations.slice(0, topN);
+      if (topRetained.length) {
+        embed.addFields({
+          name: `Longest retained recruits (top ${topRetained.length})`,
+          value: topRetained
+            .map(r => `<@${r.recruitedId}> — ${r.days}d (recruited <t:${toUnixSeconds(r.createdAt)}:R>)`)
+            .join('\n'),
+          inline: false
+        });
+      }
 
       // Add compact summaries for purchases/multipliers if present
       if (purchases.length) embed.addFields({ name: 'Recent purchases', value: purchases.map(p=>`${p.item} — ${p.cost} pts`).join('\n') });
