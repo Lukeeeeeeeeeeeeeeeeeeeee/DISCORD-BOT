@@ -86,11 +86,11 @@ module.exports = {
   },
   async execute(interaction) {
     if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ content: '❌ Administrator permission required.', flags: 64 });
+      return interaction.reply({ content: '❌ Administrator permission required.' });
     }
 
     if (!interaction.guild) {
-      return interaction.reply({ content: 'This command can only be used in a server.', flags: 64 });
+      return interaction.reply({ content: 'This command can only be used in a server.' });
     }
 
     const rawRegion = interaction.options && typeof interaction.options.getString === 'function'
@@ -99,7 +99,7 @@ module.exports = {
 
     const region = rawRegion && ['EU', 'NA', 'AS', 'ALL'].includes(rawRegion) ? rawRegion : 'ALL';
 
-    await interaction.deferReply({ flags: 64 });
+    await interaction.deferReply();
 
     try {
       if (interaction.guild.members && typeof interaction.guild.members.fetch === 'function') {
@@ -111,10 +111,14 @@ module.exports = {
 
     const recruiterIds = await resolveRecruiterIdsForRegion(interaction.guild, region);
     if (!recruiterIds.length) {
-      return interaction.editReply({ content: `No recruiters found for ${region}.`, flags: 64 });
+      return interaction.editReply({ content: `No recruiters found for ${region}.` });
     }
 
     const results = [];
+
+    const now = new Date();
+    const weekStart = (new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0))).getTime() - (((now.getUTCDay() + 6) % 7) * 24 * 60 * 60 * 1000);
+    const prevWeekStart = weekStart - (7 * 24 * 60 * 60 * 1000);
 
     for (const id of recruiterIds) {
       const member = await interaction.guild.members.fetch(id).catch(() => null);
@@ -140,6 +144,11 @@ module.exports = {
       ).catch(() => null);
       const activeWarnings = warningsRow ? warningsRow.c : 0;
 
+      // "Attention" means: missed quota last week AND currently below minReq.
+      const missKey = `quota_last_miss_${id}`;
+      const lastMiss = await db.get('SELECT timestamp FROM system_events WHERE key = ? LIMIT 1', missKey).catch(() => null);
+      const attention = !!lastMiss && Number(lastMiss.timestamp) === prevWeekStart;
+
       let newStaffCheck = await isNewStaff(db, id).catch(() => false);
       if (totalAll === 0) newStaffCheck = true;
 
@@ -160,7 +169,7 @@ module.exports = {
             isNewStaff: newStaffCheck
           });
 
-      const status = getRecruiterStatus({ recruits7d: stats7d.recruits7d, minReq, activeWarnings, absent: !!absence });
+      const status = getRecruiterStatus({ recruits7d: stats7d.recruits7d, minReq, activeWarnings, absent: !!absence, attention });
 
       results.push({
         id,
@@ -176,17 +185,16 @@ module.exports = {
 
     const buckets = [
       { key: 'DEMOTION', title: 'Demotion watch (2+ warnings)' },
-      { key: 'WARNED', title: 'Warned (1 warning)' },
       { key: 'FAILING', title: 'Failing' },
-      { key: 'WATCH', title: 'Watch closely' },
+      { key: 'ATTENTION', title: 'Attention' },
       { key: 'PASSING', title: 'Passing' },
-      { key: 'EXCEEDING', title: 'Exceeding' },
+      { key: 'GOOD', title: 'Good' },
       { key: 'ABSENT', title: 'Absent' }
     ];
 
     const grouped = new Map(buckets.map(b => [b.key, []]));
     for (const r of results) {
-      const key = r.status && r.status.bucket ? r.status.bucket : 'WATCH';
+      const key = r.status && r.status.bucket ? r.status.bucket : 'PASSING';
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key).push(r);
     }
@@ -226,6 +234,6 @@ module.exports = {
       if (fieldCount >= 24) break;
     }
 
-    return interaction.editReply({ embeds: [embed], flags: 64 });
+    return interaction.editReply({ embeds: [embed] });
   }
 };

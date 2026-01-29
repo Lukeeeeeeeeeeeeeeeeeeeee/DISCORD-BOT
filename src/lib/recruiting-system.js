@@ -164,24 +164,30 @@ function calculateMinRecruitsFixed({
   return Math.max(2, Math.min(8, Math.ceil(smoothed)));
 }
 
-function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, absent = false } = {}) {
+function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, absent = false, attention = false } = {}) {
   if (absent || minReq === 0) {
     return { bucket: 'ABSENT', label: '📅 Absent', color: 0xFFAA00 };
   }
 
   if (activeWarnings >= 2) {
-    return { bucket: 'DEMOTION', label: '🚨 Demotion (2 warnings)', color: 0x992D22 };
-  }
-  if (activeWarnings === 1) {
-    // Not necessarily failing, but should be watched.
-    // Bucket classification for reports can still override based on performance.
+    return { bucket: 'DEMOTION', label: '🚨 Demotion watch (2+ warnings)', color: 0x992D22 };
   }
 
-  const diff = recruits7d - minReq;
-  if (diff >= 2) return { bucket: 'EXCEEDING', label: `🔥 Exceeding (${recruits7d}/${minReq})`, color: 0x00CC66 };
-  if (diff >= 0) return { bucket: 'PASSING', label: `✅ Passing (${recruits7d}/${minReq})`, color: 0x51CF66 };
-  if (diff === -1) return { bucket: 'WATCH', label: `🟦 Watch closely (${recruits7d}/${minReq})`, color: 0x00AAFF };
-  return { bucket: 'FAILING', label: `⚠️ Failing (${recruits7d}/${minReq})`, color: 0xFF4444 };
+  // Per requested rules: failing if you got none.
+  if ((recruits7d || 0) === 0) {
+    return { bucket: 'FAILING', label: `⚠️ Failing (0/${minReq})`, color: 0xFF4444 };
+  }
+
+  // Attention if you meet the auto-warning criteria (computed by caller).
+  if (attention && (recruits7d || 0) < (minReq || 0)) {
+    return { bucket: 'ATTENTION', label: `� Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
+  }
+
+  if ((recruits7d || 0) < (minReq || 0)) {
+    return { bucket: 'PASSING', label: `✅ Passing (${recruits7d}/${minReq})`, color: 0x51CF66 };
+  }
+
+  return { bucket: 'GOOD', label: `🔥 Good (${recruits7d}/${minReq})`, color: 0x00CC66 };
 }
 
 /**
