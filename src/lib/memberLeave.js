@@ -21,10 +21,9 @@ async function handleMemberLeave(db, guild, member) {
     throw e;
   }
 
-  // recompute flags and leaderboards
+  // recompute leaderboards
   try {
     if (guild) {
-      await scheduler.applyFlags(db, guild);
       await scheduler.recomputeLeaderboards(db, guild);
     }
   } catch (e) {

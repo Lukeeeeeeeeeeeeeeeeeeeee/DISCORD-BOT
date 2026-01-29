@@ -46,7 +46,15 @@ const commands = [
     .addStringOption(opt=>opt.setName('message').setDescription('Message to send to matching members').setRequired(true))
     .addIntegerOption(opt=>opt.setName('limit').setDescription('Maximum recipients to DM (caps apply)').setRequired(false).setMinValue(1).setMaxValue(100))
     .addBooleanOption(opt=>opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
-  new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link'),
+  new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
+  new SlashCommandBuilder().setName('recruitment_report').setDescription('Admin: show recruiting data for all recruiters (optionally filtered by region)')
+    .addStringOption(opt => opt.setName('region').setDescription('Region filter (default ALL)').setRequired(false)
+      .addChoices(
+        { name: 'ALL', value: 'ALL' },
+        { name: 'EU', value: 'EU' },
+        { name: 'NA', value: 'NA' },
+        { name: 'AS', value: 'AS' }
+      )),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
     .addSubcommand(s=>s.setName('show').setDescription('Show leaderboard').addStringOption(opt=>opt.setName('region').setDescription('Region or all').setRequired(false)))
     .addSubcommand(s=>s.setName('init').setDescription('Initialize leaderboard messages (admin only)')),

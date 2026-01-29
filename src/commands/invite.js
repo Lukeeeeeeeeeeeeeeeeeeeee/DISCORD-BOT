@@ -1,5 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const InviteSystem = require('../lib/invite-system');
+const { hasAdministrator } = require('../lib/permissions');
 
 // Global invite system instance
 let inviteSystem = null;
@@ -7,7 +8,7 @@ let inviteSystem = null;
 module.exports = {
   data: {
     name: 'invite',
-    description: 'Create a time-limited invite link'
+    description: 'Create a time-limited invite link (Recruiters only)'
   },
   async execute(interaction) {
     // Initialize invite system if not already done
@@ -16,7 +17,20 @@ module.exports = {
       await inviteSystem.init();
     }
 
+    // Recruiters/trial/regional recruiters only (admins always allowed)
     try {
+      const isAdmin = hasAdministrator(interaction.member);
+      const isRecruiter = interaction.guild
+        ? await inviteSystem.isRecruiter(interaction.user.id, interaction.guild)
+        : false;
+
+      if (!isAdmin && !isRecruiter) {
+        return interaction.reply({
+          content: '❌ This command is only available to recruiters (Trial/Regional included).',
+          flags: 64
+        });
+      }
+
       // Get current invite status
       const status = inviteSystem.getInviteStatus(interaction.user.id);
 

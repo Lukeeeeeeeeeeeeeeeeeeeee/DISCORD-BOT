@@ -164,6 +164,26 @@ function calculateMinRecruitsFixed({
   return Math.max(2, Math.min(8, Math.ceil(smoothed)));
 }
 
+function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, absent = false } = {}) {
+  if (absent || minReq === 0) {
+    return { bucket: 'ABSENT', label: '📅 Absent', color: 0xFFAA00 };
+  }
+
+  if (activeWarnings >= 2) {
+    return { bucket: 'DEMOTION', label: '🚨 Demotion (2 warnings)', color: 0x992D22 };
+  }
+  if (activeWarnings === 1) {
+    // Not necessarily failing, but should be watched.
+    // Bucket classification for reports can still override based on performance.
+  }
+
+  const diff = recruits7d - minReq;
+  if (diff >= 2) return { bucket: 'EXCEEDING', label: `🔥 Exceeding (${recruits7d}/${minReq})`, color: 0x00CC66 };
+  if (diff >= 0) return { bucket: 'PASSING', label: `✅ Passing (${recruits7d}/${minReq})`, color: 0x51CF66 };
+  if (diff === -1) return { bucket: 'WATCH', label: `🟦 Watch closely (${recruits7d}/${minReq})`, color: 0x00AAFF };
+  return { bucket: 'FAILING', label: `⚠️ Failing (${recruits7d}/${minReq})`, color: 0xFF4444 };
+}
+
 /**
  * Calculate 7-day activity and retention for a recruiter
  * @param {Database} db - Database instance
@@ -282,6 +302,7 @@ module.exports = {
   getRoleLevel,
   getBaseRequirement,
   hasModPlusPermissions,
+  getRecruiterStatus,
   ROLE_HIERARCHY,
   ROLE_BASE_REQUIREMENTS,
   TARGET_RECRUITS_PER_WEEK,

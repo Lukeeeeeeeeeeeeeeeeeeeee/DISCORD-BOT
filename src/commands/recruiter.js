@@ -7,7 +7,8 @@ const {
   getPreviousMinReq, 
   calculateMinRecruitsFixed,
   getBaseRequirement,
-  isNewStaff
+  isNewStaff,
+  getRecruiterStatus
 } = require('../lib/recruiting-system');
 
 function toUnixSeconds(ms) {
@@ -326,9 +327,9 @@ module.exports = {
         )
         .addFields(
           { name: 'Recent recruits (last 5)', value: recentText || 'None' },
-          { name: 'Status', value: absence ? `📅 Absent until ${absence.end_date}` : (totalAll === 0 ? '🆕 New Recruiter' : (stats7d.recruits7d >= minReq ? '✅ Active' : `⚠️ Inactive (${stats7d.recruits7d}/${minReq})`)), inline: true }
+          { name: 'Status', value: (totalAll === 0 && !absence) ? '🆕 New Recruiter' : getRecruiterStatus({ recruits7d: stats7d.recruits7d, minReq, activeWarnings: activeWarningsRow ? activeWarningsRow.c : 0, absent: !!absence }).label, inline: true }
         )
-        .setColor(absence ? 0xFFAA00 : (totalAll === 0 ? 0x00AAFF : (stats7d.recruits7d >= minReq ? 0x00CC66 : 0xFF4444)))
+        .setColor((totalAll === 0 && !absence) ? 0x00AAFF : getRecruiterStatus({ recruits7d: stats7d.recruits7d, minReq, activeWarnings: activeWarningsRow ? activeWarningsRow.c : 0, absent: !!absence }).color)
         .setTimestamp();
 
       if (absence) {
