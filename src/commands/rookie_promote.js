@@ -137,8 +137,7 @@ module.exports = {
         const rookieNote = isRookie ? '' : ' (Note: Member was not a rookie)';
 
         return interaction.reply({
-            content: `✅ Instantly promoted ${targetUser.tag} to SOLACE.${teamLabel}${rookieNote}`,
-            flags: 64
+            content: `✅ Instantly promoted ${targetUser.tag} to SOLACE.${teamLabel}${rookieNote}`
         });
     }
 };

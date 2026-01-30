@@ -22,14 +22,20 @@ module.exports = {
     const isAdmin = perms && perms.has && perms.has(PermissionsBitField.Flags.Administrator);
     if (!isAdmin) return interaction.reply({ content: 'Administrator permission required.', flags: 64 });
 
-    const role = interaction.options.getRole('role', true);
+    const role = interaction.options.getRole('role', false);  // Make role optional
     const message = interaction.options.getString('message', true);
     const limitOpt = interaction.options.getInteger('limit');
     const preview = interaction.options.getBoolean('preview') || false;
+    const dmEveryone = interaction.options.getBoolean('everyone') || false;
 
     // Validate inputs
-    if (!role || !message) {
-      return interaction.reply({ content: 'Missing required parameters. Please provide role and message.', flags: 64 });
+    if (!message) {
+      return interaction.reply({ content: 'Missing required message parameter.', flags: 64 });
+    }
+
+    // Must specify either role or everyone
+    if (!role && !dmEveryone) {
+      return interaction.reply({ content: 'You must specify a role OR set everyone to true.', flags: 64 });
     }
 
     if (limitOpt && (limitOpt < 1 || limitOpt > HARD_MAX)) {
@@ -57,9 +63,16 @@ module.exports = {
       membersCol = interaction.guild.members.cache;
     }
 
-    const targets = membersCol.filter(m => m.roles.cache.has(role.id) && !m.user.bot);
+    // Filter targets based on role or everyone
+    let targets;
+    if (dmEveryone) {
+      targets = membersCol.filter(m => !m.user.bot);
+    } else {
+      targets = membersCol.filter(m => m.roles.cache.has(role.id) && !m.user.bot);
+    }
+    const targetLabel = dmEveryone ? 'everyone' : role.name;
     const totalFound = targets.size;
-    if (!totalFound) return interaction.editReply({ content: `No human members found with the role ${role.name}.`, flags: 64 });
+    if (!totalFound) return interaction.editReply({ content: `No human members found${dmEveryone ? '' : ` with the role ${role.name}`}.`, flags: 64 });
 
     const cap = Math.min(limitOpt || DEFAULT_MAX, HARD_MAX);
     const recipients = Array.from(targets.values()).slice(0, cap);
@@ -83,7 +96,7 @@ module.exports = {
       if (auditChId) auditCh = await interaction.guild.channels.fetch(auditChId).catch(() => null);
 
       if (auditCh && auditCh.send) {
-        await auditCh.send(`DM broadcast queued by <@${interaction.user.id}> to role **${role.name}**: ${recipients.length} recipients in ${batches.length} batch(es).`)
+        await auditCh.send(`DM broadcast queued by <@${interaction.user.id}> to **${targetLabel}**: ${recipients.length} recipients in ${batches.length} batch(es).`)
           .catch(() => null);
       }
 
@@ -123,7 +136,7 @@ module.exports = {
 
         // log batch results
         if (auditCh && auditCh.send) {
-          await auditCh.send(`DM batch ${b + 1}/${batches.length} by <@${interaction.user.id}> to **${role.name}**: attempted ${batch.length}, sent ${batchSent}, failed ${batchFailed}, retries ${batchRetries}. Total so far: sent ${totalSent}, failed ${totalFailed}, retries ${totalRetries}.`).catch(() => null);
+          await auditCh.send(`DM batch ${b + 1}/${batches.length} by <@${interaction.user.id}> to **${targetLabel}**: attempted ${batch.length}, sent ${batchSent}, failed ${batchFailed}, retries ${batchRetries}. Total so far: sent ${totalSent}, failed ${totalFailed}, retries ${totalRetries}.`).catch(() => null);
         }
 
         // delay between batches
@@ -132,7 +145,7 @@ module.exports = {
 
       // final audit
       if (auditCh && auditCh.send) {
-        await auditCh.send(`DM broadcast completed by <@${interaction.user.id}> to **${role.name}**: attempted ${recipients.length}, sent ${totalSent}, failed ${totalFailed}, total retries ${totalRetries}.`).catch(() => null);
+        await auditCh.send(`DM broadcast completed by <@${interaction.user.id}> to **${targetLabel}**: attempted ${recipients.length}, sent ${totalSent}, failed ${totalFailed}, total retries ${totalRetries}.`).catch(() => null);
       }
     })();
 

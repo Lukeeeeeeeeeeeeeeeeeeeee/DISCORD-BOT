@@ -1,4 +1,4 @@
-const { EmbedBuilder, PermissionsBitField } = require('discord.js');
+const { EmbedBuilder, PermissionsBitField, AuditLogEvent } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -7,7 +7,7 @@ class AntiNuke {
     // Configuration
     this.OWNER_ID = '1381692847018868778';
     this.LOG_DM_ID = '1262471979215355969';
-    
+
     // Protection thresholds
     this.THRESHOLDS = {
       ban: { count: 4, time: 2500, stackCount: 8, stackTime: 3000 },
@@ -25,14 +25,14 @@ class AntiNuke {
       ],
       massBanLockdown: { count: 100, time: 3600000 }
     };
-    
+
     // Beast mode settings
     this.BEAST_MODE_THRESHOLD = 40;
     this.POINTS = {
       ban: 20,
       botAdd: 20
     };
-    
+
     // Data storage
     this.actionTracker = new Map(); // guildId -> Map<userId, actions[]>
     this.beastModeTracker = new Map(); // guildId -> Map<userId, score>
@@ -41,10 +41,10 @@ class AntiNuke {
     this.whitelist = new Set(); // userIds
     this.logChannels = new Map(); // guildId -> channelId
     this.backups = new Map(); // guildId -> backup data
-    
+
     // File paths
     this.DATA_FILE = path.join(__dirname, '../data/antinuke_data.json');
-    
+
     // Colors
     this.COLORS = {
       critical: 0x992D22,
@@ -54,7 +54,7 @@ class AntiNuke {
       blue: 0x0000FF,
       green: 0x00FF00
     };
-    
+
     // Dangerous permissions
     this.DANGEROUS_PERMISSIONS = [
       PermissionsBitField.Flags.Administrator,
@@ -93,23 +93,23 @@ class AntiNuke {
     if (!invites) return;
 
     for (const invite of invites.values()) {
-      await invite.delete('Anti-nuke: emergency mode invite lockdown').catch(() => {});
+      await invite.delete('Anti-nuke: emergency mode invite lockdown').catch(() => { });
     }
   }
 
   // Initialize the anti-nuke system
   async init(client) {
     this.client = client;
-    
+
     // Load data from file
     await this.loadData();
-    
+
     // Start automated tasks
     this.startAutomatedTasks();
-    
+
     // Set up event listeners
     this.setupEventListeners();
-    
+
     console.log('🛡️ Anti-nuke system initialized with 45+ protection features');
   }
 
@@ -118,10 +118,10 @@ class AntiNuke {
     try {
       const data = await fs.readFile(this.DATA_FILE, 'utf8');
       const parsed = JSON.parse(data);
-      
+
       if (parsed.whitelist) this.whitelist = new Set(parsed.whitelist);
       if (parsed.logChannels) this.logChannels = new Map(Object.entries(parsed.logChannels));
-      
+
       console.log('📁 Anti-nuke data loaded successfully');
     } catch (error) {
       console.log('📁 No existing anti-nuke data found, starting fresh');
@@ -162,22 +162,22 @@ class AntiNuke {
     if (!this.actionTracker.has(guildId)) {
       this.actionTracker.set(guildId, new Map());
     }
-    
+
     const guildTracker = this.actionTracker.get(guildId);
     if (!guildTracker.has(userId)) {
       guildTracker.set(userId, []);
     }
-    
+
     const userActions = guildTracker.get(userId);
     userActions.push({
       type: actionType,
       timestamp: Date.now(),
       details
     });
-    
+
     // Update beast mode score
     this.updateBeastModeScore(guildId, userId, actionType);
-    
+
     // Check for rapid actions
     this.checkRapidActions(guildId, userId, actionType);
   }
@@ -187,14 +187,14 @@ class AntiNuke {
     if (!this.beastModeTracker.has(guildId)) {
       this.beastModeTracker.set(guildId, new Map());
     }
-    
+
     const guildScores = this.beastModeTracker.get(guildId);
     const currentScore = guildScores.get(userId) || 0;
     const points = this.POINTS[actionType] || 0;
     const newScore = currentScore + points;
-    
+
     guildScores.set(userId, newScore);
-    
+
     // Log score changes
     if (points > 0) {
       this.logAction(guildId, {
@@ -207,7 +207,7 @@ class AntiNuke {
         level: this.getScoreLevel(newScore)
       });
     }
-    
+
     // Check for auto-ban threshold
     if (newScore >= this.BEAST_MODE_THRESHOLD) {
       this.handleBeastModeTrigger(guildId, userId, newScore).catch((e) => {
@@ -228,7 +228,7 @@ class AntiNuke {
   async handleBeastModeTrigger(guildId, userId, score) {
     const guild = this.client.guilds.cache.get(guildId);
     if (!guild) return;
-    
+
     // Check if user is whitelisted
     if (this.whitelist.has(userId)) {
       this.logAction(guildId, {
@@ -239,7 +239,7 @@ class AntiNuke {
       });
       return;
     }
-    
+
     try {
       const user = await guild.members.fetch(userId).catch(() => null);
       if (user) {
@@ -250,7 +250,7 @@ class AntiNuke {
           score,
           success: true
         });
-        
+
         // Reset score after ban
         const guildScores = this.beastModeTracker.get(guildId);
         if (guildScores) guildScores.set(userId, 0);
@@ -270,26 +270,26 @@ class AntiNuke {
     const guildTracker = this.actionTracker.get(guildId);
     const userActions = guildTracker.get(userId);
     if (!userActions) return;
-    
+
     const now = Date.now();
     const threshold = this.THRESHOLDS[actionType];
     if (!threshold) return;
-    
+
     // Count recent actions
-    const recentActions = userActions.filter(action => 
+    const recentActions = userActions.filter(action =>
       action.type === actionType && (now - action.timestamp) <= threshold.time
     );
-    
+
     if (recentActions.length >= threshold.count) {
       this.handleRapidAction(guildId, userId, actionType, recentActions);
     }
-    
+
     // Check stacking detection for bans
     if (actionType === 'ban' && threshold.stackCount) {
-      const stackActions = userActions.filter(action => 
+      const stackActions = userActions.filter(action =>
         action.type === 'ban' && (now - action.timestamp) <= threshold.stackTime
       );
-      
+
       if (stackActions.length >= threshold.stackCount) {
         this.handleRapidAction(guildId, userId, 'ban_stack', stackActions);
       }
@@ -300,7 +300,7 @@ class AntiNuke {
   async handleRapidAction(guildId, userId, actionType, actions) {
     const guild = this.client.guilds.cache.get(guildId);
     if (!guild) return;
-    
+
     // Check if user is whitelisted
     if (this.whitelist.has(userId)) {
       this.logAction(guildId, {
@@ -312,7 +312,7 @@ class AntiNuke {
       });
       return;
     }
-    
+
     try {
       const user = await guild.members.fetch(userId).catch(() => null);
       if (user) {
@@ -340,10 +340,10 @@ class AntiNuke {
   async handleBan(ban) {
     const guild = ban.guild;
 
-    const executor = await this.getRecentAuditExecutor(guild, 'MEMBER_BAN_ADD', ban.user.id);
-    
+    const executor = await this.getRecentAuditExecutor(guild, AuditLogEvent.MemberBanAdd, ban.user.id);
+
     if (!executor || executor.id === this.client.user.id) return;
-    
+
     this.trackAction(guild.id, executor.id, 'ban', { targetId: ban.user.id });
     this.updateHourlyBanCount(guild.id);
     this.checkEmergencyThresholds(guild.id);
@@ -353,12 +353,12 @@ class AntiNuke {
   async handleKick(member) {
     const guild = member.guild;
 
-    const executor = await this.getRecentAuditExecutor(guild, 'MEMBER_KICK', member.id);
-    
+    const executor = await this.getRecentAuditExecutor(guild, AuditLogEvent.MemberKick, member.id);
+
     // If there's no recent kick audit entry for this member, treat it as a normal leave
     if (!executor) return;
     if (!executor || executor.id === this.client.user.id) return;
-    
+
     this.trackAction(guild.id, executor.id, 'kick', { targetId: member.id });
   }
 
@@ -366,13 +366,13 @@ class AntiNuke {
   async handleChannelDelete(channel) {
     const guild = channel.guild;
 
-    const executor = await this.getRecentAuditExecutor(guild, 'CHANNEL_DELETE', channel.id);
-    
+    const executor = await this.getRecentAuditExecutor(guild, AuditLogEvent.ChannelDelete, channel.id);
+
     if (!executor || executor.id === this.client.user.id) return;
-    
-    this.trackAction(guild.id, executor.id, 'channelDelete', { 
+
+    this.trackAction(guild.id, executor.id, 'channelDelete', {
       channelId: channel.id,
-      channelName: channel.name 
+      channelName: channel.name
     });
   }
 
@@ -380,35 +380,35 @@ class AntiNuke {
   async handleRoleDelete(role) {
     const guild = role.guild;
 
-    const executor = await this.getRecentAuditExecutor(guild, 'ROLE_DELETE', role.id);
-    
+    const executor = await this.getRecentAuditExecutor(guild, AuditLogEvent.RoleDelete, role.id);
+
     if (!executor || executor.id === this.client.user.id) return;
-    
-    this.trackAction(guild.id, executor.id, 'roleDelete', { 
+
+    this.trackAction(guild.id, executor.id, 'roleDelete', {
       roleId: role.id,
-      roleName: role.name 
+      roleName: role.name
     });
   }
 
   // Handle member add (bot detection)
   async handleMemberAdd(member) {
     if (!member.user.bot) return;
-    
+
     const guild = member.guild;
 
-    const executor = await this.getRecentAuditExecutor(guild, 'BOT_ADD', member.id);
-    
+    const executor = await this.getRecentAuditExecutor(guild, AuditLogEvent.BotAdd, member.id);
+
     if (!executor || executor.id === this.client.user.id) return;
-    
-    this.trackAction(guild.id, executor.id, 'botAdd', { 
+
+    this.trackAction(guild.id, executor.id, 'botAdd', {
       botId: member.id,
-      botTag: member.user.tag 
+      botTag: member.user.tag
     });
-    
+
     // If beast mode is triggered, ban both user and bot
     const guildScores = this.beastModeTracker.get(guild.id);
     const userScore = guildScores?.get(executor.id) || 0;
-    
+
     if (userScore >= this.BEAST_MODE_THRESHOLD) {
       try {
         await member.ban({ reason: 'Anti-nuke: Bot added by beast mode user' });
@@ -433,18 +433,18 @@ class AntiNuke {
   async handleWebhookUpdate(channel) {
     const guild = channel.guild;
     const webhooks = await channel.fetchWebhooks().catch(() => []);
-    const recentWebhooks = webhooks.filter(w => 
+    const recentWebhooks = webhooks.filter(w =>
       Date.now() - w.createdTimestamp < 10000 // Last 10 seconds
     );
-    
+
     if (recentWebhooks.length >= this.THRESHOLDS.webhookCreate.count) {
 
-      const executor = await this.getRecentAuditExecutor(guild, 'WEBHOOK_CREATE', null, 15000);
-      
+      const executor = await this.getRecentAuditExecutor(guild, AuditLogEvent.WebhookCreate, null, 15000);
+
       if (!executor || executor.id === this.client.user.id) return;
-      
-      this.trackAction(guild.id, executor.id, 'webhookCreate', { 
-        webhookCount: recentWebhooks.length 
+
+      this.trackAction(guild.id, executor.id, 'webhookCreate', {
+        webhookCount: recentWebhooks.length
       });
     }
   }
@@ -453,7 +453,7 @@ class AntiNuke {
   updateHourlyBanCount(guildId) {
     const currentCount = this.hourlyBanTracker.get(guildId) || 0;
     this.hourlyBanTracker.set(guildId, currentCount + 1);
-    
+
     // Check for mass ban lockdown
     if (currentCount + 1 >= this.THRESHOLDS.massBanLockdown.count) {
       this.handleMassBanLockdown(guildId);
@@ -464,11 +464,11 @@ class AntiNuke {
   async handleMassBanLockdown(guildId) {
     const guild = this.client.guilds.cache.get(guildId);
     if (!guild) return;
-    
+
     try {
       // Remove dangerous permissions from all roles
       await this.removeDangerousPermissions(guild);
-      
+
       this.logAction(guildId, {
         type: 'mass_ban_lockdown',
         banCount: this.hourlyBanTracker.get(guildId),
@@ -485,7 +485,7 @@ class AntiNuke {
   // Check emergency thresholds
   checkEmergencyThresholds(guildId) {
     const banCount = this.hourlyBanTracker.get(guildId) || 0;
-    
+
     for (const threshold of this.THRESHOLDS.emergency) {
       // This would need more sophisticated time tracking for different windows
       // For now, using hourly count as a simple implementation
@@ -499,37 +499,37 @@ class AntiNuke {
   // Handle emergency mode
   async handleEmergencyMode(guildId) {
     if (this.emergencyMode.get(guildId)) return; // Already in emergency mode
-    
+
     const guild = this.client.guilds.cache.get(guildId);
     if (!guild) return;
-    
+
     try {
       // Create backup before lockdown
       await this.createBackup(guild);
-      
+
       // Remove all permissions except view channels
       await this.removeDangerousPermissions(guild, true);
-      
+
       // Lock down @everyone
       const everyoneRole = guild.roles.everyone;
       await everyoneRole.setPermissions([
         PermissionsBitField.Flags.ViewChannel,
         PermissionsBitField.Flags.ReadMessageHistory
       ]);
-      
+
       // Disable all invites
       await this.disableAllInvites(guild);
-      
+
       this.emergencyMode.set(guildId, true);
-      
+
       this.logAction(guildId, {
         type: 'emergency_mode',
         success: true
       });
-      
+
       // Send critical alert
       await this.sendCriticalAlert(guild, 'Emergency mode activated due to critical attack threshold');
-      
+
     } catch (error) {
       this.logAction(guildId, {
         type: 'emergency_mode_failed',
@@ -541,7 +541,7 @@ class AntiNuke {
   // Remove dangerous permissions
   async removeDangerousPermissions(guild, _emergencyMode = false) {
     const roles = guild.roles.cache.filter(role => !role.managed);
-    
+
     for (const role of roles) {
       try {
         const currentPerms = new PermissionsBitField(role.permissions.bitfield);
@@ -580,7 +580,7 @@ class AntiNuke {
         }))
       }))
     };
-    
+
     this.backups.set(guild.id, backup);
     this.logAction(guild.id, {
       type: 'backup_created',
@@ -601,7 +601,7 @@ class AntiNuke {
         { name: 'Time', value: new Date().toISOString(), inline: true }
       )
       .setTimestamp();
-    
+
     // Send to owner DM
     try {
       const owner = await this.client.users.fetch(this.OWNER_ID);
@@ -609,13 +609,13 @@ class AntiNuke {
     } catch (error) {
       // Owner might have DMs disabled
     }
-    
+
     // Send to log channel
     const logChannelId = this.logChannels.get(guild.id);
     if (logChannelId) {
       const logChannel = guild.channels.cache.get(logChannelId);
       if (logChannel) {
-        await logChannel.send({ embeds: [embed] }).catch(() => {});
+        await logChannel.send({ embeds: [embed] }).catch(() => { });
       }
     }
   }
@@ -624,7 +624,7 @@ class AntiNuke {
   async logAction(guildId, actionData) {
     const guild = this.client.guilds.cache.get(guildId);
     if (!guild) return;
-    
+
     const embed = new EmbedBuilder()
       .setColor(this.getColorForAction(actionData))
       .setTitle(this.getTitleForAction(actionData))
@@ -632,10 +632,10 @@ class AntiNuke {
       .addFields(
         { name: 'Server', value: guild.name, inline: true },
         { name: 'Action', value: actionData.type, inline: true },
-        { name: 'Time', value: `<t:${Math.floor(Date.now()/1000)}:R>`, inline: true }
+        { name: 'Time', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
       )
       .setTimestamp();
-    
+
     // Add user info if available
     if (actionData.userId) {
       const user = await this.client.users.fetch(actionData.userId).catch(() => null);
@@ -645,16 +645,16 @@ class AntiNuke {
         );
       }
     }
-    
+
     // Send to log channel
     const logChannelId = this.logChannels.get(guildId);
     if (logChannelId) {
       const logChannel = guild.channels.cache.get(logChannelId);
       if (logChannel) {
-        await logChannel.send({ embeds: [embed] }).catch(() => {});
+        await logChannel.send({ embeds: [embed] }).catch(() => { });
       }
     }
-    
+
     // Send to owner DM
     try {
       const owner = await this.client.users.fetch(this.LOG_DM_ID);
@@ -674,9 +674,9 @@ class AntiNuke {
         return this.COLORS.critical;
       case 'beast_mode_score':
         return action.level === 'critical' ? this.COLORS.red :
-               action.level === 'danger' ? this.COLORS.orange :
-               action.level === 'warning' ? this.COLORS.yellow :
-               this.COLORS.green;
+          action.level === 'danger' ? this.COLORS.orange :
+            action.level === 'warning' ? this.COLORS.yellow :
+              this.COLORS.green;
       case 'beast_mode_whitelisted':
       case 'rapid_action_whitelisted':
         return this.COLORS.yellow;
@@ -744,12 +744,12 @@ class AntiNuke {
     setInterval(() => {
       this.cleanupOldData();
     }, 3600000); // 1 hour
-    
+
     // Backup task - runs every 6 hours
     setInterval(() => {
       this.createAutomaticBackups();
     }, 21600000); // 6 hours
-    
+
     console.log('⏰ Automated tasks started (cleanup + backups)');
   }
 
@@ -757,7 +757,7 @@ class AntiNuke {
   cleanupOldData() {
     const now = Date.now();
     const oneDayAgo = now - (24 * 60 * 60 * 1000);
-    
+
     // Clean action tracker
     for (const guildTracker of this.actionTracker.values()) {
       for (const [userId, actions] of guildTracker) {
@@ -769,10 +769,10 @@ class AntiNuke {
         }
       }
     }
-    
+
     // Reset hourly ban tracker
     this.hourlyBanTracker.clear();
-    
+
     console.log('🧹 Anti-nuke data cleanup completed');
   }
 
@@ -785,7 +785,7 @@ class AntiNuke {
         console.error(`Failed to create backup for ${guild.name}:`, error);
       }
     }
-    
+
     console.log('💾 Automatic backups completed');
   }
 
@@ -834,17 +834,17 @@ class AntiNuke {
     const hourlyBans = this.hourlyBanTracker.get(guildId) || 0;
     const isEmergency = this.emergencyMode.get(guildId) || false;
     const backup = this.backups.get(guildId);
-    
+
     let totalTrackedUsers = 0;
     let totalActions = 0;
-    
+
     if (guildTracker) {
       totalTrackedUsers = guildTracker.size;
       for (const actions of guildTracker.values()) {
         totalActions += actions.length;
       }
     }
-    
+
     return {
       guildId,
       totalTrackedUsers,
@@ -868,7 +868,7 @@ class AntiNuke {
   resetScores(guildId, userId = null) {
     const guildScores = this.beastModeTracker.get(guildId);
     if (!guildScores) return;
-    
+
     if (userId) {
       guildScores.set(userId, 0);
     } else {
@@ -880,15 +880,15 @@ class AntiNuke {
   async emergencyRecover(guildId) {
     const guild = this.client.guilds.cache.get(guildId);
     const backup = this.backups.get(guildId);
-    
+
     if (!guild || !backup) {
       throw new Error('Guild or backup not found');
     }
-    
+
     if (!this.emergencyMode.get(guildId)) {
       throw new Error('Server is not in emergency mode');
     }
-    
+
     try {
       // Restore roles
       for (const roleData of backup.roles) {
@@ -898,7 +898,7 @@ class AntiNuke {
           await role.setPosition(roleData.position);
         }
       }
-      
+
       // Restore channel permissions
       for (const channelData of backup.channels) {
         const channel = guild.channels.cache.get(channelData.id);
@@ -907,7 +907,7 @@ class AntiNuke {
           for (const overwrite of channel.permissionOverwrites.cache.values()) {
             await overwrite.delete();
           }
-          
+
           // Restore original overwrites
           for (const overwrite of channelData.permissionOverwrites || []) {
             await channel.permissionOverwrites.create(overwrite.id, {
@@ -917,21 +917,21 @@ class AntiNuke {
           }
         }
       }
-      
+
       // Disable emergency mode
       this.emergencyMode.delete(guildId);
-      
+
       this.logAction(guildId, {
         type: 'emergency_recover',
         success: true
       });
-      
+
       return {
         success: true,
         rolesRestored: backup.roles.length,
         channelsRestored: backup.channels.length
       };
-      
+
     } catch (error) {
       this.logAction(guildId, {
         type: 'emergency_recover_failed',

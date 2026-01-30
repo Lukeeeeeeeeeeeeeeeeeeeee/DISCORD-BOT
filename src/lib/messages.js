@@ -1,6 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 
-function makeRecruitEmbed(recruiter, recruited, region, ign, lang='en', meta = {}) {
+function makeRecruitEmbed(recruiter, recruited, region, ign, lang = 'en', meta = {}) {
   const { REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
   const info = REGION_INFO[region] || { emoji: '', color: 0x00AAFF, name: region };
@@ -23,34 +23,49 @@ function makeRecruitEmbed(recruiter, recruited, region, ign, lang='en', meta = {
   return embed;
 }
 
-function makeLeaderboardText(rows, regionLabel, lang='en') {
+function makeLeaderboardText(rows, regionLabel, lang = 'en') {
   const { REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
 
+  // Map region codes to team names
   let info;
   if (regionLabel === 'GLOBAL') {
     info = { emoji: '🌍', name: 'Global' };
+  } else if (regionLabel === 'EU') {
+    info = { emoji: '🔥', name: 'Fire' };
+  } else if (regionLabel === 'NA') {
+    info = { emoji: '💧', name: 'Water' };
+  } else if (regionLabel === 'AS') {
+    info = { emoji: '🌬️', name: 'Air' };
   } else {
     info = REGION_INFO[regionLabel] || { emoji: '', name: regionLabel };
   }
 
-  const title = `${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`.trim();
+  // Use big text header format
+  const title = `# ${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`.trim();
   if (!rows || rows.length === 0) {
     const msg = `${title}\nNo recruiters found.`;
     return msg.length > 2000 ? msg.slice(0, 1997) + '...' : msg;
   }
 
-  const lines = rows.map((r, i) => {
-    const displayName = r.displayName
-      ? r.displayName
-      : (r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown');
+  // Sort by recruit count descending, then by points
+  const sortedRows = [...rows].sort((a, b) => {
+    const aCount = a.recruits7d || a.cnt || 0;
+    const bCount = b.recruits7d || b.cnt || 0;
+    if (bCount !== aCount) return bCount - aCount;
+    return (b.points || 0) - (a.points || 0);
+  });
+
+  const lines = sortedRows.map((r, i) => {
+    // Always use @mention for visibility
+    const mention = r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown';
     const recruitCount = r.recruits7d || r.cnt || 0;
     const rawMinReq = r.minReq !== undefined ? r.minReq : null;
     const minReq = rawMinReq == null
       ? (r.absence ? 0 : 2)
       : ((rawMinReq <= 0 && !r.absence) ? 2 : rawMinReq);
     const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
-    return `${i + 1}. ${displayName} [${recruitCount}/${minReq}] RETENTION [${retention}%]`;
+    return `${i + 1}. ${mention} [${recruitCount}/${minReq}] ret ${retention}%`;
   });
 
   const out = [title, ...lines];
@@ -74,7 +89,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
   // record keyed by channel_id + region
   const record = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, region);
   if (record) {
-    const msg = await channel.messages.fetch(record.message_id).catch(()=>null);
+    const msg = await channel.messages.fetch(record.message_id).catch(() => null);
     if (msg) {
       if (embed && typeof embed === 'object' && typeof embed.toJSON === 'function') {
         await msg.edit({ content: content || null, embeds: [embed] });
@@ -103,17 +118,17 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
   }
 }
 
-function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
+function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
   const { REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
-  
+
   let info;
   if (regionLabel === 'GLOBAL') {
     info = { emoji: '🌍', color: 0xFFD700, name: 'Global' };
   } else {
     info = REGION_INFO[regionLabel] || { emoji: '', color: 0xFFD700, name: regionLabel };
   }
-  
+
   const title = `${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`;
   const embed = new EmbedBuilder().setTitle(title).setColor(info.color).setTimestamp();
 
@@ -156,7 +171,7 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   return embed;
 }
 
-function makeWarningsEmbed(rows, _lang='en') {
+function makeWarningsEmbed(rows, _lang = 'en') {
   const { t } = require('./i18n');
   const title = '⚠️ Warnings Leaderboard';
 

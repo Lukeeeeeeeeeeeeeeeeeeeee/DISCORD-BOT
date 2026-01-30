@@ -41,19 +41,20 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('dm')
-    .setDescription('DM members of a role (admin only). Use preview to test.')
-    .addRoleOption(opt => opt.setName('role').setDescription('Role to DM').setRequired(true))
+    .setDescription('DM members of a role or everyone (admin only). Use preview to test.')
+    .addRoleOption(opt => opt.setName('role').setDescription('Role to DM (optional if using everyone)').setRequired(false))
     .addStringOption(opt => opt.setName('message').setDescription('Message to send to matching members').setRequired(true))
-    .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (caps apply)').setRequired(false).setMinValue(1).setMaxValue(100))
+    .addBooleanOption(opt => opt.setName('everyone').setDescription('DM all server members (overrides role)').setRequired(false))
+    .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (caps apply)').setRequired(false).setMinValue(1).setMaxValue(1000))
     .addBooleanOption(opt => opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
   new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
-  new SlashCommandBuilder().setName('recruitment_report').setDescription('Admin: show recruiting data for all recruiters (optionally filtered by region)')
-    .addStringOption(opt => opt.setName('region').setDescription('Region filter (default ALL)').setRequired(false)
+  new SlashCommandBuilder().setName('recruitment_report').setDescription('Admin: show recruiting performance by team (Fire/Water/Air)')
+    .addStringOption(opt => opt.setName('team').setDescription('Team filter (default ALL)').setRequired(false)
       .addChoices(
-        { name: 'ALL', value: 'ALL' },
-        { name: 'EU', value: 'EU' },
-        { name: 'NA', value: 'NA' },
-        { name: 'AS', value: 'AS' }
+        { name: 'All Teams', value: 'ALL' },
+        { name: '🔥 Fire', value: 'Fire' },
+        { name: '💧 Water', value: 'Water' },
+        { name: '🌬️ Air', value: 'Air' }
       )),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
     .addSubcommand(s => s.setName('show').setDescription('Show leaderboard').addStringOption(opt => opt.setName('region').setDescription('Region or all').setRequired(false)))

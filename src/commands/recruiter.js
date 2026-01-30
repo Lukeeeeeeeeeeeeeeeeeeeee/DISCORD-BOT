@@ -2,9 +2,9 @@ const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { PURCHASE_ITEMS } = require('../constants');
 const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions, hasAdministrator } = require('../lib/permissions');
-const { 
-  calculate7DayStats, 
-  getPreviousMinReq, 
+const {
+  calculate7DayStats,
+  getPreviousMinReq,
   calculateMinRecruitsFixed,
   getBaseRequirement,
   isNewStaff,
@@ -229,13 +229,13 @@ module.exports = {
 
     if (sub === 'info') {
       const member = interaction.options.getUser('member') || interaction.user;
-      
+
       // Check if user has permission to view info (basic check)
       const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       if (!guildMember) {
         return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
       }
-      
+
       // Allow viewing own info or staff can view others
       if (member.id !== interaction.user.id && !hasAdminOrStaffPermissions(interaction.member)) {
         return interaction.reply({ content: 'You can only view your own recruiter info.', flags: 64 });
@@ -270,17 +270,17 @@ module.exports = {
       // Get 7-day stats using new system
       const stats7d = await calculate7DayStats(db, member.id);
       const previousMinReq = await getPreviousMinReq(db, member.id);
-      
+
       // Check for active absence
       const absence = await db.get(
         'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
         member.id
       );
-      
+
       // Get role base requirement
       const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       const roleBase = getBaseRequirement(targetMember);
-      
+
       // Check if new staff (first 2 recalcs) - consider when people begin recruiting
       let newStaffCheck = false;
       try {
@@ -298,19 +298,19 @@ module.exports = {
       const minReq = isTrialRecruiter
         ? 3
         : calculateMinRecruitsFixed({
-            roleBase,
-            member: targetMember,
-            recruits7d: stats7d.recruits7d,
-            activityRate: stats7d.activityRate,
-            verifyRate: stats7d.verifyRate,
-            retention: stats7d.retention,
-            warnings: activeWarningsRow ? activeWarningsRow.c : 0,
-            previousMinReq,
-            absent: !!absence,
-            isNewStaff: newStaffCheck
-          });
+          roleBase,
+          member: targetMember,
+          recruits7d: stats7d.recruits7d,
+          activityRate: stats7d.activityRate,
+          verifyRate: stats7d.verifyRate,
+          retention: stats7d.retention,
+          warnings: activeWarningsRow ? activeWarningsRow.c : 0,
+          previousMinReq,
+          absent: !!absence,
+          isNewStaff: newStaffCheck
+        });
 
-      const recentText = recruits.length ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT','')}) — ${r.points || 0} pts`).join('\n') : 'None';
+      const recentText = recruits.length ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT', '')}) — ${r.points || 0} pts`).join('\n') : 'None';
 
       const { TESTING_USER_ID } = require('../constants');
       const points = (member.id === TESTING_USER_ID) ? '∞' : (rec ? rec.points : 0);
@@ -409,10 +409,10 @@ module.exports = {
       }
 
       // Add compact summaries for purchases/multipliers if present
-      if (purchases.length) embed.addFields({ name: 'Recent purchases', value: purchases.map(p=>`${p.item} — ${p.cost} pts`).join('\n') });
-      if (multipliers.length) embed.addFields({ name: 'Multipliers (recent)', value: multipliers.slice(0,3).map(m=>`${m.type} ×${m.value} (exp ${new Date(m.expires_at).toUTCString()})`).join('\n') });
-      if (recentFlags.length) embed.addFields({ name: 'Recent flags', value: recentFlags.map(f=>`${new Date(f.created_at).toUTCString()} — ${f.reason}`).join('\n') });
-      if (recentWarnings.length) embed.addFields({ name: 'Recent warnings', value: recentWarnings.map(w=>`${new Date(w.created_at).toUTCString()} — ${w.note || ''}`).join('\n') });
+      if (purchases.length) embed.addFields({ name: 'Recent purchases', value: purchases.map(p => `${p.item} — ${p.cost} pts`).join('\n') });
+      if (multipliers.length) embed.addFields({ name: 'Multipliers (recent)', value: multipliers.slice(0, 3).map(m => `${m.type} ×${m.value} (exp ${new Date(m.expires_at).toUTCString()})`).join('\n') });
+      if (recentFlags.length) embed.addFields({ name: 'Recent flags', value: recentFlags.map(f => `${new Date(f.created_at).toUTCString()} — ${f.reason}`).join('\n') });
+      if (recentWarnings.length) embed.addFields({ name: 'Recent warnings', value: recentWarnings.map(w => `${new Date(w.created_at).toUTCString()} — ${w.note || ''}`).join('\n') });
 
       // Additional info footnote
       embed.setFooter({ text: `7-Day Retention: ${Math.round(stats7d.retention * 100)}% • Last recruit: ${lastTs ? new Date(lastTs).toUTCString() : 'Never'}` });
@@ -423,12 +423,12 @@ module.exports = {
     if (sub === 'buy') {
       const item = interaction.options.getString('item');
       const userId = interaction.user.id;
-      
+
       // In unit tests, interaction.guild may be undefined.
       const guildMember = interaction.guild && interaction.guild.members && interaction.guild.members.fetch
         ? await interaction.guild.members.fetch(userId).catch(() => null)
         : null;
-      
+
       // Check if user has permission to buy (basic check)
       const ROLE_IDS = require('../constants').ROLE_IDS;
       const hasRole = (roleId) => !!roleId && !!guildMember && !!guildMember.roles && !!guildMember.roles.cache && typeof guildMember.roles.cache.has === 'function' && guildMember.roles.cache.has(roleId);
@@ -440,7 +440,7 @@ module.exports = {
       if ((hasRoleCache || hasPermissions) && !hasRecruiterOrStaffPermissions(guildMember) && !hasRole(ROLE_IDS.ROOKIE) && !hasRole(ROLE_IDS.VIP) && !hasRole(ROLE_IDS.MVP) && !hasRole(ROLE_IDS.CUSTOM) && !isAdmin) {
         return interaction.reply({ content: 'You need to be verified (Rookie+) or a recruiter/staff to purchase items.', flags: 64 });
       }
-      
+
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', userId);
       const { TESTING_USER_ID } = require('../constants');
       const points = (userId === TESTING_USER_ID) ? 999999999 : (rec ? rec.points : 0);
@@ -463,8 +463,8 @@ module.exports = {
         // Show available items if item not found
         const econ = require('../lib/economy');
         const { ECONOMY_CONFIG } = econ;
-        const multiplierItems = Object.entries(ECONOMY_CONFIG.MULTIPLIERS).map(([k,v]) => `**${k}** — ×${v.value} for ${v.days}d — **${v.cost}** pts`).join('\n');
-        const purchaseItems = Object.entries(PURCHASE_ITEMS).map(([k,c]) => `**${k}** — **${c}** pts`).join('\n');
+        const multiplierItems = Object.entries(ECONOMY_CONFIG.MULTIPLIERS).map(([k, v]) => `**${k}** — ×${v.value} for ${v.days}d — **${v.cost}** pts`).join('\n');
+        const purchaseItems = Object.entries(PURCHASE_ITEMS).map(([k, c]) => `**${k}** — **${c}** pts`).join('\n');
         const embed = new EmbedBuilder()
           .setTitle('🛒 Available Items')
           .addFields(
@@ -476,7 +476,7 @@ module.exports = {
           .setTimestamp();
         return interaction.reply({ embeds: [embed], flags: 64 });
       }
-      
+
       if (points < cost) return interaction.reply({ content: 'Not enough points.', flags: 64 });
       // Deduct
       await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
@@ -487,15 +487,30 @@ module.exports = {
         if (item === 'vip-role') {
           const ROLE_IDS = require('../constants').ROLE_IDS;
           const memberRec = interaction.guild && interaction.guild.members && interaction.guild.members.fetch ? await interaction.guild.members.fetch(userId).catch(() => null) : null;
-          if (memberRec && ROLE_IDS.VIP) await memberRec.roles.add(ROLE_IDS.VIP).catch(() => {});
+          if (memberRec && ROLE_IDS.VIP) await memberRec.roles.add(ROLE_IDS.VIP).catch(() => { });
         }
         if (item === 'mvp-role') {
           const ROLE_IDS = require('../constants').ROLE_IDS;
           const memberRec = interaction.guild && interaction.guild.members && interaction.guild.members.fetch ? await interaction.guild.members.fetch(userId).catch(() => null) : null;
-          if (memberRec && ROLE_IDS.MVP) await memberRec.roles.add(ROLE_IDS.MVP).catch(() => {});
+          if (memberRec && ROLE_IDS.MVP) await memberRec.roles.add(ROLE_IDS.MVP).catch(() => { });
         }
       } catch (e) {
         // best-effort
+      }
+
+      // Send notification to economy channel for special items (custom-role, custom-suggestion, nickname, custom-vc)
+      const notifyItems = ['custom-role', 'custom-suggestion', 'nickname', 'custom-vc'];
+      if (notifyItems.includes(item)) {
+        try {
+          const { CHANNELS } = require('../constants');
+          const notifChannel = interaction.guild?.channels?.cache?.get(CHANNELS.ECONOMY_NOTIFICATIONS);
+          if (notifChannel && notifChannel.send) {
+            const notifText = `# 🛒 Economy Purchase\n<@${userId}> purchased **${item}** for **${cost}** points.`;
+            await notifChannel.send(notifText).catch(() => { });
+          }
+        } catch (e) {
+          // best-effort notification
+        }
       }
 
       const embed = new EmbedBuilder().setTitle('Purchase Complete').setDescription(`Purchased **${item}** for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
@@ -508,7 +523,7 @@ module.exports = {
       const member = interaction.options.getUser('member');
       const note = interaction.options.getString('note') || 'Manual warning by staff';
       const expiresDays = interaction.options.getInteger('expires_days');
-      
+
       // Validate member exists
       const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       if (!targetMember) {
@@ -538,7 +553,7 @@ module.exports = {
           .setTimestamp();
         try {
           const m = await interaction.guild.members.fetch(member.id).catch(() => null);
-          if (m) await m.send({ embeds: [warnEmbed] }).catch(() => {});
+          if (m) await m.send({ embeds: [warnEmbed] }).catch(() => { });
         } catch (e) {
           console.error('Failed to DM warned member', { memberId: member.id, error: e });
         }
@@ -557,7 +572,7 @@ module.exports = {
             .setColor(0xFF4400)
             .setTimestamp();
           if (expiredAt) staffEmbed.addFields({ name: 'Expires', value: new Date(expiredAt).toUTCString(), inline: true });
-          ch.send({ embeds: [staffEmbed] }).catch((e)=> console.error('Failed to post warning to channel', { channelId: ch.id, error: e }));
+          ch.send({ embeds: [staffEmbed] }).catch((e) => console.error('Failed to post warning to channel', { channelId: ch.id, error: e }));
         }
 
         // Update leaderboards
@@ -589,9 +604,9 @@ module.exports = {
           if (!warning) {
             return interaction.reply({ content: `Warning #${warningId} not found for ${member.tag}.` });
           }
-          
+
           await db.run('UPDATE warnings SET revoked = 1 WHERE id = ? AND recruiter_id = ?', warningId, member.id);
-          
+
           // DM the user about warning revocation
           try {
             const { EmbedBuilder } = require('discord.js');
@@ -605,14 +620,14 @@ module.exports = {
               .setColor(0x00CC66)
               .setTimestamp();
             const warnedMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-            if (warnedMember) await warnedMember.send({ embeds: [revokeEmbed] }).catch(() => {});
+            if (warnedMember) await warnedMember.send({ embeds: [revokeEmbed] }).catch(() => { });
           } catch (e) {
             console.error('Failed to DM warning revocation:', e);
           }
         } else {
           // Revoke all warnings for this recruiter
           await db.run('UPDATE warnings SET revoked = 1 WHERE recruiter_id = ?', member.id);
-          
+
           // DM the user about all warnings being revoked
           try {
             const { EmbedBuilder } = require('discord.js');
@@ -622,12 +637,12 @@ module.exports = {
               .setColor(0x00CC66)
               .setTimestamp();
             const warnedMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-            if (warnedMember) await warnedMember.send({ embeds: [revokeEmbed] }).catch(() => {});
+            if (warnedMember) await warnedMember.send({ embeds: [revokeEmbed] }).catch(() => { });
           } catch (e) {
             console.error('Failed to DM warning revocation:', e);
           }
         }
-        
+
         // Recompute warnings count
         const cntRow = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', member.id, Date.now());
         const active = cntRow ? cntRow.c : 0;
@@ -645,7 +660,7 @@ module.exports = {
             )
             .setColor(0x00CC66)
             .setTimestamp();
-          ch.send({ embeds: [embed] }).catch(() => {});
+          ch.send({ embeds: [embed] }).catch(() => { });
         }
 
         // Update leaderboards

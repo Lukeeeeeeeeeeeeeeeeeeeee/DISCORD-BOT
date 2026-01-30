@@ -124,6 +124,6 @@ module.exports = {
 
     const teamName = team && REGION_INFO && REGION_INFO[team] ? REGION_INFO[team].name : (team || 'Unknown');
     const teamLabel = teamRoleId ? ` Added ${teamName} member role.` : '';
-    return interaction.reply({ content: `Verified ${targetUser.tag}.${teamLabel}`, flags: 64 });
+    return interaction.reply({ content: `✅ Verified ${targetUser.tag}.${teamLabel}` });
   }
 };

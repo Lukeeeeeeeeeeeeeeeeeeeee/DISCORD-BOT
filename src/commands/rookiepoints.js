@@ -61,11 +61,10 @@ module.exports = {
     const baseName = parsed.base || targetMember.user.username;
     const nickname = `${baseName} ${formatPoints(newPoints)}/10`;
 
-    await targetMember.setNickname(nickname).catch(() => {});
+    await targetMember.setNickname(nickname).catch(() => { });
 
     return interaction.reply({
-      content: `Updated ${targetUser.tag} to **${formatPoints(newPoints)}/10** points.`,
-      flags: 64
+      content: `✅ Updated ${targetUser.tag} to **${formatPoints(newPoints)}/10** points.`
     });
   }
 };

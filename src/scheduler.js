@@ -47,7 +47,7 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
     );
 
     if (!calc || calc.absent || !calc.calculated_min_req || calc.calculated_min_req === 0) {
-      await db.run('DELETE FROM system_events WHERE key = ?', missKey).catch(() => {});
+      await db.run('DELETE FROM system_events WHERE key = ?', missKey).catch(() => { });
       continue;
     }
 
@@ -55,7 +55,7 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
     const minReq = calc.calculated_min_req || 0;
     const missed = recruits7d < minReq;
     if (!missed) {
-      await db.run('DELETE FROM system_events WHERE key = ?', missKey).catch(() => {});
+      await db.run('DELETE FROM system_events WHERE key = ?', missKey).catch(() => { });
       continue;
     }
 
@@ -63,7 +63,7 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
     const lastTs = last ? Number(last.timestamp) : null;
     const consecutive = lastTs != null && lastTs === prevWeekStart;
 
-    await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', missKey, weekStart).catch(() => {});
+    await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', missKey, weekStart).catch(() => { });
     if (!consecutive) {
       // Grace week: first miss in a streak does not warn.
       continue;
@@ -92,18 +92,22 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
       ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL)
       : null;
     if (ch && typeof ch.send === 'function') {
-      await ch.send(`⚠️ <@${recruiterId}> missed quota 2 weeks in a row. (${recruits7d}/${minReq}) Warning issued.`).catch(() => {});
+      await ch.send(`⚠️ <@${recruiterId}> missed quota 2 weeks in a row. (${recruits7d}/${minReq}) Warning issued.`).catch(() => { });
     }
   }
 }
 
 function formatLeaderboardMessage(rows, regionLabel) {
-  if (!rows || rows.length === 0) return `Leaderboard (${regionLabel})\nNo recruiters yet.`;
+  // Map region codes to team names
+  const teamMap = { 'EU': '🔥 Fire', 'NA': '💧 Water', 'AS': '🌬️ Air', 'GLOBAL': '🌍 Global' };
+  const teamName = teamMap[regionLabel] || regionLabel;
+
+  if (!rows || rows.length === 0) return `# ${teamName} Leaderboard\nNo recruiters yet.`;
   const lines = rows.map((r, i) => {
-    const name = r.displayName || (r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown');
+    const name = r.recruiter_id ? `<@${r.recruiter_id}>` : (r.displayName || 'Unknown');
     return `${i + 1}. ${name} — **${r.cnt}** recruits${(r.points || 0) ? ` — ${(r.points || 0)} pts` : ''}`;
   });
-  return `Leaderboard (${regionLabel})\n\n` + lines.join('\n');
+  return `# ${teamName} Leaderboard\n\n` + lines.join('\n');
 }
 
 async function recomputeLeaderboards(db, guild) {
@@ -292,7 +296,7 @@ async function runWeeklySnapshotAndReset(db, client) {
         const guild = await resolveGuild(client);
         const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
         if (ch) {
-          await ch.send('@everyone Weekly invite/recruit tables have been reset for the new week.').catch(() => {});
+          await ch.send('@everyone Weekly invite/recruit tables have been reset for the new week.').catch(() => { });
         }
       }
     } catch (e) {
@@ -362,7 +366,7 @@ async function runWeeklySnapshotAndReset(db, client) {
     try {
       if (guild) {
         await enforceQuotaWarnings(db, guild, weekStart, recruiters);
-        await recomputeWarningsLeaderboard(db, guild).catch(() => {});
+        await recomputeWarningsLeaderboard(db, guild).catch(() => { });
       }
     } catch (e) {
       console.error('Quota warning enforcement failed:', e);
@@ -446,11 +450,11 @@ function start(client, db) {
     for (const r of recruits) {
       const m = await guild.members.fetch(r.recruited_id).catch(() => null);
       if (!m) {
-        await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', r.id).catch(() => {});
+        await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', r.id).catch(() => { });
       }
     }
 
-    await recomputeLeaderboards(db, guild).catch(() => {});
+    await recomputeLeaderboards(db, guild).catch(() => { });
   }, {
     scheduled: true,
     timezone: 'UTC'
@@ -506,7 +510,7 @@ function start(client, db) {
       const guild = await resolveGuild(client);
       if (guild) {
         const ch = guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
-        if (ch) ch.send('Monthly recruiter points reset to 0.').catch(()=>{});
+        if (ch) ch.send('Monthly recruiter points reset to 0.').catch(() => { });
       }
     } catch (e) { console.error('Monthly reset failed', e); }
   }, {

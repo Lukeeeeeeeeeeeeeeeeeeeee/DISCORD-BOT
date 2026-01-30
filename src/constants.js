@@ -3,7 +3,7 @@ module.exports = {
   TESTING_USER_ID: "1381692847018868778", // Your user ID for testing
   ROLE_IDS: {
     // Onboarding roles: [0]=Fire/EU, [1]=Water/NA, [2]=Air/AS
-    ONBOARDING: ["1459878495290261839","1459880782108692521","1459880774168739892"],
+    ONBOARDING: ["1459878495290261839", "1459880782108692521", "1459880774168739892"],
     // Onboarding role IDs for easy lookup
     ONBOARDING_FIRE: "1459878495290261839",
     ONBOARDING_WATER: "1459880782108692521",
@@ -48,6 +48,7 @@ module.exports = {
   },
   CHANNELS: {
     INVITES_OVERALL: "1331020749556809843",
+    ECONOMY_NOTIFICATIONS: "1331020749556809843",
     INVITES_EU: "1331020760906731730",
     INVITES_NA: "1331020766296150190",
     INVITES_AS: "1331020771476242544",
@@ -59,7 +60,7 @@ module.exports = {
   EXEMPT_TOP_PERCENT: 0.10,
   REPEATED_FLAGS_TO_WARN: 2,
   ESCALATION_WINDOW_WEEKS: 4,
-  REGIONS: ['EU','NA','AS'],
+  REGIONS: ['EU', 'NA', 'AS'],
   REGION_INFO: {
     EU: { name: 'Fire', emoji: '🔥', color: 0xE25822, thumbnail: '' },
     NA: { name: 'Water', emoji: '💧', color: 0x1E90FF, thumbnail: '' },
