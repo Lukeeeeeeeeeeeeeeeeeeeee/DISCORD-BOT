@@ -1,7 +1,34 @@
-const { ROLE_IDS } = require('../constants');
+const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_ROLE_IDS, REGION_INFO } = require('../constants');
 const db = require('../db_async');
 const { getActiveMultiplier, calculateRecruitPoints } = require('../lib/economy');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
+
+function inferTeamFromRecruiter(member) {
+  if (!member || !member.roles || !member.roles.cache || typeof member.roles.cache.has !== 'function') return null;
+  if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU && member.roles.cache.has(RECRUITER_ROLE_IDS.EU)) return 'EU';
+  if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA && member.roles.cache.has(RECRUITER_ROLE_IDS.NA)) return 'NA';
+  if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS && member.roles.cache.has(RECRUITER_ROLE_IDS.AS)) return 'AS';
+  return null;
+}
+
+function inferRegionTagFromMember(member) {
+  if (!member || !member.roles || !member.roles.cache || typeof member.roles.cache.has !== 'function') return null;
+  const keys = ['EU', 'ME', 'NA', 'AS', 'AF', 'SA'];
+  for (const k of keys) {
+    const roleId = REGION_ROLE_IDS && REGION_ROLE_IDS[k] ? REGION_ROLE_IDS[k] : null;
+    if (roleId && member.roles.cache.has(roleId)) return k;
+  }
+  return null;
+}
+
+function pickOnboardingRole(team) {
+  const list = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
+  if (!list.length) return null;
+  if (team === 'EU') return list[0] || list[0];
+  if (team === 'NA') return list[1] || list[0];
+  if (team === 'AS') return list[2] || list[0];
+  return list[0];
+}
 
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
   try {
@@ -190,12 +217,11 @@ module.exports = {
       }
 
       const member = interaction.options.getUser('member');
-      const region = interaction.options.getString('region');
       const ign = interaction.options.getString('ign');
 
       // Validate inputs
-      if (!member || !region || !ign) {
-        return respond({ content: 'Missing required parameters. Please provide member, region, and ign.', flags: 64 });
+      if (!member || !ign) {
+        return respond({ content: 'Missing required parameters. Please provide member and ign.', flags: 64 });
       }
 
       // Check if user has permission to recruit (basic check)
@@ -209,12 +235,25 @@ module.exports = {
       if (process.env.NODE_ENV !== 'test') {
         const { hasRecruiterOrStaffPermissions } = require('../lib/permissions');
         if (!hasRecruiterOrStaffPermissions(guildMember)) {
-          return respond({ content: 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter/Regional Recruiter).', flags: 64 });
+          return respond({ content: 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).', flags: 64 });
         }
       }
 
       const recruitedGuildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       if (!recruitedGuildMember) return respond({ content: 'Member not found in this guild.', flags: 64 });
+
+      const { hasAdministrator } = require('../lib/permissions');
+      const recruiterMemberForTeam = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+      let team = inferTeamFromRecruiter(recruiterMemberForTeam);
+      const regionTag = inferRegionTagFromMember(recruitedGuildMember);
+      if (!team) {
+        if (recruiterMemberForTeam && hasAdministrator(recruiterMemberForTeam)) {
+          team = regionTag === 'NA' ? 'NA' : (regionTag === 'AS' ? 'AS' : 'EU');
+        } else {
+          return respond({ content: 'You must have a team recruiter role (Fire/Water/Air) to use this command.', flags: 64 });
+        }
+      }
+      const teamName = (REGION_INFO && REGION_INFO[team] && REGION_INFO[team].name) ? REGION_INFO[team].name : team;
 
       // checks
       if (recruitedGuildMember.user.bot) return respond({ content: 'Cannot recruit bots.', flags: 64 });
@@ -235,16 +274,7 @@ module.exports = {
       const exist = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', member.id);
       if (exist) return respond({ content: 'That member has already been recruited previously.', flags: 64 });
 
-      // assign onboarding role balancing
-      const onboardingRoles = ROLE_IDS.ONBOARDING;
-      let chosenRole = onboardingRoles[0];
-      // simple balancing by counts
-      const counts = onboardingRoles.map(r => {
-        const c = interaction.guild.roles.cache.get(r)?.members.size || 0;
-        return { role: r, count: c };
-      });
-      counts.sort((a,b)=>a.count-b.count);
-      chosenRole = counts[0].role;
+      const chosenRole = pickOnboardingRole(team);
 
       try {
         // remove unverified if present
@@ -252,14 +282,14 @@ module.exports = {
         // add rookie
         await recruitedGuildMember.roles.add(ROLE_IDS.ROOKIE);
         // add chosen onboarding role
-        await recruitedGuildMember.roles.add(chosenRole);
+        if (chosenRole) await recruitedGuildMember.roles.add(chosenRole);
 
         // set nickname
-        await recruitedGuildMember.setNickname(`${ign} | ${region} 0/10`).catch(()=>null);
+        await recruitedGuildMember.setNickname(`${ign} | ${regionTag || team} 0/10`).catch(()=>null);
 
         try {
           if (typeof recruitedGuildMember.send === 'function') {
-            await recruitedGuildMember.send(`You have been recruited in ${region}. Welcome!`).catch(() => {});
+            await recruitedGuildMember.send(`You have been recruited in ${teamName}. Welcome!`).catch(() => {});
           }
         } catch (e) {
           void e;
@@ -280,7 +310,7 @@ module.exports = {
         const nowTs = Date.now();
         await db.run('BEGIN TRANSACTION');
         try {
-          await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', interaction.user.id, member.id, region, ign, nowTs, points);
+          await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', interaction.user.id, member.id, team, ign, nowTs, points);
           await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', interaction.user.id);
           await db.run('UPDATE recruiters SET points = points + ? WHERE id = ?', points, interaction.user.id);
           await db.run('COMMIT');
@@ -304,7 +334,7 @@ module.exports = {
           console.error('Failed updating leaderboards:', e);
         }
 
-        return respond({ content: `Successfully recruited ${member.tag} as ${region}. Awarded **${points}** points.`, flags: 64 });
+        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${points}** points.`, flags: 64 });
       } catch (err) {
         console.error('Recruit command error:', err);
 

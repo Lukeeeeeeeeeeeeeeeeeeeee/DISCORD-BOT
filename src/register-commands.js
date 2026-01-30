@@ -10,15 +10,6 @@ const BUY_CHOICES = Object.entries(econ.ECONOMY_CONFIG.MULTIPLIERS).map(([k,v]) 
 const commands = [
   new SlashCommandBuilder().setName('recruit').setDescription('Register a recruit')
     .addUserOption(opt => opt.setName('member').setDescription('Member to recruit').setRequired(true))
-    .addStringOption(opt => opt
-      .setName('region')
-      .setDescription('Region of the recruit')
-      .setRequired(true)
-      .addChoices(
-        { name: 'EU', value: 'EU' },
-        { name: 'NA', value: 'NA' },
-        { name: 'AS', value: 'AS' }
-      ))
     .addStringOption(opt=>opt.setName('ign').setDescription('In-game name').setRequired(true)),
 
   new SlashCommandBuilder().setName('recruiter').setDescription('Recruiter info and actions')

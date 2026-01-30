@@ -27,6 +27,14 @@ module.exports = {
     NA: "1331020555566059622",
     AS: "1331020556144869438"
   },
+  REGION_ROLE_IDS: {
+    EU: "1331020592564146296",
+    ME: "1331020593671311380",
+    NA: "1331020594833264684",
+    AS: "1331020598058418268",
+    AF: "1331020599346335775",
+    SA: "1331020596804456528"
+  },
   CHANNELS: {
     INVITES_OVERALL: "1331020749556809843",
     INVITES_EU: "1331020760906731730",
@@ -42,9 +50,9 @@ module.exports = {
   ESCALATION_WINDOW_WEEKS: 4,
   REGIONS: ['EU','NA','AS'],
   REGION_INFO: {
-    EU: { name: 'Europe', emoji: '🇪🇺', color: 0x4A90E2, thumbnail: '' },
-    NA: { name: 'North America', emoji: '🇺🇸', color: 0xE94E3A, thumbnail: '' },
-    AS: { name: 'Asia', emoji: '🌏', color: 0x8E44AD, thumbnail: '' }
+    EU: { name: 'Fire', emoji: '🔥', color: 0xE25822, thumbnail: '' },
+    NA: { name: 'Water', emoji: '💧', color: 0x1E90FF, thumbnail: '' },
+    AS: { name: 'Air', emoji: '�️', color: 0x8E44AD, thumbnail: '' }
   },
   PURCHASE_ITEMS: {
     'nickname': 30,

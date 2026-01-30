@@ -4,7 +4,7 @@ describe('makeLeaderboardEmbed', () => {
   test('returns no-recruits embed for empty rows', () => {
     const embed = makeLeaderboardEmbed([], 'EU');
     const json = embed.toJSON();
-    expect(json.title).toContain('Europe');
+    expect(json.title).toContain('Fire');
     expect(json.description).toContain('No recruiters');
   });
 
@@ -12,7 +12,7 @@ describe('makeLeaderboardEmbed', () => {
     const rows = Array(3).fill(0).map((_,i)=>({ recruiter_id: `u${i}`, cnt: i+1, points: (i+1)*5 }));
     const embed = makeLeaderboardEmbed(rows, 'NA');
     const json = embed.toJSON();
-    expect(json.title).toContain('North America');
+    expect(json.title).toContain('Water');
     expect(json.fields[0].value).toMatch(/<@u0>/);
   });
 
@@ -24,7 +24,7 @@ describe('makeLeaderboardEmbed', () => {
     ];
     const embed = makeLeaderboardEmbed(rows, 'AS');
     const json = embed.toJSON();
-    expect(json.title).toContain('Asia');
+    expect(json.title).toContain('Air');
     const fields = json.fields.map(f => f.name);
     expect(fields[0]).toMatch(/Leaderboard/);
   });

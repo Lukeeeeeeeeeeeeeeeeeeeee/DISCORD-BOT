@@ -57,7 +57,12 @@ function makeGuildMock({ recruiterId, recruitedId }) {
     id: recruiterId,
     user: { id: recruiterId, tag: 'Recruiter#0001' },
     roles: {
-      cache: { has: jest.fn(() => false) },
+      cache: {
+        has: jest.fn((id) => {
+          const { RECRUITER_ROLE_IDS } = require('../src/constants');
+          return id === RECRUITER_ROLE_IDS.EU;
+        })
+      },
       add: jest.fn().mockResolvedValue(true),
       remove: jest.fn().mockResolvedValue(true)
     },
@@ -138,7 +143,7 @@ describe('integration: /recruit -> scheduler -> leaderboard_messages', () => {
       guild,
       options: {
         getUser: (_key) => ({ id: recruitedId, tag: 'Recruit#0001' }),
-        getString: (key) => (key === 'region' ? 'EU' : (key === 'ign' ? 'player' : null))
+        getString: (key) => (key === 'ign' ? 'player' : null)
       },
       deferReply: jest.fn().mockResolvedValue(true),
       reply: jest.fn().mockResolvedValue(true),

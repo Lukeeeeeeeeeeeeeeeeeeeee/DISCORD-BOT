@@ -15,8 +15,9 @@ function makeTempDbPath() {
   return path.join(tmp, `recruiter-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
-function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) }, region = 'EU', ign = 'player123' } = {}) {
+function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) }, team = 'EU', ign = 'player123' } = {}) {
   const ROLE_IDS = require('../src/constants').ROLE_IDS;
+  const { RECRUITER_ROLE_IDS } = require('../src/constants');
 
   // simulate role counts
   const rolesCache = new Map();
@@ -55,12 +56,23 @@ function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member
 
   const recruiterMember = {
     id: recruiterId,
-    roles: { cache: { has: () => false }, add: jest.fn(), remove: jest.fn() }
+    roles: {
+      cache: {
+        has: (id) => {
+          if (team === 'EU' && id === RECRUITER_ROLE_IDS.EU) return true;
+          if (team === 'NA' && id === RECRUITER_ROLE_IDS.NA) return true;
+          if (team === 'AS' && id === RECRUITER_ROLE_IDS.AS) return true;
+          return false;
+        }
+      },
+      add: jest.fn(),
+      remove: jest.fn()
+    }
   };
 
   const options = {
     getUser: (_k) => ({ id: member.id, tag: member.tag }),
-    getString: (k) => (k === 'region' ? region : (k === 'ign' ? ign : undefined))
+    getString: (k) => (k === 'ign' ? ign : undefined)
   };
 
   const reply = jest.fn();
@@ -102,8 +114,6 @@ describe('/recruit command', () => {
 
   test('successfully recruits a member and updates DB and roles', async () => {
     const { interaction, guildMember, channelsCache } = makeInteraction();
-    // ensure guild members.fetch returns our guildMember
-    interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
     // load db and module
     const db = require('../src/db_async');
     // sanity checks before executing
@@ -145,7 +155,6 @@ describe('/recruit command', () => {
   test('rejects if joined more than 2 hours ago', async () => {
     const { interaction, guildMember } = makeInteraction();
     guildMember.joinedAt = new Date(Date.now() - (3 * 60 * 60 * 1000)); // 3 hours
-    interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalledWith({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', flags: 64 });
@@ -153,8 +162,7 @@ describe('/recruit command', () => {
 
   test('rejects if account too young', async () => {
     const youngMember = { id: 'M2', tag: 'Young#0001', createdAt: new Date(Date.now() - (10 * 24 * 60 * 60 * 1000)) }; // 10 days old
-    const { interaction, guildMember } = makeInteraction({ member: youngMember });
-    interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
+    const { interaction } = makeInteraction({ member: youngMember });
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalledWith({ content: 'Account must be at least 6 months old.', flags: 64 });
@@ -163,16 +171,13 @@ describe('/recruit command', () => {
   test('rejects if member already verified', async () => {
     const { interaction, guildMember } = makeInteraction();
     guildMember.roles.cache.has = (id) => id === require('../src/constants').ROLE_IDS.ROOKIE;
-    interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalledWith({ content: 'Member is already verified.', flags: 64 });
   });
 
   test('rejects if already recruited', async () => {
-    const { interaction, guildMember } = makeInteraction();
-    interaction.guild.members.fetch = jest.fn().mockResolvedValue(guildMember);
-
+    const { interaction } = makeInteraction();
     const cmd = require('../src/commands/recruit.js');
 
     // first attempt should succeed
