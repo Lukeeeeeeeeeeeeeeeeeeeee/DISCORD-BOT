@@ -302,6 +302,7 @@ module.exports = {
             member: targetMember,
             recruits7d: stats7d.recruits7d,
             activityRate: stats7d.activityRate,
+            verifyRate: stats7d.verifyRate,
             retention: stats7d.retention,
             warnings: activeWarningsRow ? activeWarningsRow.c : 0,
             previousMinReq,

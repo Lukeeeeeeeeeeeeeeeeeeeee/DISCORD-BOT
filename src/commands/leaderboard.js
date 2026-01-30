@@ -1,5 +1,5 @@
 const db = require('../db_async');
-const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../constants');
+const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS, REGION_INFO } = require('../constants');
 const { hasAdministrator } = require('../lib/permissions');
 
 module.exports = {
@@ -23,19 +23,6 @@ module.exports = {
         const recruiterRoleId = RECRUITER_ROLE_IDS[region];
         const recruiterRole = interaction.guild.roles.cache.get(recruiterRoleId);
         
-        const staffRoleIds = [
-          ROLE_IDS.HELPER,
-          ROLE_IDS.HELPER_PLUS,
-          ROLE_IDS.MOD,
-          ROLE_IDS.CHIEF,
-          ROLE_IDS.CHIEF_OF_WAR,
-          ROLE_IDS.CHIEF_OF_COMMUNITY,
-          ROLE_IDS.CHIEF_OF_RECRUITMENT,
-          ROLE_IDS.CO_LEADER,
-          ROLE_IDS.LEADER,
-          ROLE_IDS.HIGH_STAFF
-        ];
-
         const allRecruiterIds = new Set();
         
         if (recruiterRole) {
@@ -48,17 +35,6 @@ module.exports = {
           guildMembersWithRole.forEach(member => {
             allRecruiterIds.add(member.id);
           });
-        }
-
-        if (region === 'EU') {
-          const extraRoleIds = [ROLE_IDS.RECRUITER, ROLE_IDS.TRIAL_RECRUITER, ...staffRoleIds];
-          for (const roleId of extraRoleIds) {
-            const role = interaction.guild.roles.cache.get(roleId);
-            if (!role) continue;
-            role.members.forEach(member => {
-              allRecruiterIds.add(member.id);
-            });
-          }
         }
 
         const recruiterMembers = Array.from(allRecruiterIds);
@@ -111,6 +87,11 @@ module.exports = {
           const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
           const roleBase = getBaseRequirement(staffMember);
 
+          const teamName = REGION_INFO && REGION_INFO[region] ? REGION_INFO[region].name : region;
+          const displayName = staffMember && staffMember.user
+            ? `${staffMember.user.tag || staffMember.user.username} | ${teamName}`
+            : `<@${r.recruiter_id}>`;
+          
           const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
           
           const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
@@ -118,6 +99,7 @@ module.exports = {
             member: staffMember,
             recruits7d: stats7d.recruits7d,
             activityRate: stats7d.activityRate,
+            verifyRate: stats7d.verifyRate,
             retention: stats7d.retention,
             warnings: activeWarnings,
             previousMinReq,
@@ -130,7 +112,8 @@ module.exports = {
             recruits7d: stats7d.recruits7d,
             retention: stats7d.retention,
             minReq,
-            absence: !!absence
+            absence: !!absence,
+            displayName
           });
         }
 
@@ -173,6 +156,15 @@ module.exports = {
         ROLE_IDS.LEADER,
         ROLE_IDS.HIGH_STAFF
       ];
+
+      for (const roleId of [ROLE_IDS.RECRUITER, ROLE_IDS.TRIAL_RECRUITER].filter(Boolean)) {
+        const role = interaction.guild.roles.cache.get(roleId);
+        if (role) {
+          role.members.forEach(member => {
+            allRecruiterIds.add(member.id);
+          });
+        }
+      }
 
       for (const roleId of staffRoleIds) {
         const staffRole = interaction.guild.roles.cache.get(roleId);
@@ -240,6 +232,7 @@ module.exports = {
           member: staffMember,
           recruits7d: stats7d.recruits7d,
           activityRate: stats7d.activityRate,
+          verifyRate: stats7d.verifyRate,
           retention: stats7d.retention,
           warnings: activeWarnings,
           previousMinReq,

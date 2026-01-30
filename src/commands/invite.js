@@ -17,7 +17,7 @@ module.exports = {
       await inviteSystem.init();
     }
 
-    // Recruiters/trial/regional recruiters only (admins always allowed)
+    // Recruiters/trial/team recruiters only (admins always allowed)
     try {
       const isAdmin = hasAdministrator(interaction.member);
       const isRecruiter = interaction.guild
@@ -26,7 +26,7 @@ module.exports = {
 
       if (!isAdmin && !isRecruiter) {
         return interaction.reply({
-          content: '❌ This command is only available to recruiters (Trial/Regional included).',
+          content: '❌ This command is only available to recruiters (Trial/Team included).',
           flags: 64
         });
       }

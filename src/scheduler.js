@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { GUILD_ID, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
+const { GUILD_ID, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS, REGION_INFO } = require('./constants');
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
 const { calculate7DayStats, getPreviousMinReq, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
 
@@ -99,7 +99,10 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
 
 function formatLeaderboardMessage(rows, regionLabel) {
   if (!rows || rows.length === 0) return `Leaderboard (${regionLabel})\nNo recruiters yet.`;
-  const lines = rows.map((r, i) => `${i + 1}. <@${r.recruiter_id}> — **${r.cnt}** recruits${(r.points || 0) ? ` — ${(r.points || 0)} pts` : ''}`);
+  const lines = rows.map((r, i) => {
+    const name = r.displayName || (r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown');
+    return `${i + 1}. ${name} — **${r.cnt}** recruits${(r.points || 0) ? ` — ${(r.points || 0)} pts` : ''}`;
+  });
   return `Leaderboard (${regionLabel})\n\n` + lines.join('\n');
 }
 
@@ -121,19 +124,6 @@ async function recomputeLeaderboards(db, guild) {
     console.error('Failed to fetch guild members for leaderboard computation:', e);
   }
 
-  const staffRoleIds = [
-    ROLE_IDS.HELPER,
-    ROLE_IDS.HELPER_PLUS,
-    ROLE_IDS.MOD,
-    ROLE_IDS.CHIEF,
-    ROLE_IDS.CHIEF_OF_WAR,
-    ROLE_IDS.CHIEF_OF_COMMUNITY,
-    ROLE_IDS.CHIEF_OF_RECRUITMENT,
-    ROLE_IDS.HIGH_STAFF,
-    ROLE_IDS.CO_LEADER,
-    ROLE_IDS.LEADER
-  ].filter(Boolean);
-
   for (const rg of regions) {
     debugLog(`Processing region ${rg.key}...`);
     debugLog(`Channel ID for ${rg.key}: ${rg.channel}`);
@@ -148,21 +138,13 @@ async function recomputeLeaderboards(db, guild) {
     if (guild.roles && guild.roles.cache && typeof guild.roles.cache.get === 'function') {
       // Region membership rules:
       // - NA/AS: only members with that regional recruiter role
-      // - EU: members with EU recruiter role OR general recruiter/trial recruiter OR staff (default region)
+      // - EU: members with EU recruiter role
       const recruiterRoleId = RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS[rg.key] ? RECRUITER_ROLE_IDS[rg.key] : null;
       const recruiterRole = recruiterRoleId ? guild.roles.cache.get(recruiterRoleId) : null;
       debugLog(`Recruiter role ID for ${rg.key}: ${recruiterRoleId}`);
       debugLog(`Recruiter role found: ${!!recruiterRole}`);
 
       if (recruiterRole && recruiterRole.members) recruiterRole.members.forEach(m => allRecruiterIds.add(m.id));
-      if (rg.key === 'EU') {
-        const extraRoleIds = [ROLE_IDS.RECRUITER, ROLE_IDS.TRIAL_RECRUITER, ...staffRoleIds].filter(Boolean);
-        for (const roleId of extraRoleIds) {
-          const role = guild.roles.cache.get(roleId);
-          if (!role || !role.members) continue;
-          role.members.forEach(m => allRecruiterIds.add(m.id));
-        }
-      }
     } else {
       // Test-mode / minimal guild mock: fall back to anyone who has recruited in this region in-window.
       const ids = await db.all(
@@ -201,7 +183,61 @@ async function recomputeLeaderboards(db, guild) {
         LEFT JOIN recruiters db_rec ON db_rec.id = r.id
         ORDER BY cnt DESC, points DESC
       `, ...recruiterMembers, rg.key, since);
-      rows = rowsBase || [];
+      const enriched = [];
+      for (const r of (rowsBase || [])) {
+        const stats7d = await calculate7DayStats(db, r.recruiter_id, guild).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+        const previousMinReq = await getPreviousMinReq(db, r.recruiter_id).catch(() => null);
+        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
+
+        const absence = await db.get(
+          'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+          r.recruiter_id
+        ).catch(() => null);
+
+        const warnings = await db.get(
+          'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+          r.recruiter_id,
+          Date.now()
+        ).catch(() => null);
+        const activeWarnings = warnings ? warnings.c : 0;
+
+        const staffMember = guild && guild.members && typeof guild.members.fetch === 'function'
+          ? await guild.members.fetch(r.recruiter_id).catch(() => null)
+          : null;
+        const roleBase = getBaseRequirement(staffMember);
+
+        const isTrialRecruiter = !!staffMember
+          && staffMember.roles
+          && staffMember.roles.cache
+          && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)
+          && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
+
+        const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
+          roleBase,
+          member: staffMember,
+          recruits7d: stats7d.recruits7d,
+          activityRate: stats7d.activityRate,
+          verifyRate: stats7d.verifyRate,
+          retention: stats7d.retention,
+          warnings: activeWarnings,
+          previousMinReq,
+          absent: !!absence,
+          isNewStaff: newStaffCheck
+        });
+
+        enriched.push({
+          ...r,
+          recruits7d: stats7d.recruits7d,
+          retention: stats7d.retention,
+          minReq,
+          absence: !!absence,
+          displayName: staffMember && staffMember.user
+            ? `${staffMember.user.tag || staffMember.user.username} | ${REGION_INFO && REGION_INFO[rg.key] ? REGION_INFO[rg.key].name : rg.key}`
+            : `<@${r.recruiter_id}>`
+        });
+      }
+
+      rows = enriched;
       leaderboardText = makeLeaderboardText(rows, rg.key, lang);
     }
 
@@ -298,6 +334,7 @@ async function runWeeklySnapshotAndReset(db, client) {
         member: staffMember,
         recruits7d: currentStats.recruits7d,
         activityRate: currentStats.activityRate,
+        verifyRate: currentStats.verifyRate,
         retention: currentStats.retention,
         warnings: activeWarnings,
         previousMinReq,
@@ -310,6 +347,7 @@ async function runWeeklySnapshotAndReset(db, client) {
         weekStart,
         recruits7d: currentStats.recruits7d,
         activityRate: currentStats.activityRate,
+        verifyRate: currentStats.verifyRate,
         retention: currentStats.retention,
         warnings: activeWarnings,
         absent: !!absence,

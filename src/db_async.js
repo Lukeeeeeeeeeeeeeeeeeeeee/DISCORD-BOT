@@ -83,6 +83,7 @@ async function init() {
     week_start INTEGER,
     recruits7d INTEGER DEFAULT 0,
     activity_rate REAL DEFAULT 0,
+    verify_rate REAL DEFAULT 0,
     retention REAL DEFAULT 0,
     warnings INTEGER DEFAULT 0,
     absent INTEGER DEFAULT 0,
@@ -90,6 +91,16 @@ async function init() {
     calculated_min_req INTEGER NOT NULL,
     role_base INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS verifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recruited_id TEXT NOT NULL,
+    recruiter_id TEXT,
+    verified_at INTEGER NOT NULL,
+    verified_by TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS uniq_verification_recruited ON verifications(recruited_id);
 
   CREATE TABLE IF NOT EXISTS trial_fast_track (
     recruiter_id TEXT PRIMARY KEY,
@@ -132,6 +143,7 @@ async function init() {
   try { await db.exec("ALTER TABLE warnings ADD COLUMN revoked INTEGER DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN week_start INTEGER"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(recruiter_id, week_start)'); } catch (e) { void e; }
   try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { void e; }
 

@@ -11,7 +11,7 @@ function makeRecruitEmbed(recruiter, recruited, region, ign, lang='en', meta = {
     .addFields(
       { name: 'Recruiter', value: `<@${recruiter}>`, inline: true },
       { name: 'Recruited', value: `<@${recruited}>`, inline: true },
-      { name: 'Region', value: `${info.name} (${region})`, inline: true },
+      { name: 'Team', value: `${info.name}`, inline: true },
       { name: 'IGN', value: ign || 'N/A', inline: true }
     )
     .setTimestamp();
@@ -41,9 +41,14 @@ function makeLeaderboardText(rows, regionLabel, lang='en') {
   }
 
   const lines = rows.map((r, i) => {
-    const displayName = r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown';
+    const displayName = r.displayName
+      ? r.displayName
+      : (r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown');
     const recruitCount = r.recruits7d || r.cnt || 0;
-    const minReq = r.minReq !== undefined ? r.minReq : 0;
+    const rawMinReq = r.minReq !== undefined ? r.minReq : null;
+    const minReq = rawMinReq == null
+      ? (r.absence ? 0 : 2)
+      : ((rawMinReq <= 0 && !r.absence) ? 2 : rawMinReq);
     const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
     return `${i + 1}. ${displayName} [${recruitCount}/${minReq}] RETENTION [${retention}%]`;
   });
@@ -118,9 +123,11 @@ function makeLeaderboardEmbed(rows, regionLabel, lang='en') {
   }
 
   const lines = rows.map((r, i) => {
-    const displayName = r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown';
+    const displayName = r.displayName
+      ? r.displayName
+      : (r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown');
     const recruitCount = r.recruits7d || r.cnt || 0;
-    const minReq = r.minReq !== undefined ? r.minReq : 0;
+    const minReq = r.minReq !== undefined ? r.minReq : (r.absence ? 0 : 2);
     const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
 
     return `${i + 1}. ${displayName} [${recruitCount}/${minReq}] **RETENTION [${retention}%]**`;

@@ -22,11 +22,17 @@ function inferRegionTagFromMember(member) {
 }
 
 function pickOnboardingRole(team) {
+  // Use explicit role IDs if available, fallback to array
+  if (team === 'EU' && ROLE_IDS.ONBOARDING_FIRE) return ROLE_IDS.ONBOARDING_FIRE;
+  if (team === 'NA' && ROLE_IDS.ONBOARDING_WATER) return ROLE_IDS.ONBOARDING_WATER;
+  if (team === 'AS' && ROLE_IDS.ONBOARDING_AIR) return ROLE_IDS.ONBOARDING_AIR;
+
+  // Fallback to array indexing
   const list = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
   if (!list.length) return null;
-  if (team === 'EU') return list[0] || list[0];
-  if (team === 'NA') return list[1] || list[0];
-  if (team === 'AS') return list[2] || list[0];
+  if (team === 'EU') return list[0];  // Fire
+  if (team === 'NA') return list[1];  // Water
+  if (team === 'AS') return list[2];  // Air
   return list[0];
 }
 
@@ -49,6 +55,7 @@ async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
       member: recruiterMember,
       recruits7d: currentStats.recruits7d,
       activityRate: currentStats.activityRate,
+      verifyRate: currentStats.verifyRate,
       retention: currentStats.retention,
       warnings: activeWarnings,
       previousMinReq: null,
@@ -60,6 +67,7 @@ async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
       recruiterId: recruiterMember.id,
       recruits7d: currentStats.recruits7d,
       activityRate: currentStats.activityRate,
+      verifyRate: currentStats.verifyRate,
       retention: currentStats.retention,
       warnings: activeWarnings,
       previousMinReq: null,
@@ -182,10 +190,10 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
     recruiterRoleId = null;
   }
 
-  await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(() => {});
-  await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => {});
-  await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(() => {});
-  if (recruiterRoleId) await recruiterMember.roles.add(recruiterRoleId).catch(() => {});
+  await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(() => { });
+  await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => { });
+  await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(() => { });
+  if (recruiterRoleId) await recruiterMember.roles.add(recruiterRoleId).catch(() => { });
 
   try {
     await db.run('UPDATE recruiters SET promoted = 1 WHERE id = ?', recruiterMember.id);
@@ -195,7 +203,7 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
 
   await storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember);
 
-  await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(() => {});
+  await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(() => { });
   return { promoted: true };
 }
 
@@ -264,8 +272,8 @@ module.exports = {
       const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
       if (minutesSinceJoin > 120) return respond({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', flags: 64 });
 
-      const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000*60*60*24);
-      if (accountAgeDays < (30*6)) return respond({ content: 'Account must be at least 6 months old.', flags: 64 });
+      const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000 * 60 * 60 * 24);
+      if (accountAgeDays < (30 * 6)) return respond({ content: 'Account must be at least 6 months old.', flags: 64 });
 
       // already verified = has rookie
       if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return respond({ content: 'Member is already verified.', flags: 64 });
@@ -285,11 +293,11 @@ module.exports = {
         if (chosenRole) await recruitedGuildMember.roles.add(chosenRole);
 
         // set nickname
-        await recruitedGuildMember.setNickname(`${ign} | ${regionTag || team} 0/10`).catch(()=>null);
+        await recruitedGuildMember.setNickname(`${ign} | ${regionTag || team} 0/10`).catch(() => null);
 
         try {
           if (typeof recruitedGuildMember.send === 'function') {
-            await recruitedGuildMember.send(`You have been recruited in ${teamName}. Welcome!`).catch(() => {});
+            await recruitedGuildMember.send(`You have been recruited in ${teamName}. Welcome!`).catch(() => { });
           }
         } catch (e) {
           void e;

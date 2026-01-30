@@ -31,8 +31,16 @@ const ROLE_BASE_REQUIREMENTS = {
 
 // Constants
 const TARGET_RECRUITS_PER_WEEK = 8;
+const PIVOT_RECRUITS_PER_WEEK = TARGET_RECRUITS_PER_WEEK / 2;
 const ACTIVITY_MAX_STEP = 1.5;
+const VERIFY_MAX_STEP = 1.0;
 const RETENTION_MAX_STEP = 0.5;
+const MIN_MIN_REQ = 2;
+const MAX_MIN_REQ = 8;
+
+const PROGRESSION_TARGET = 4;
+const PROGRESSION_RATE = 0.5;
+const PROGRESSION_MAX = 1.5;
 const BASE_MAX_DELTA_UP = 2;
 const BASE_MAX_DELTA_DOWN = 1;
 
@@ -106,18 +114,20 @@ function calculateMinRecruitsFixed({
   roleBase,
   member,
   recruits7d,
-  activityRate,
+  activityRate: _activityRate,
+  verifyRate,
   retention,
   warnings,
   previousMinReq,
   absent,
   isNewStaff = false
 } = {}) {
-  if (absent) {
+  const roleLevel = member ? getRoleLevel(member) : 0;
+
+  // Absence override (MOD+ only)
+  if (absent && roleLevel >= 2) {
     return 0;
   }
-
-  const roleLevel = member ? getRoleLevel(member) : 0;
 
   // Low-activity floor (CRITICAL FIX)
   if (recruits7d <= 1) {
@@ -125,7 +135,7 @@ function calculateMinRecruitsFixed({
     // Only apply the low-activity floor after the recruiter has weekly history.
     if (isNewStaff || previousMinReq == null) {
       const base = (roleBase != null ? roleBase : 4);
-      return Math.max(2, Math.min(8, Math.ceil(base)));
+      return Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, Math.ceil(base)));
     }
 
     const floor = roleLevel >= 2 ? 3 : 2;
@@ -133,24 +143,37 @@ function calculateMinRecruitsFixed({
   }
 
   const target = TARGET_RECRUITS_PER_WEEK;
-  const pressure = (target - activityRate) / target;
+  const pivot = PIVOT_RECRUITS_PER_WEEK;
+  const denom = (target - pivot) || 1;
+  const activityFactor = (recruits7d - pivot) / denom;
 
-  // Activity adjustment (dominant)
-  const activityAdj = pressure * ACTIVITY_MAX_STEP;
+  const activityAdj = activityFactor * ACTIVITY_MAX_STEP;
 
-  // Retention adjustment (secondary, only if volume ≥ 3)
-  let retentionAdj = 0;
+  const clampedVerifyRate = Math.max(0, Math.min(1, verifyRate != null ? verifyRate : 0.2));
+
+  let verifyAdj = 0;
   if (recruits7d >= 3) {
-    retentionAdj = pressure * retention * RETENTION_MAX_STEP;
+    verifyAdj = activityFactor * VERIFY_MAX_STEP * clampedVerifyRate;
   }
 
-  const rawMin = roleBase + activityAdj + retentionAdj;
+  let retentionAdj = 0;
+  if (recruits7d >= 3) {
+    retentionAdj = activityFactor * RETENTION_MAX_STEP * (retention || 0);
+  }
+
+  const currentLevel = (previousMinReq != null) ? previousMinReq : roleBase;
+  let progressionBias = 0;
+  if (recruits7d >= 2 && currentLevel < PROGRESSION_TARGET) {
+    progressionBias = Math.max(0, Math.min(PROGRESSION_MAX, (PROGRESSION_TARGET - currentLevel) * PROGRESSION_RATE));
+  }
+
+  const rawMin = roleBase + activityAdj + verifyAdj + retentionAdj + progressionBias;
 
   // Apply smoothing with warning-based delta limits
   let smoothed = rawMin;
 
   if (previousMinReq != null) {
-    const baseMaxDeltaUp = isNewStaff ? 1 : BASE_MAX_DELTA_UP;
+    const baseMaxDeltaUp = isNewStaff ? 1 : (roleBase < PROGRESSION_TARGET ? 3 : 2);
     const baseMaxDeltaDown = isNewStaff ? 0 : BASE_MAX_DELTA_DOWN;
     const maxDeltaUp = Math.max(0, baseMaxDeltaUp - warnings);
     const maxDeltaDown = Math.max(0, baseMaxDeltaDown - warnings);
@@ -161,7 +184,7 @@ function calculateMinRecruitsFixed({
   }
 
   // Final clamp and rounding
-  return Math.max(2, Math.min(8, Math.ceil(smoothed)));
+  return Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, Math.ceil(smoothed)));
 }
 
 function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, absent = false, attention = false } = {}) {
@@ -211,6 +234,19 @@ async function calculate7DayStats(db, recruiterId, guild = null) {
     const recruits7d = recentRecruits.length;
     const activityRate = recruits7d; // 7-day activity rate
 
+    let verifyRate = 0;
+    try {
+      const verifiedRow = await db.get(
+        'SELECT COUNT(*) as c FROM recruits r INNER JOIN verifications v ON v.recruited_id = r.recruited_id WHERE r.recruiter_id = ? AND r.created_at >= ? AND r.valid = 1',
+        recruiterId,
+        sevenDaysAgo
+      );
+      const verified7d = verifiedRow ? Number(verifiedRow.c || 0) : 0;
+      verifyRate = recruits7d > 0 ? (verified7d / recruits7d) : 0;
+    } catch (e) {
+      verifyRate = 0;
+    }
+
     // Calculate retention for 7-day window
     let retention = 0;
     if (guild) {
@@ -233,6 +269,7 @@ async function calculate7DayStats(db, recruiterId, guild = null) {
     return {
       recruits7d,
       activityRate,
+      verifyRate: Math.max(0, Math.min(1, verifyRate)),
       retention: Math.max(0, Math.min(1, retention)) // Clamp between 0-1
     };
   } catch (error) {
@@ -240,6 +277,7 @@ async function calculate7DayStats(db, recruiterId, guild = null) {
     return {
       recruits7d: 0,
       activityRate: 0,
+      verifyRate: 0,
       retention: 0
     };
   }
@@ -256,14 +294,15 @@ async function storeWeeklyCalculation(db, data) {
     const absent = data.absent ? 1 : 0;
     await db.run(`
       INSERT OR REPLACE INTO weekly_calculations 
-      (recruiter_id, timestamp, week_start, recruits7d, activity_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (recruiter_id, timestamp, week_start, recruits7d, activity_rate, verify_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       data.recruiterId,
       Date.now(),
       weekStart,
       data.recruits7d,
       data.activityRate,
+      data.verifyRate != null ? data.verifyRate : 0,
       data.retention,
       data.warnings,
       absent,

@@ -58,13 +58,6 @@ async function resolveRecruiterIdsForRegion(guild, region) {
   if (region === 'EU' || region === 'NA' || region === 'AS') {
     const regionalRoleId = RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS[region] ? RECRUITER_ROLE_IDS[region] : null;
     addRoleMembers(regionalRoleId);
-
-    if (region === 'EU') {
-      addRoleMembers(ROLE_IDS.RECRUITER);
-      addRoleMembers(ROLE_IDS.TRIAL_RECRUITER);
-      for (const r of staffRoleIds) addRoleMembers(r);
-    }
-
     return Array.from(ids);
   }
 
@@ -162,6 +155,7 @@ module.exports = {
             member,
             recruits7d: stats7d.recruits7d,
             activityRate: stats7d.activityRate,
+            verifyRate: stats7d.verifyRate,
             retention: stats7d.retention,
             warnings: activeWarnings,
             previousMinReq,
