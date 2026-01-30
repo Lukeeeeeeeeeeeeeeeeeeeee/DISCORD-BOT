@@ -42,8 +42,8 @@ const commands = [
   new SlashCommandBuilder()
     .setName('dm')
     .setDescription('DM members of a role or everyone (admin only). Use preview to test.')
-    .addRoleOption(opt => opt.setName('role').setDescription('Role to DM (optional if using everyone)').setRequired(false))
     .addStringOption(opt => opt.setName('message').setDescription('Message to send to matching members').setRequired(true))
+    .addRoleOption(opt => opt.setName('role').setDescription('Role to DM (optional if using everyone)').setRequired(false))
     .addBooleanOption(opt => opt.setName('everyone').setDescription('DM all server members (overrides role)').setRequired(false))
     .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (caps apply)').setRequired(false).setMinValue(1).setMaxValue(1000))
     .addBooleanOption(opt => opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
