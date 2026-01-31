@@ -157,7 +157,7 @@ describe('/recruit command', () => {
     guildMember.joinedAt = new Date(Date.now() - (3 * 60 * 60 * 1000)); // 3 hours
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', flags: 64 });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Cannot give roles to someone who joined more than 2 hours ago.' });
   });
 
   test('rejects if account too young', async () => {
@@ -165,7 +165,7 @@ describe('/recruit command', () => {
     const { interaction } = makeInteraction({ member: youngMember });
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Account must be at least 6 months old.', flags: 64 });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Account must be at least 6 months old.' });
   });
 
   test('rejects if member already verified', async () => {
@@ -173,7 +173,7 @@ describe('/recruit command', () => {
     guildMember.roles.cache.has = (id) => id === require('../src/constants').ROLE_IDS.ROOKIE;
     const cmd = require('../src/commands/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Member is already verified.', flags: 64 });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Member is already verified.' });
   });
 
   test('rejects if already recruited', async () => {
@@ -185,7 +185,7 @@ describe('/recruit command', () => {
 
     // second attempt should be rejected
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'That member has already been recruited previously.', flags: 64 });
+    expect(interaction.reply).toHaveBeenCalledWith({ content: 'That member has already been recruited previously.' });
   });
 
   test('recruiter info shows extended fields', async () => {
@@ -194,9 +194,9 @@ describe('/recruit command', () => {
     // seed recruiter and some activity
     await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?)', 'R1', 120, 1, 0, 4);
     const now = Date.now();
-    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1','u10','EU','p1', now - (2*24*60*60*1000), 25);
-    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1','u11','EU','p2', now - (10*24*60*60*1000), 25);
-    await db.run('INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', 'R1', 1.25, 'm1.25_14d', now - 1000, now + (14*24*60*60*1000));
+    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1', 'u10', 'EU', 'p1', now - (2 * 24 * 60 * 60 * 1000), 25);
+    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1', 'u11', 'EU', 'p2', now - (10 * 24 * 60 * 60 * 1000), 25);
+    await db.run('INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', 'R1', 1.25, 'm1.25_14d', now - 1000, now + (14 * 24 * 60 * 60 * 1000));
     await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', 'R1', 'custom-role', 50, now - 2000);
 
     // Mock retention scan to return 0.75
@@ -206,7 +206,7 @@ describe('/recruit command', () => {
     // create interaction for recruiter info
     const options = { getSubcommand: () => 'info', getUser: (_k) => ({ id: 'R1', tag: 'Recruiter#0001' }) };
     const reply = jest.fn();
-    const guild = { members: { fetch: jest.fn(async (id)=> ({ id, roles: { cache: { has: () => false } } })) } };
+    const guild = { members: { fetch: jest.fn(async (id) => ({ id, roles: { cache: { has: () => false } } })) } };
     const interaction = { options, reply, user: { id: 'R1', tag: 'Recruiter#0001' }, member: { permissions: { has: () => true } }, guild };
 
     const cmd = require('../src/commands/recruiter.js');

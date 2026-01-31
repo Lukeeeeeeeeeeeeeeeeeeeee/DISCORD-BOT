@@ -67,6 +67,7 @@ module.exports = {
       }
 
       // Post notification to invite channels
+      // Post to economy notifications channel
       const { CHANNELS } = require('../constants');
       const embed = new EmbedBuilder()
         .setTitle('🚫 Recruit Revoked')
@@ -80,22 +81,9 @@ module.exports = {
         .setColor(0xFF4444)
         .setTimestamp();
 
-      // Post to overall invites channel
-      const overallChannel = interaction.guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
-      if (overallChannel) {
-        await overallChannel.send({ embeds: [embed] }).catch(() => { });
-      }
-
-      // Post to regional invites channel
-      const regionalChannelId = recruit.region === 'EU' ? CHANNELS.INVITES_EU :
-        recruit.region === 'NA' ? CHANNELS.INVITES_NA :
-          recruit.region === 'AS' ? CHANNELS.INVITES_AS : null;
-
-      if (regionalChannelId) {
-        const regionalChannel = interaction.guild.channels.cache.get(regionalChannelId);
-        if (regionalChannel) {
-          await regionalChannel.send({ embeds: [embed] }).catch(() => { });
-        }
+      const logChannel = interaction.guild.channels.cache.get(CHANNELS.ECONOMY_NOTIFICATIONS);
+      if (logChannel) {
+        await logChannel.send({ embeds: [embed] }).catch(() => { });
       }
 
       // DM the revoked member

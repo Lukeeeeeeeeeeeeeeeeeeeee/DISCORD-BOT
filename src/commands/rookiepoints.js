@@ -1,3 +1,4 @@
+const db = require('../db_async');
 const { ROLE_IDS } = require('../constants');
 const { hasModPlusPermissions } = require('../lib/recruiting-system');
 
@@ -58,6 +59,22 @@ module.exports = {
     const parsed = parseRookieNickname(currentName);
     const currentPoints = parsed.points || 0;
     const newPoints = Math.max(0, Math.min(10, currentPoints + addPoints));
+
+    if (newPoints >= 10) {
+      // Auto-promote
+      const { promoteMember } = require('../lib/promote');
+      const result = await promoteMember({
+        member: targetMember,
+        db,
+        guild: interaction.guild,
+        verifierId: interaction.user.id
+      });
+
+      return interaction.reply({
+        content: `✅ Updated ${targetUser.tag} to **10/10** points.\n🎉 **PROMOTED** to ${result.teamEmoji} ${result.teamName}!`
+      });
+    }
+
     const baseName = parsed.base || targetMember.user.username;
     const nickname = `${baseName} ${formatPoints(newPoints)}/10`;
 

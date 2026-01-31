@@ -59,71 +59,14 @@ module.exports = {
       return interaction.reply({ content: 'That member is not a rookie.', flags: 64 });
     }
 
-    const team = inferTeamFromOnboarding(targetMember) || inferTeamFromRegionTag(targetMember);
-    const teamRoleId = ROLE_IDS.TEAM_MEMBER && team ? ROLE_IDS.TEAM_MEMBER[team] : null;
+    const { promoteMember } = require('../lib/promote');
+    const result = await promoteMember({
+      member: targetMember,
+      db,
+      guild: interaction.guild,
+      verifierId: interaction.user.id
+    });
 
-    // Roles to remove: Rookie, Unverified, all Onboarding roles (Fire, Water, Air)
-    const rolesToRemove = [
-      ROLE_IDS.ROOKIE,
-      ROLE_IDS.UNVERIFIED,
-      ROLE_IDS.ONBOARDING_FIRE,
-      ROLE_IDS.ONBOARDING_WATER,
-      ROLE_IDS.ONBOARDING_AIR,
-      ...(ROLE_IDS.ONBOARDING || [])
-    ].filter(Boolean);
-    // Remove duplicates
-    const uniqueRolesToRemove = [...new Set(rolesToRemove)];
-    for (const roleId of uniqueRolesToRemove) {
-      if (targetMember.roles.cache.has(roleId)) {
-        await targetMember.roles.remove(roleId).catch(() => { });
-      }
-    }
-
-    if (ROLE_IDS.SOLACE) {
-      await targetMember.roles.add(ROLE_IDS.SOLACE).catch(() => { });
-    }
-
-    if (teamRoleId) {
-      await targetMember.roles.add(teamRoleId).catch(() => { });
-    }
-
-    const cleanedNickname = stripRookiePoints(targetMember.nickname);
-    if (cleanedNickname !== null && cleanedNickname !== targetMember.nickname) {
-      await targetMember.setNickname(cleanedNickname).catch(() => { });
-    }
-
-    let recruiterId = null;
-    try {
-      const recruitRow = await db.get(
-        'SELECT recruiter_id FROM recruits WHERE recruited_id = ? AND valid = 1 ORDER BY created_at DESC LIMIT 1',
-        targetUser.id
-      );
-      recruiterId = recruitRow ? recruitRow.recruiter_id : null;
-    } catch (e) {
-      recruiterId = null;
-    }
-
-    try {
-      await db.run(
-        'INSERT OR REPLACE INTO verifications (recruited_id, recruiter_id, verified_at, verified_by) VALUES (?, ?, ?, ?)',
-        targetUser.id,
-        recruiterId,
-        Date.now(),
-        interaction.user.id
-      );
-    } catch (e) {
-      console.error('Failed to record verification:', e);
-    }
-
-    try {
-      const scheduler = require('../scheduler');
-      await scheduler.recomputeLeaderboards(db, interaction.guild);
-    } catch (e) {
-      void e;
-    }
-
-    const teamName = team && REGION_INFO && REGION_INFO[team] ? REGION_INFO[team].name : (team || 'Unknown');
-    const teamLabel = teamRoleId ? ` Added ${teamName} member role.` : '';
-    return interaction.reply({ content: `✅ Verified ${targetUser.tag}.${teamLabel}` });
+    return interaction.reply({ content: `✅ Verified ${targetUser.tag}.\nAdded ${result.teamEmoji} ${result.teamName} member role.` });
   }
 };

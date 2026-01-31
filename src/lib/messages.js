@@ -65,7 +65,7 @@ function makeLeaderboardText(rows, regionLabel, lang = 'en') {
       ? (r.absence ? 0 : 2)
       : ((rawMinReq <= 0 && !r.absence) ? 2 : rawMinReq);
     const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
-    return `${i + 1}. ${mention} [${recruitCount}/${minReq}] ret ${retention}%`;
+    return `${i + 1}. ${mention} [${recruitCount}/${minReq}]`;
   });
 
   const out = [title, ...lines];
@@ -145,7 +145,7 @@ function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
     const minReq = r.minReq !== undefined ? r.minReq : (r.absence ? 0 : 2);
     const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
 
-    return `${i + 1}. ${displayName} [${recruitCount}/${minReq}] **RETENTION [${retention}%]**`;
+    return `${i + 1}. ${displayName} [${recruitCount}/${minReq}]`;
   });
 
   const fieldName = t('leaderboard.title', lang, { region: info.name });
