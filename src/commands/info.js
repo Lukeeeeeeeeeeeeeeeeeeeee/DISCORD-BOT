@@ -43,11 +43,11 @@ module.exports = {
   data: { name: 'info' },
   async execute(interaction) {
     const member = interaction.options.getUser('member');
-    if (!interaction.guild) return interaction.reply({ content: 'This command can only be used in a server.', flags: 64 });
-    if (!member) return interaction.reply({ content: 'Missing member option.', flags: 64 });
+    if (!interaction.guild) return interaction.reply({ content: 'This command can only be used in a server.' });
+    if (!member) return interaction.reply({ content: 'Missing member option.' });
 
     const rows = await db.all('SELECT * FROM recruits WHERE recruited_id = ? ORDER BY created_at DESC', member.id);
-    if (!rows || rows.length === 0) return interaction.reply({ content: 'No recruit record for that member.', flags: 64 });
+    if (!rows || rows.length === 0) return interaction.reply({ content: 'No recruit record for that member.' });
     const recruit = rows[0];
 
     const recruitMember = await interaction.guild.members.fetch(member.id).catch(() => null);
@@ -128,6 +128,6 @@ module.exports = {
       inline: false
     });
 
-    return interaction.reply({ embeds: [embed], flags: 64 });
+    return interaction.reply({ embeds: [embed] });
   }
 };

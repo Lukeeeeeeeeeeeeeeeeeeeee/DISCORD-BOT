@@ -26,7 +26,7 @@ module.exports = {
       // Get the recruit record to find region and recruiter info
       const recruit = await db.get('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1', member.id);
       if (!recruit) {
-        return interaction.reply({ content: 'No valid recruit record found for this member.', flags: 64 });
+        return interaction.reply({ content: 'No valid recruit record found for this member.' });
       }
 
       // Mark recruit as invalid in database
@@ -39,7 +39,7 @@ module.exports = {
         if (targetMember.roles.cache.has(ROLE_IDS.ROOKIE)) {
           await targetMember.roles.remove(ROLE_IDS.ROOKIE);
         }
-        
+
         // Remove onboarding roles
         for (const roleId of ROLE_IDS.ONBOARDING) {
           if (targetMember.roles.cache.has(roleId)) {
@@ -53,7 +53,7 @@ module.exports = {
         }
 
         // Reset nickname
-        await targetMember.setNickname(null).catch(() => {});
+        await targetMember.setNickname(null).catch(() => { });
       } catch (roleError) {
         console.error('Failed to remove roles:', roleError);
       }
@@ -83,18 +83,18 @@ module.exports = {
       // Post to overall invites channel
       const overallChannel = interaction.guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
       if (overallChannel) {
-        await overallChannel.send({ embeds: [embed] }).catch(() => {});
+        await overallChannel.send({ embeds: [embed] }).catch(() => { });
       }
 
       // Post to regional invites channel
-      const regionalChannelId = recruit.region === 'EU' ? CHANNELS.INVITES_EU : 
-                              recruit.region === 'NA' ? CHANNELS.INVITES_NA : 
-                              recruit.region === 'AS' ? CHANNELS.INVITES_AS : null;
-      
+      const regionalChannelId = recruit.region === 'EU' ? CHANNELS.INVITES_EU :
+        recruit.region === 'NA' ? CHANNELS.INVITES_NA :
+          recruit.region === 'AS' ? CHANNELS.INVITES_AS : null;
+
       if (regionalChannelId) {
         const regionalChannel = interaction.guild.channels.cache.get(regionalChannelId);
         if (regionalChannel) {
-          await regionalChannel.send({ embeds: [embed] }).catch(() => {});
+          await regionalChannel.send({ embeds: [embed] }).catch(() => { });
         }
       }
 
@@ -109,24 +109,24 @@ module.exports = {
           )
           .setColor(0xFF4444)
           .setTimestamp();
-        await targetMember.send({ embeds: [dmEmbed] }).catch(() => {});
+        await targetMember.send({ embeds: [dmEmbed] }).catch(() => { });
       } catch (dmError) {
         console.error('Failed to DM revoked member:', dmError);
       }
 
-      console.info('Recruit revoked', { 
-        recruitedId: member.id, 
-        recruiterId: recruit.recruiter_id, 
-        region: recruit.region, 
-        by: interaction.user.id, 
-        reason 
+      console.info('Recruit revoked', {
+        recruitedId: member.id,
+        recruiterId: recruit.recruiter_id,
+        region: recruit.region,
+        by: interaction.user.id,
+        reason
       });
 
-      return interaction.reply({ content: `Successfully revoked recruit status for ${member.tag}. ✅`, flags: 64 });
+      return interaction.reply({ content: `Successfully revoked recruit status for ${member.tag}. ✅` });
 
     } catch (error) {
       console.error('Failed to revoke recruit:', error);
-      return interaction.reply({ content: 'Failed to revoke recruit. Please try again later.', flags: 64 });
+      return interaction.reply({ content: 'Failed to revoke recruit. Please try again later.' });
     }
   }
 };

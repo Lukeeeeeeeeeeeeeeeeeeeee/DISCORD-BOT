@@ -220,7 +220,7 @@ module.exports = {
 
       let didDefer = false;
       if (typeof interaction.deferReply === 'function') {
-        await interaction.deferReply({ flags: 64 });
+        await interaction.deferReply();
         didDefer = true;
       }
 
@@ -268,19 +268,19 @@ module.exports = {
 
       const joinedAt = recruitedGuildMember.joinedAt;
       const now = new Date();
-      if (!joinedAt) return respond({ content: 'Unable to verify when that member joined. Please try again.', flags: 64 });
+      if (!joinedAt) return respond({ content: 'Unable to verify when that member joined. Please try again.' });
       const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-      if (minutesSinceJoin > 120) return respond({ content: 'Cannot give roles to someone who joined more than 2 hours ago.', flags: 64 });
+      if (minutesSinceJoin > 120) return respond({ content: 'Cannot give roles to someone who joined more than 2 hours ago.' });
 
       const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000 * 60 * 60 * 24);
-      if (accountAgeDays < (30 * 6)) return respond({ content: 'Account must be at least 6 months old.', flags: 64 });
+      if (accountAgeDays < (30 * 6)) return respond({ content: 'Account must be at least 6 months old.' });
 
       // already verified = has rookie
-      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return respond({ content: 'Member is already verified.', flags: 64 });
+      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return respond({ content: 'Member is already verified.' });
 
       // check if recruited already
-      const exist = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', member.id);
-      if (exist) return respond({ content: 'That member has already been recruited previously.', flags: 64 });
+      const exist = await db.get('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1', member.id);
+      if (exist) return respond({ content: 'That member has already been recruited previously.' });
 
       const chosenRole = pickOnboardingRole(team);
 
@@ -318,6 +318,9 @@ module.exports = {
         const nowTs = Date.now();
         await db.run('BEGIN TRANSACTION');
         try {
+          // Cleanup prior revoked records to allow re-recruitment if unique constraint exists
+          await db.run('DELETE FROM recruits WHERE recruited_id = ? AND valid = 0', member.id);
+
           await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', interaction.user.id, member.id, team, ign, nowTs, points);
           await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', interaction.user.id);
           await db.run('UPDATE recruiters SET points = points + ? WHERE id = ?', points, interaction.user.id);
@@ -342,33 +345,33 @@ module.exports = {
           console.error('Failed updating leaderboards:', e);
         }
 
-        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${points}** points.`, flags: 64 });
+        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${points}** points.` });
       } catch (err) {
         console.error('Recruit command error:', err);
 
         // Handle specific errors
         if (err && err.message && err.message.includes('UNIQUE constraint failed')) {
-          return respond({ content: 'That member has already been recruited before and cannot be recruited again.', flags: 64 });
+          return respond({ content: 'That member has already been recruited before and cannot be recruited again.' });
         }
 
         if (err && err.message && err.message.includes('Missing Permissions')) {
-          return respond({ content: 'Missing permissions to assign roles. Please check bot permissions.', flags: 64 });
+          return respond({ content: 'Missing permissions to assign roles. Please check bot permissions.' });
         }
 
         if (err && err.message && err.message.includes('Unknown User')) {
-          return respond({ content: 'Unable to find one of the users mentioned.', flags: 64 });
+          return respond({ content: 'Unable to find one of the users mentioned.' });
         }
 
         // Generic error
-        return respond({ content: 'An error occurred while processing the recruit command. Please try again later.', flags: 64 });
+        return respond({ content: 'An error occurred while processing the recruit command. Please try again later.' });
       }
     } catch (err) {
       console.error('Recruit command error:', err);
       if (typeof interaction.reply === 'function') {
-        return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.', flags: 64 });
+        return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.', ephemeral: true });
       }
       if (typeof interaction.editReply === 'function') {
-        return interaction.editReply({ content: 'An error occurred while processing the recruit command. Please try again later.', flags: 64 });
+        return interaction.editReply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
       }
       return null;
     }
