@@ -385,11 +385,11 @@ function classifyChannel(name, category) {
 
 function detectTeamFromChannel(name, category) {
   const base = `${name || ''} ${category || ''}`.toLowerCase();
-  if (base.includes('fire') || base.includes('🔥')) return 'EU';
-  if (base.includes('water') || base.includes('💧')) return 'NA';
-  if (base.includes('air') || base.includes('🌬')) return 'AS';
-  if (/\beu\b/.test(base)) return 'EU';
-  if (/\bna\b/.test(base)) return 'NA';
+  if (base.includes('fire') || base.includes('🔥')) return 'Fire Team (EU)';
+  if (base.includes('water') || base.includes('💧')) return 'Water Team (NA)';
+  if (base.includes('air') || base.includes('🌬')) return 'Air Team (AS)';
+  if (/\beu\b/.test(base)) return 'Fire Team (EU)';
+  if (/\bna\b/.test(base)) return 'Water Team (NA)';
   return null;
 }
 
@@ -423,6 +423,9 @@ async function collectFacts({ guild }) {
   const day7 = dayKeyFromOffset(7);
   const day14 = dayKeyFromOffset(14);
 
+  const facts = [];
+  const reportTime = new Date().toUTCString();
+  facts.push(`F0: Metadata Timeframe=${reportTime} (UTC), Guild=${guild.name}. Window: 7d/14d ending now.`);
 
   await guild.members.fetch().catch(() => null);
 
@@ -437,15 +440,40 @@ async function collectFacts({ guild }) {
     day14
   );
 
+  // Data quality check
+  const missingRows = dailyRows.length < 14;
+  if (missingRows) facts.push(`F0b: Data Quality Check=Low Trust. Expected 14 daily rows, found ${dailyRows.length}. Statistical results may be incomplete.`);
+
   const last7Rows = dailyRows.filter(r => r.day >= day7);
   const prev7Rows = dailyRows.filter(r => r.day < day7);
   const last7 = sumRows(last7Rows, ['message_count', 'unique_speakers', 'joins', 'leaves', 'invites_created', 'invites_used']);
   const prev7 = sumRows(prev7Rows, ['message_count', 'unique_speakers', 'joins', 'leaves', 'invites_created', 'invites_used']);
 
+  // Stats for messages (daily variance)
+  const messageSeries = last7Rows.map(r => r.message_count || 0);
+  const msgMean = messageSeries.length ? (messageSeries.reduce((a, b) => a + b, 0) / messageSeries.length).toFixed(1) : 0;
+  const msgMax = messageSeries.length ? Math.max(...messageSeries) : 0;
+  const msgMin = messageSeries.length ? Math.min(...messageSeries) : 0;
+  facts.push(`F3b: Message stats (last 7d daily): mean=${msgMean}, min=${msgMin}, max=${msgMax}.`);
+
   const messagesDelta = pctChange(last7.message_count, prev7.message_count);
   const speakersDelta = pctChange(last7.unique_speakers, prev7.unique_speakers);
   const joinsDelta = pctChange(last7.joins, prev7.joins);
   const invitesDelta = pctChange(last7.invites_used, prev7.invites_used);
+
+  // Concentration check (top 10% speakers message contribution)
+  const speakerRows = await db.all(
+    'SELECT user_id, SUM(message_count) as messages FROM analytics_user_daily WHERE guild_id = ? AND day >= ? GROUP BY user_id ORDER BY messages DESC',
+    guildId,
+    day7
+  );
+  if (speakerRows.length > 5) {
+    const top10Count = Math.max(1, Math.round(speakerRows.length * 0.1));
+    const top10Sum = speakerRows.slice(0, top10Count).reduce((s, r) => s + Number(r.messages || 0), 0);
+    const totalSum = speakerRows.reduce((s, r) => s + Number(r.messages || 0), 0);
+    const concentration = totalSum > 0 ? (top10Sum / totalSum * 100).toFixed(1) : 0;
+    facts.push(`F4b: Message Concentration=Top 10% of speakers (${top10Count}) produced ${concentration}% of total messages (${top10Sum}/${totalSum}).`);
+  }
 
   const channelRows = await db.all(
     'SELECT channel_id, SUM(message_count) as messages, SUM(unique_speakers) as speakers, MAX(last_message_at) as last_message_at FROM analytics_daily_channels WHERE guild_id = ? AND day >= ? GROUP BY channel_id',
@@ -517,6 +545,8 @@ async function collectFacts({ guild }) {
 
   const unverifiedMembers = members.filter(m => m.roles?.cache?.has(ROLE_IDS.UNVERIFIED));
   const unverifiedOver48h = unverifiedMembers.filter(m => m.joinedAt && now - m.joinedAt.getTime() >= 48 * 60 * 60 * 1000).length;
+  const unverifiedNames = unverifiedMembers.filter(m => m.joinedAt && now - m.joinedAt.getTime() >= 48 * 60 * 60 * 1000).map(m => m.user.username).join(', ');
+  facts.push(`F8: Unverified members >48h=${unverifiedOver48h}. Names: ${unverifiedNames || 'none'}. Active absences=${absentSet.size}. Active warnings=${warningCount ? warningCount.c : 0}.`);
 
   const staffRoleIds = [
     ROLE_IDS.HELPER,
@@ -558,47 +588,53 @@ async function collectFacts({ guild }) {
   const totalRecruiters = recruiterMembers.size;
 
   const recruiterTeamCounts = {
-    EU: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.EU)?.members.size || 0) : 0,
-    NA: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.NA)?.members.size || 0) : 0,
-    AS: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.AS)?.members.size || 0) : 0
+    'Fire Team (EU)': RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.EU)?.members.size || 0) : 0,
+    'Water Team (NA)': RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.NA)?.members.size || 0) : 0,
+    'Air Team (AS)': RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.AS)?.members.size || 0) : 0
   };
   const recruiterTeamActive = {
-    EU: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.EU)?.members.filter(m => {
+    'Fire Team (EU)': RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.EU)?.members.filter(m => {
       const ts = activityMap.get(m.id);
       return ts && ts >= now - 14 * 24 * 60 * 60 * 1000;
     }).size || 0) : 0,
-    NA: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.NA)?.members.filter(m => {
+    'Water Team (NA)': RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.NA)?.members.filter(m => {
       const ts = activityMap.get(m.id);
       return ts && ts >= now - 14 * 24 * 60 * 60 * 1000;
     }).size || 0) : 0,
-    AS: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.AS)?.members.filter(m => {
+    'Air Team (AS)': RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS ? (guild.roles.cache.get(RECRUITER_ROLE_IDS.AS)?.members.filter(m => {
       const ts = activityMap.get(m.id);
       return ts && ts >= now - 14 * 24 * 60 * 60 * 1000;
     }).size || 0) : 0
   };
 
-  const inactiveRecruiters = Array.from(recruiterMembers.values()).filter(m => {
-    if (absentSet.has(m.id)) return false;
-    const lastActive = activityMap.get(m.id);
-    return !lastActive || lastActive < now - 14 * 24 * 60 * 60 * 1000;
-  });
+  const allStaffAndRecruiters = new Set([
+    ...Array.from(recruiterMembers.keys()),
+    ...humans.filter(m => staffRoleIds.some(r => m.roles.cache.has(r))).map(m => m.id)
+  ]);
 
-  const teamCounts = {
-    EU: ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER.EU ? (guild.roles.cache.get(ROLE_IDS.TEAM_MEMBER.EU)?.members.size || 0) : 0,
-    NA: ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER.NA ? (guild.roles.cache.get(ROLE_IDS.TEAM_MEMBER.NA)?.members.size || 0) : 0,
-    AS: ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER.AS ? (guild.roles.cache.get(ROLE_IDS.TEAM_MEMBER.AS)?.members.size || 0) : 0
-  };
-
-  const teamValues = Object.values(teamCounts).filter(v => v > 0);
-  const teamImbalance = teamValues.length >= 2 ? Math.max(...teamValues) / Math.max(1, Math.min(...teamValues)) : 1;
+  const tenureMap = new Map();
+  if (allStaffAndRecruiters.size > 0) {
+    const userIds = Array.from(allStaffAndRecruiters);
+    const placeholders = userIds.map(() => '?').join(',');
+    const rows = await db.all(
+      `SELECT user_id, role_id, MAX(created_at) as last_added FROM analytics_role_changes WHERE guild_id = ? AND user_id IN (${placeholders}) AND action = 'added' GROUP BY user_id, role_id`,
+      guildId, ...userIds
+    );
+    for (const row of rows) {
+      if (!tenureMap.has(row.user_id)) tenureMap.set(row.user_id, new Map());
+      tenureMap.get(row.user_id).set(row.role_id, row.last_added);
+    }
+  }
 
   const teamRecruitRows = await db.all(
     'SELECT region, COUNT(*) as c FROM recruits WHERE valid = 1 AND created_at >= ? GROUP BY region',
     now - 7 * 24 * 60 * 60 * 1000
   );
-  const teamRecruitCounts = { EU: 0, NA: 0, AS: 0 };
+  const teamRecruitCounts = { 'Fire Team (EU)': 0, 'Water Team (NA)': 0, 'Air Team (AS)': 0 };
+  const regionMap = { EU: 'Fire Team (EU)', NA: 'Water Team (NA)', AS: 'Air Team (AS)' };
   for (const row of teamRecruitRows || []) {
-    if (row.region && teamRecruitCounts[row.region] != null) teamRecruitCounts[row.region] = row.c;
+    const teamName = regionMap[row.region];
+    if (teamName && teamRecruitCounts[teamName] != null) teamRecruitCounts[teamName] = row.c;
   }
 
   const roleChangeRows = await db.all(
@@ -748,7 +784,6 @@ async function collectFacts({ guild }) {
     inviteCohortFacts = null;
   }
 
-  const facts = [];
   facts.push(`F1: Members total=${guild.memberCount || members.length} (humans=${humans.length}, bots=${bots.length}).`);
   facts.push(`F2: Active users last 7d=${active7} (${formatPct(active7Pct)}), last 14d=${active14} (${formatPct(active14Pct)}).`);
   facts.push(`F3: Messages last 7d=${last7.message_count} vs previous 7d=${prev7.message_count} (${messagesDelta}%).`);
@@ -757,17 +792,55 @@ async function collectFacts({ guild }) {
   facts.push(`F6: Invites used last 7d=${last7.invites_used} vs previous 7d=${prev7.invites_used} (${invitesDelta}%). Invites created last 7d=${last7.invites_created}.`);
   const inviteRecruitRatio = last7.invites_used ? (recruitCount7 / last7.invites_used) : 0;
   facts.push(`F7: Recruits last 7d=${recruitCount7}, last 14d=${recruitCount14}. Verification rate last 7d=${formatPct(verifyRate7)}. Invite→recruit ratio=${inviteRecruitRatio.toFixed(2)}.`);
-  facts.push(`F8: Unverified members >48h=${unverifiedOver48h}. Active absences=${absentSet.size}. Active warnings=${warningCount ? warningCount.c : 0}.`);
-  facts.push(`F9: Recruiters total=${totalRecruiters}. Inactive recruiters (no 14d activity, not absent)=${inactiveRecruiters.length}.`);
+
+  const inactiveRecruiters = Array.from(recruiterMembers.values()).filter(m => {
+    if (absentSet.has(m.id)) return false;
+    const lastActive = activityMap.get(m.id);
+    return !lastActive || lastActive < now - 14 * 24 * 60 * 60 * 1000;
+  });
+
+  const teamCounts = {
+    'Fire Team (EU)': ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER.EU ? (guild.roles.cache.get(ROLE_IDS.TEAM_MEMBER.EU)?.members.size || 0) : 0,
+    'Water Team (NA)': ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER.NA ? (guild.roles.cache.get(ROLE_IDS.TEAM_MEMBER.NA)?.members.size || 0) : 0,
+    'Air Team (AS)': ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER.AS ? (guild.roles.cache.get(ROLE_IDS.TEAM_MEMBER.AS)?.members.size || 0) : 0
+  };
+
+  const teamValues = Object.values(teamCounts).filter(v => v > 0);
+  const teamImbalance = teamValues.length >= 2 ? Math.max(...teamValues) / Math.max(1, Math.min(...teamValues)) : 1;
+
+  function getTenureDays(userId, roleId) {
+    const ts = tenureMap.get(userId)?.get(roleId);
+    if (!ts) return 'new/unknown';
+    return Math.floor((now - ts) / (24 * 60 * 60 * 1000)) + 'd';
+  }
+
+  const inactiveRecruiterNames = inactiveRecruiters.map(m => {
+    const roleId = recruiterRoleIds.find(r => m.roles.cache.has(r));
+    return `${m.user.username} (${getTenureDays(m.id, roleId)})`;
+  }).join(', ');
+  facts.push(`F9: Recruiters total=${totalRecruiters}. Inactive recruiters (no 14d activity, not absent)=${inactiveRecruiters.length}. Names: ${inactiveRecruiterNames || 'none'}.`);
 
   if (roleActivity.length) {
-    const roleSummary = roleActivity.map(r => `${r.role} ${r.active}/${r.total}`).join(', ');
+    const roleSummary = roleActivity.map(r => {
+      const role = guild.roles.cache.find(ro => ro.name === r.role);
+      const inactiveNames = role ? role.members.filter(m => {
+        const ts = activityMap.get(m.id);
+        return !ts || ts < now - 14 * 24 * 60 * 60 * 1000;
+      }).map(m => `${m.user.username} (${getTenureDays(m.id, role.id)})`).join(', ') : '';
+      return `${r.role} ${r.active}/${r.total} (Inactive: ${inactiveNames || 'none'})`;
+    }).join(' | ');
     facts.push(`F10: Staff role activity (active/total, 14d): ${roleSummary}.`);
   }
 
-  facts.push(`F11: Team member counts EU=${teamCounts.EU}, NA=${teamCounts.NA}, AS=${teamCounts.AS}, imbalance ratio=${teamImbalance.toFixed(2)}.`);
-  facts.push(`F11b: Recruiter team counts EU=${recruiterTeamCounts.EU}, NA=${recruiterTeamCounts.NA}, AS=${recruiterTeamCounts.AS}. Active recruiters (14d) EU=${recruiterTeamActive.EU}, NA=${recruiterTeamActive.NA}, AS=${recruiterTeamActive.AS}.`);
-  facts.push(`F11c: Recruits last 7d by team EU=${teamRecruitCounts.EU}, NA=${teamRecruitCounts.NA}, AS=${teamRecruitCounts.AS}.`);
+  const teamSummary = Object.entries(teamCounts).map(([team, count]) => `${team}=${count}`).join(', ');
+  facts.push(`F11: Team member counts: ${teamSummary}. Imbalance ratio=${teamImbalance.toFixed(2)}.`);
+
+  const recTeamSummary = Object.entries(recruiterTeamCounts).map(([team, count]) => `${team}=${count}`).join(', ');
+  const recTeamActiveSummary = Object.entries(recruiterTeamActive).map(([team, count]) => `${team}=${count}`).join(', ');
+  facts.push(`F11b: Recruiter team counts: ${recTeamSummary}. Active (14d): ${recTeamActiveSummary}.`);
+
+  const teamRecSum = Object.entries(teamRecruitCounts).map(([team, count]) => `${team}=${count}`).join(', ');
+  facts.push(`F11c: Recruits last 7d by team: ${teamRecSum}.`);
 
   if (topChannels.length) {
     const topText = topChannels.map(c => `${c.name} (${c.type})=${c.messages} msgs, ${c.speakers} speakers, ${c.isPublic ? 'public' : 'private'}`).join(' | ');
@@ -817,7 +890,38 @@ async function collectFacts({ guild }) {
 
 function buildPrompt({ facts, guides, meta }) {
   const factBlock = facts.map(f => `- ${f}`).join('\n');
-  return `You are the clan analytics reviewer. Use ONLY the facts and guides provided.\n\nGOAL: Provide a deep, structured diagnosis of activity/inactivity, structural issues, recruitment/verification health, and role/team balance.\n\nRULES:\n- Issues only. Do NOT provide fixes, action steps, or suggestions.\n- Use common sense based on facts. If data is missing, say so.\n- Cite facts by their IDs (F1, F2, etc.) in each issue.\n- Consider private/public channel structure, role activity, and team balance.\n\nFACTS (${meta.timeframe}, ${meta.guildName}):\n${factBlock}\n\nGUIDES (selected excerpts):\n${guides}\n\nOUTPUT FORMAT (Markdown):\n# Executive Summary\n# Key Issues (bullets with severity and facts)\n# Structural & Role Risks\n# Recruitment & Verification Signals\n# Channel & Engagement Signals\n# Inactive Cohorts\n# Evidence (facts used)\n\nRemember: issues only, no recommendations.`;
+  return `You are the Lead Clan Strategist & Auditor. Your persona is aggressive, data-driven, and direct. 
+
+GOAL: Provide a high-rigor, structured audit of clan operations, focusing on the psychological "Connection" and "Importance" of the clan to its members.
+
+MANDATORY RULES (Methodology):
+1. **Identify and Name**: You MUST specific names of inactive staff, recruiters, and unverified members. "Name and shame" to ensure accountability.
+2. **Behavioral Analysis**: Use the "Clan Engagement & Operations Guides" to diagnose WHY people are inactive. Look for issues like "Mass Pings," "No Connection to Leader," or "Lack of micro-engagements."
+3. **Role Tenure & Stale Staff**: Analyze the tenure days (e.g. "42d") provided next to names. Identify staff who have been in roles for long periods without sufficient output (Stale Staff).
+4. **Team Performance**: Evaluate the named teams (Fire, Water, Air). If a team like "Fire Team (EU)" has high inactivity or low recruitment, call it out as a "Team Failure."
+5. **Analytical Rigor**: Include confidence scores (0-100) and cited fact IDs (F1, F2, etc.) for every claim.
+6. **No Solutions**: Identify issues ONLY. Do NOT provide recommendations.
+
+FACTS (${meta.timeframe}, ${meta.guildName}):
+${factBlock}
+
+GUIDES (Behavioral Psychology & Analytical Rigor):
+${guides}
+
+OUTPUT FORMAT (Markdown):
+TL;DR: [One-line summary]
+
+# Executive Summary
+[3 bullets with top KPI numbers + Behavioral Health Pulse]
+
+# Detailed Audit (Appendix)
+## Inactive Operations Audit (Name specific inactive staff + Tenure)
+## Recruitment & Verification Pipeline (Name specific unverified/inactive recruiters)
+## Team Health & Imbalance (Fire/Water/Air analysis)
+## Engagement, Concentration & Behavioral Risks (Psychological analysis)
+## Evidence & Methodology (Citations, Confidence Scores)
+
+Remember: Be specific. If a fact gives a name and tenure, USE IT. No recommendations.`;
 }
 
 const GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash'; // Stable, works on v1 and v1beta
