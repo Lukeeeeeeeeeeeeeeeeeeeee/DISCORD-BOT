@@ -17,14 +17,26 @@ function formatPoints(value) {
 }
 
 async function getLinkedPoints({ db, member }) {
-  if (!db || !member) return { points: 0, updatedAt: null, baseName: null };
+  if (!db || !member) return { points: 0, updatedAt: null, baseName: null, source: 'none' };
   try {
     const row = await db.get('SELECT points, updated_at FROM rookie_points WHERE member_id = ?', member.id);
     if (row && Number.isFinite(Number(row.points))) {
+      const points = Number(row.points);
+      const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
+
+      if (member.roles && member.roles.cache && member.roles.cache.has(ROLE_IDS.ROOKIE)) {
+        const desiredNickname = `${baseName} ${formatPoints(points)}/10`;
+        const currentNickname = member.nickname || member.user.username;
+        if (currentNickname !== desiredNickname && typeof member.setNickname === 'function') {
+          await member.setNickname(desiredNickname).catch(() => { });
+        }
+      }
+
       return {
-        points: Number(row.points),
+        points,
         updatedAt: row.updated_at || null,
-        baseName: parseRookieNickname(member.nickname || member.user.username).base || member.user.username
+        baseName,
+        source: 'db'
       };
     }
   } catch (e) {
@@ -44,10 +56,10 @@ async function getLinkedPoints({ db, member }) {
     } catch (e) {
       console.error('Failed to sync rookie points from nickname:', e);
     }
-    return { points: parsed.points, updatedAt: now, baseName: parsed.base || member.user.username };
+    return { points: parsed.points, updatedAt: now, baseName: parsed.base || member.user.username, source: 'nickname' };
   }
 
-  return { points: 0, updatedAt: null, baseName: parsed.base || member.user.username };
+  return { points: 0, updatedAt: null, baseName: parsed.base || member.user.username, source: 'none' };
 }
 
 async function setLinkedPoints({ db, member, points, guild, verifierId }) {

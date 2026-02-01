@@ -1,5 +1,6 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
+const { getLinkedPoints, formatPoints } = require('../lib/rookie-points');
 
 function toUnixSeconds(ms) {
   return Math.floor(ms / 1000);
@@ -13,21 +14,8 @@ function safeDaysLeftFromEndDate(endDateStr) {
   return Math.ceil(diffMs / (24 * 60 * 60 * 1000));
 }
 
-function parseRookiePointsFromName(rawName) {
-  if (!rawName) return null;
-  const match = String(rawName).match(/(\d+(?:\.\d+)?)\s*\/\s*10\s*$/i);
-  if (!match) return null;
-  const points = Number(match[1]);
-  return Number.isFinite(points) ? points : null;
-}
-
-function formatPoints(value) {
-  const rounded = Math.round(value * 10) / 10;
-  if (Number.isInteger(rounded)) return String(rounded);
-  return String(rounded).replace(/\.0$/, '');
-}
-
 function getPrimaryMemberRoleLabel(guildMember) {
+
   if (!guildMember || !guildMember.roles || !guildMember.roles.cache) return 'Member';
   const { ROLE_IDS } = require('../constants');
   const picks = [
@@ -68,33 +56,23 @@ module.exports = {
       'SELECT * FROM verifications WHERE recruited_id = ? ORDER BY verified_at DESC LIMIT 1',
       member.id
     );
+    const recruitMember = await interaction.guild.members.fetch(member.id).catch(() => null);
+    const recruiterMember = await interaction.guild.members.fetch(recruit.recruiter_id).catch(() => null);
+    const primaryRole = getPrimaryMemberRoleLabel(recruitMember);
     const rookiePointsRow = await db.get(
       'SELECT points, updated_at FROM rookie_points WHERE member_id = ?',
       member.id
     );
-    let points = rookiePointsRow ? Number(rookiePointsRow.points) : null;
-    let pointsUpdatedAt = rookiePointsRow ? rookiePointsRow.updated_at : null;
+    let points = null;
+    let pointsUpdatedAt = null;
 
-    const recruitMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-    const recruiterMember = await interaction.guild.members.fetch(recruit.recruiter_id).catch(() => null);
-    const primaryRole = getPrimaryMemberRoleLabel(recruitMember);
-
-    if (points == null && recruitMember) {
-      const parsed = parseRookiePointsFromName(recruitMember.nickname || recruitMember.user.username);
-      if (parsed != null) {
-        points = parsed;
-        pointsUpdatedAt = Date.now();
-        try {
-          await db.run(
-            'INSERT OR REPLACE INTO rookie_points (member_id, points, updated_at) VALUES (?, ?, ?)',
-            member.id,
-            points,
-            pointsUpdatedAt
-          );
-        } catch (e) {
-          console.error('Failed to sync rookie points from nickname:', e);
-        }
-      }
+    if (recruitMember) {
+      const linked = await getLinkedPoints({ db, member: recruitMember });
+      points = Number.isFinite(linked.points) ? linked.points : null;
+      pointsUpdatedAt = linked.updatedAt || null;
+    } else if (rookiePointsRow && Number.isFinite(Number(rookiePointsRow.points))) {
+      points = Number(rookiePointsRow.points);
+      pointsUpdatedAt = rookiePointsRow.updated_at || null;
     }
 
     const embed = new EmbedBuilder()

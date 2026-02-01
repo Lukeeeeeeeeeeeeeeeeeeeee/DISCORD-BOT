@@ -239,13 +239,13 @@ class InviteSystem {
   }
 
   // Mark invite as used
-  async markInviteUsed(inviteCode) {
+  async markInviteUsed(inviteCode, usedBy = null) {
     try {
       await db.run(`
         UPDATE recruiter_invites 
-        SET used = 1, used_at = ?
+        SET used = 1, used_at = ?, used_by = ?
         WHERE invite_code = ?
-      `, Date.now(), inviteCode);
+      `, Date.now(), usedBy, inviteCode);
 
       // Find and update in memory
       for (const [recruiterId, invite] of this.activeInvites.entries()) {

@@ -2,6 +2,7 @@ const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { PURCHASE_ITEMS } = require('../constants');
 const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions, hasAdministrator } = require('../lib/permissions');
+const { formatPointsValue } = require('../lib/economy');
 const {
   calculate7DayStats,
   getPreviousMinReq,
@@ -67,7 +68,8 @@ async function postPurchaseLog({ guild, userId, item, cost }) {
       ? guild.channels.cache.get(channelId)
       : null;
     if (channel && channel.send) {
-      await channel.send(`<@${userId}> bought **${item}** for **${cost}** pts!`).catch(() => { });
+      const formattedCost = formatPointsValue(cost);
+      await channel.send(`<@${userId}> bought **${item}** for **${formattedCost}** pts!`).catch(() => { });
     }
   } catch (e) {
     // best-effort logging
@@ -110,7 +112,7 @@ module.exports = {
           .setTitle('Available Multipliers')
           .setDescription(
             Object.entries(ECONOMY_CONFIG.MULTIPLIERS)
-              .map(([k, v]) => `**${k}** — ×${v.value} for ${v.days}d — **${v.cost}** pts`)
+              .map(([k, v]) => `**${k}** — ×${v.value} for ${v.days}d — **${formatPointsValue(v.cost)}** pts`)
               .join('\n') || 'None available'
           )
           .setColor(0x00AAFF)
@@ -369,15 +371,19 @@ module.exports = {
           isNewStaff: newStaffCheck
         });
 
-      const recentText = recruits.length ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT', '')}) — ${r.points || 0} pts`).join('\n') : 'None';
+      const recentText = recruits.length
+        ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT', '')}) — ${formatPointsValue(r.points || 0)} pts`).join('\n')
+        : 'None';
 
       const { TESTING_USER_ID } = require('../constants');
-      const points = (member.id === TESTING_USER_ID) ? '∞' : (rec ? rec.points : 0);
+      const pointsValue = (member.id === TESTING_USER_ID)
+        ? '∞'
+        : formatPointsValue(rec ? rec.points : 0);
 
       const embed = new EmbedBuilder()
         .setTitle(`Recruiter: ${member.tag}`)
         .addFields(
-          { name: 'Points', value: `${points}`, inline: true },
+          { name: 'Points', value: `${pointsValue}`, inline: true },
           { name: 'Active Multiplier', value: mul && mul.type ? `${mul.type} — ×${mul.value}` : 'None', inline: true },
           { name: 'Total recruits (all time)', value: `${totalAll}`, inline: true },
           { name: 'Recruits (7 days)', value: `${stats7d.recruits7d}`, inline: true },
@@ -470,7 +476,7 @@ module.exports = {
       }
 
       // Add compact summaries for purchases/multipliers if present
-      if (purchases.length) embed.addFields({ name: 'Recent purchases', value: purchases.map(p => `${p.item} — ${p.cost} pts`).join('\n') });
+      if (purchases.length) embed.addFields({ name: 'Recent purchases', value: purchases.map(p => `${p.item} — ${formatPointsValue(p.cost)} pts`).join('\n') });
       if (multipliers.length) embed.addFields({ name: 'Multipliers (recent)', value: multipliers.slice(0, 3).map(m => `${m.type} ×${m.value} (exp ${new Date(m.expires_at).toUTCString()})`).join('\n') });
       if (recentFlags.length) embed.addFields({ name: 'Recent flags', value: recentFlags.map(f => `${new Date(f.created_at).toUTCString()} — ${f.reason}`).join('\n') });
       if (recentWarnings.length) embed.addFields({ name: 'Recent warnings', value: recentWarnings.map(w => `${new Date(w.created_at).toUTCString()} — ${w.note || ''}`).join('\n') });
@@ -516,7 +522,11 @@ module.exports = {
         await applyMultiplier(db, userId, item);
         await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
         await postPurchaseLog({ guild: interaction.guild, userId, item, cost });
-        const embed = new EmbedBuilder().setTitle('Multiplier Purchased').setDescription(`Applied **${item}** for ${multCfg.days} days for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
+        const embed = new EmbedBuilder()
+          .setTitle('Multiplier Purchased')
+          .setDescription(`Applied **${item}** for ${multCfg.days} days for **${formatPointsValue(cost)}** points.`)
+          .setColor(0x00AAFF)
+          .setTimestamp();
         return interaction.reply({ embeds: [embed] });
       }
 
@@ -525,8 +535,12 @@ module.exports = {
         // Show available items if item not found
         const econ = require('../lib/economy');
         const { ECONOMY_CONFIG } = econ;
-        const multiplierItems = Object.entries(ECONOMY_CONFIG.MULTIPLIERS).map(([k, v]) => `**${k}** — ×${v.value} for ${v.days}d — **${v.cost}** pts`).join('\n');
-        const purchaseItems = Object.entries(PURCHASE_ITEMS).map(([k, c]) => `**${k}** — **${c}** pts`).join('\n');
+        const multiplierItems = Object.entries(ECONOMY_CONFIG.MULTIPLIERS)
+          .map(([k, v]) => `**${k}** — ×${v.value} for ${v.days}d — **${formatPointsValue(v.cost)}** pts`)
+          .join('\n');
+        const purchaseItems = Object.entries(PURCHASE_ITEMS)
+          .map(([k, c]) => `**${k}** — **${formatPointsValue(c)}** pts`)
+          .join('\n');
         const embed = new EmbedBuilder()
           .setTitle('🛒 Available Items')
           .addFields(
@@ -561,7 +575,11 @@ module.exports = {
         // best-effort
       }
 
-      const embed = new EmbedBuilder().setTitle('Purchase Complete').setDescription(`Purchased **${item}** for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
+      const embed = new EmbedBuilder()
+        .setTitle('Purchase Complete')
+        .setDescription(`Purchased **${item}** for **${formatPointsValue(cost)}** points.`)
+        .setColor(0x00AAFF)
+        .setTimestamp();
       return interaction.reply({ embeds: [embed] });
     }
 

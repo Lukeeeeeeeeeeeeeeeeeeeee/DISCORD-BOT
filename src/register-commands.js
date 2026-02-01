@@ -5,7 +5,9 @@ const { SlashCommandBuilder } = require('@discordjs/builders');
 
 const econ = require('./lib/economy');
 const { PURCHASE_ITEMS } = require('./constants');
-const BUY_CHOICES = Object.entries(econ.ECONOMY_CONFIG.MULTIPLIERS).map(([k, v]) => ({ name: `${k} ×${v.value} (${v.days}d)`, value: k })).concat(Object.entries(PURCHASE_ITEMS).map(([k, c]) => ({ name: `${k} — ${c} pts`, value: k })));
+const BUY_CHOICES = Object.entries(econ.ECONOMY_CONFIG.MULTIPLIERS)
+  .map(([k, v]) => ({ name: `${k} ×${v.value} (${v.days}d)`, value: k }))
+  .concat(Object.entries(PURCHASE_ITEMS).map(([k, c]) => ({ name: `${k} — ${econ.formatPointsValue(c)} pts`, value: k })));
 
 const commands = [
   new SlashCommandBuilder().setName('recruit').setDescription('Register a recruit')
@@ -38,7 +40,9 @@ const commands = [
     .addUserOption(opt => opt.setName('member').setDescription('Rookie to promote').setRequired(true)),
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
     .addUserOption(opt => opt.setName('member').setDescription('Member to check').setRequired(true)),
-
+  new SlashCommandBuilder().setName('ai').setDescription('AI analytics and reviews')
+    .addSubcommand(sub => sub.setName('review').setDescription('Run a deep AI review of server activity')
+      .addChannelOption(opt => opt.setName('channel').setDescription('Channel to post the report').setRequired(false))),
   new SlashCommandBuilder()
     .setName('dm')
     .setDescription('DM members of a role or everyone (admin only). Use preview to test.')

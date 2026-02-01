@@ -149,6 +149,103 @@ async function init() {
     key TEXT PRIMARY KEY,
     timestamp INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS analytics_daily_channels (
+    day TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    message_count INTEGER DEFAULT 0,
+    unique_speakers INTEGER DEFAULT 0,
+    last_message_at INTEGER,
+    PRIMARY KEY (day, guild_id, channel_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_daily_channel_speakers (
+    day TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY (day, guild_id, channel_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_daily_guild (
+    day TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    message_count INTEGER DEFAULT 0,
+    unique_speakers INTEGER DEFAULT 0,
+    joins INTEGER DEFAULT 0,
+    leaves INTEGER DEFAULT 0,
+    invites_created INTEGER DEFAULT 0,
+    invites_used INTEGER DEFAULT 0,
+    PRIMARY KEY (day, guild_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_daily_guild_speakers (
+    day TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    PRIMARY KEY (day, guild_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_user_activity (
+    user_id TEXT PRIMARY KEY,
+    last_message_at INTEGER,
+    last_voice_at INTEGER,
+    last_active_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_members (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    joined_at INTEGER,
+    left_at INTEGER,
+    PRIMARY KEY (guild_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_voice_daily (
+    day TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    minutes INTEGER DEFAULT 0,
+    PRIMARY KEY (day, guild_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_command_usage (
+    day TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    command_name TEXT NOT NULL,
+    count INTEGER DEFAULT 0,
+    PRIMARY KEY (day, guild_id, command_name)
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_role_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role_id TEXT NOT NULL,
+    role_name TEXT,
+    action TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_ai_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    guild_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    summary TEXT,
+    full_report TEXT,
+    facts_json TEXT,
+    model TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS analytics_guide_embeddings (
+    id TEXT PRIMARY KEY,
+    chunk_title TEXT,
+    chunk_text TEXT NOT NULL,
+    embedding_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
   `);
 
   try {

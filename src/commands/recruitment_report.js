@@ -9,6 +9,7 @@ const {
   isNewStaff
 } = require('../lib/recruiting-system');
 const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_INFO } = require('../constants');
+const { formatPointsValue } = require('../lib/economy');
 
 // Team mappings
 const TEAM_INFO = {
@@ -306,7 +307,7 @@ module.exports = {
         const ret = formatPct(x.retention);
         const warn = x.activeWarnings > 0 ? ` ⚠️${x.activeWarnings}` : '';
         const scoreDisplay = Math.round(x.score * 100);
-        return `<@${x.id}> [${perf}] avg${avg}/w v${verify} r${ret}${warn} pts${x.points} (${scoreDisplay}%)`;
+        return `<@${x.id}> [${perf}] avg${avg}/w v${verify} r${ret}${warn} pts${formatPointsValue(x.points)} (${scoreDisplay}%)`;
       });
 
       const chunks = chunkLines(lines, 1024);

@@ -4,11 +4,12 @@ const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const db = require('./db_async');
 const scheduler = require('./scheduler');
-const { GUILD_ID } = require('./constants');
+const { GUILD_ID, ROLE_IDS, RECRUITER_ROLE_IDS } = require('./constants');
 const AntiNukeSystem = require('./lib/antinuke-system');
 const { dispatchCommand } = require('./lib/command-dispatcher');
 const { trackRookieChatMessage } = require('./lib/rookie-chat');
 const { handleRookieWarLogMessage } = require('./lib/rookie-war');
+const analytics = require('./lib/analytics');
 
 const client = new Client({
   intents: [
@@ -16,6 +17,7 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildModeration,
     GatewayIntentBits.GuildWebhooks,
     GatewayIntentBits.GuildInvites
@@ -25,6 +27,8 @@ client.commands = new Collection();
 
 // Create anti-nuke system instance
 const antiNukeSystem = new AntiNukeSystem();
+const inviteSnapshots = new Map();
+const voiceSessions = new Map();
 
 const commandsPath = path.join(__dirname, 'commands');
 const commandFiles = fs.readdirSync(commandsPath)
@@ -57,6 +61,9 @@ function onReady() {
     return inviteCommand.init();
   }).then(() => {
     console.log('🔗 Invite system ready!');
+    const guildId = GUILD_ID;
+    const guild = guildId ? client.guilds.cache.get(guildId) : null;
+    if (guild) cacheGuildInvites(guild).catch(() => { });
   }).catch(err => {
     console.error('❌ Failed to initialize invite system:', err);
   });
@@ -101,6 +108,9 @@ client.on('interactionCreate', async interaction => {
   wrapInteractionMethod('deferReply');
   wrapInteractionMethod('followUp');
   try {
+    if (interaction.guild) {
+      await analytics.recordCommand({ guildId: interaction.guild.id, commandName: interaction.commandName });
+    }
     await dispatchCommand(cmd, interaction, { client, db });
   } catch (err) {
     // If the interaction itself failed because it's unknown/expired (10062), ignore silently
@@ -122,12 +132,80 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  try {
+    if (!oldMember || !newMember) return;
+    if (!newMember.user || newMember.user.bot) return;
+    if (!oldMember.roles || !oldMember.roles.cache || !newMember.roles || !newMember.roles.cache) return;
+
+    const staffRoles = [
+      ROLE_IDS.HELPER,
+      ROLE_IDS.HELPER_PLUS,
+      ROLE_IDS.HIGH_STAFF,
+      ROLE_IDS.MOD,
+      ROLE_IDS.CHIEF,
+      ROLE_IDS.CHIEF_OF_WAR,
+      ROLE_IDS.CHIEF_OF_COMMUNITY,
+      ROLE_IDS.CHIEF_OF_RECRUITMENT,
+      ROLE_IDS.CO_LEADER,
+      ROLE_IDS.LEADER
+    ].filter(Boolean);
+
+    const recruiterRoles = [
+      ROLE_IDS.RECRUITER,
+      ROLE_IDS.TRIAL_RECRUITER,
+      ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
+    ].filter(Boolean);
+
+    const teamRoles = ROLE_IDS.TEAM_MEMBER ? Object.values(ROLE_IDS.TEAM_MEMBER).filter(Boolean) : [];
+    const trackedRoleIds = new Set([...staffRoles, ...recruiterRoles, ...teamRoles, ROLE_IDS.AUTO_PROMOTE_ROLE]);
+
+    const added = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id) && trackedRoleIds.has(role.id));
+    const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id) && trackedRoleIds.has(role.id));
+
+    for (const role of added.values()) {
+      await analytics.recordRoleChange({
+        guildId: newMember.guild.id,
+        userId: newMember.id,
+        roleId: role.id,
+        roleName: role.name,
+        action: 'added',
+        timestamp: Date.now()
+      });
+    }
+
+    for (const role of removed.values()) {
+      await analytics.recordRoleChange({
+        guildId: newMember.guild.id,
+        userId: newMember.id,
+        roleId: role.id,
+        roleName: role.name,
+        action: 'removed',
+        timestamp: Date.now()
+      });
+    }
+  } catch (e) {
+    console.error('Failed to record role change analytics:', e);
+  }
+});
+
 client.on('messageCreate', async message => {
   if (!message || !message.guild) return;
   if (!message.author || message.author.bot) return;
 
   const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
   if (!member) return;
+
+  try {
+    await analytics.recordMessage({
+      guildId: message.guild.id,
+      channelId: message.channelId,
+      userId: message.author.id,
+      timestamp: message.createdTimestamp || Date.now()
+    });
+  } catch (e) {
+    console.error('Failed to record analytics message:', e);
+  }
 
   try {
     await trackRookieChatMessage({ db, member, guild: message.guild, client });
@@ -145,18 +223,20 @@ client.on('messageCreate', async message => {
 // Track invite usage when members join
 client.on('guildMemberAdd', async (member) => {
   try {
+    await analytics.recordJoin({ guildId: member.guild.id, userId: member.id, joinedAt: member.joinedAt ? member.joinedAt.getTime() : Date.now() });
+  } catch (e) {
+    console.error('Failed to record join analytics:', e);
+  }
+
+  try {
     // Get invite system instance
     const inviteCommand = require('./commands/invite');
     const inviteSystem = await inviteCommand.init();
 
     if (!inviteSystem) return;
 
-    // This is a simplified approach - in production you'd want to track invite counts before/after
-    // For now, we'll just log that a member joined
     console.log(`👋 Member ${member.user.tag} joined the server`);
-
-    // TODO: Implement proper invite tracking by comparing invite counts
-    // This would require storing invite counts and comparing them when members join
+    await trackInviteUsage(member.guild, inviteSystem, member.id).catch(() => { });
 
   } catch (error) {
     console.error('Error tracking invite usage:', error);
@@ -177,12 +257,84 @@ client.on('error', err => {
 // When a member leaves, mark their recruit(s) invalid and recompute flags/leaderboards immediately
 client.on('guildMemberRemove', async member => {
   try {
+    await analytics.recordLeave({ guildId: member.guild.id, userId: member.id, leftAt: Date.now() });
+  } catch (e) {
+    console.error('Failed to record leave analytics:', e);
+  }
+  try {
     const { handleMemberLeave } = require('./lib/memberLeave');
     await handleMemberLeave(db, member.guild, member);
   } catch (err) {
     console.error('Error handling member leave:', err);
   }
 });
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  const member = newState.member || oldState.member;
+  if (!member || !member.user || member.user.bot) return;
+  const guild = newState.guild || oldState.guild;
+  if (!guild) return;
+  const key = `${guild.id}:${member.id}`;
+  const now = Date.now();
+  const oldChannelId = oldState.channelId;
+  const newChannelId = newState.channelId;
+
+  if (!oldChannelId && newChannelId) {
+    voiceSessions.set(key, { joinedAt: now });
+    return;
+  }
+
+  if (oldChannelId && !newChannelId) {
+    const session = voiceSessions.get(key);
+    const joinedAt = session ? session.joinedAt : null;
+    if (joinedAt) {
+      const minutes = Math.max(1, Math.round((now - joinedAt) / 60000));
+      await analytics.recordVoiceMinutes({ guildId: guild.id, userId: member.id, minutes, timestamp: now });
+    }
+    voiceSessions.delete(key);
+    return;
+  }
+
+  if (oldChannelId && newChannelId && oldChannelId !== newChannelId) {
+    const session = voiceSessions.get(key);
+    const joinedAt = session ? session.joinedAt : null;
+    if (joinedAt) {
+      const minutes = Math.max(1, Math.round((now - joinedAt) / 60000));
+      await analytics.recordVoiceMinutes({ guildId: guild.id, userId: member.id, minutes, timestamp: now });
+    }
+    voiceSessions.set(key, { joinedAt: now });
+  }
+});
+
+async function cacheGuildInvites(guild) {
+  if (!guild || typeof guild.invites?.fetch !== 'function') return;
+  const invites = await guild.invites.fetch().catch(() => null);
+  if (!invites) return;
+  const map = new Map();
+  invites.forEach(inv => map.set(inv.code, inv.uses || 0));
+  inviteSnapshots.set(guild.id, map);
+}
+
+async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
+  if (!guild || typeof guild.invites?.fetch !== 'function') return;
+  const previous = inviteSnapshots.get(guild.id) || new Map();
+  const invites = await guild.invites.fetch().catch(() => null);
+  if (!invites) return;
+  let usedCode = null;
+  invites.forEach(inv => {
+    const prevUses = previous.get(inv.code) || 0;
+    const newUses = inv.uses || 0;
+    if (newUses > prevUses) usedCode = inv.code;
+  });
+  const updated = new Map();
+  invites.forEach(inv => updated.set(inv.code, inv.uses || 0));
+  inviteSnapshots.set(guild.id, updated);
+
+  if (usedCode && inviteSystem && typeof inviteSystem.markInviteUsed === 'function') {
+    await inviteSystem.markInviteUsed(usedCode, joinedUserId);
+    await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
+  }
+}
 
 (async () => {
   // sanitize token from .env (trim, remove surrounding quotes)

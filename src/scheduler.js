@@ -1,6 +1,10 @@
 const cron = require('node-cron');
 const { GUILD_ID, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS, REGION_INFO } = require('./constants');
+const { formatPointsValue } = require('./lib/economy');
+
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
+const { maybeRunScheduledReview } = require('./lib/ai-review');
+
 const { calculate7DayStats, getPreviousMinReq, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
 
 const DEBUG_SCHEDULER = process.env.DEBUG_SCHEDULER === '1';
@@ -117,7 +121,9 @@ function formatLeaderboardMessage(rows, regionLabel) {
   if (!rows || rows.length === 0) return `# ${teamName} Leaderboard\nNo recruiters yet.`;
   const lines = rows.map((r, i) => {
     const name = r.recruiter_id ? `<@${r.recruiter_id}>` : (r.displayName || 'Unknown');
-    return `${i + 1}. ${name} — **${r.cnt}** recruits${(r.points || 0) ? ` — ${(r.points || 0)} pts` : ''}${r.systemWarning ? ' ⚠️**!**' : ''}`;
+    const points = r.points || 0;
+    const pointsText = points ? ` — ${formatPointsValue(points)} pts` : '';
+    return `${i + 1}. ${name} — **${r.cnt}** recruits${pointsText}${r.systemWarning ? ' ⚠️**!**' : ''}`;
   });
 
   return `# ${teamName} Leaderboard\n\n` + lines.join('\n');
@@ -510,6 +516,12 @@ function start(client, db) {
     await reconcileTrialRecruiters(db, client).catch((e) => console.error('reconcileTrialRecruiters failed:', e));
     await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
 
+    try {
+      await maybeRunScheduledReview({ client });
+    } catch (e) {
+      console.error('Scheduled AI review startup check failed:', e);
+    }
+
     // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
     try {
       const weekStart = getWeekStartUtcTs();
@@ -542,6 +554,18 @@ function start(client, db) {
   // Cron: Monday at 00:05 UTC - Weekly MinReq and stats snapshot (5 minutes after recalculation)
   cron.schedule('5 0 * * 1', async () => {
     await runWeeklySnapshotAndReset(db, client);
+  }, {
+    scheduled: true,
+    timezone: 'UTC'
+  });
+
+  // AI review check every 6 hours (gated to 72h intervals)
+  cron.schedule('0 */6 * * *', async () => {
+    try {
+      await maybeRunScheduledReview({ client });
+    } catch (error) {
+      console.error('AI review schedule failed:', error);
+    }
   }, {
     scheduled: true,
     timezone: 'UTC'

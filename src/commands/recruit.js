@@ -1,6 +1,7 @@
 const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_ROLE_IDS, REGION_INFO } = require('../constants');
 const db = require('../db_async');
-const { getActiveMultiplier, calculateRecruitPoints } = require('../lib/economy');
+const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../lib/economy');
+
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
 
 function inferTeamFromRecruiter(member) {
@@ -41,10 +42,10 @@ function buildRookieWelcomeMessage(teamName) {
 Make sure you read how to war, whats a war and see readme!
 
 # <:SOLACEONTOP:1460693669391765750> SOLACE ROOKIE INFO
-Hello there and welcome to Solace! 💛
+Hello there and welcome to Solace! 
 The first thought that crosses your mind might be the reason behind your being given the <@&1331020584473329726>—it's our basic role. You will have to earn <@&1331020565879984198> to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
 
-🌟 Point Earning Methods
+ Point Earning Methods
 
 > 1. Wars / Ganks
 > Take part in 2 wars or ganks in a 2-week period
@@ -54,7 +55,7 @@ The first thought that crosses your mind might be the reason behind your being g
 2. Recruiting (Fast Track)
 > As <@&1459956798172827933>, get 3 people on board in 9 days
 > <:greenarrow:1459897308610039900> Direct promotion to <@&1331020565879984198> + <@&1331020553707847772>
-***⚠️ If 3 recruits are not reached within the specified time, the process goes back to zero.***
+*** If 3 recruits are not reached within the specified time, the process goes back to zero.***
 
 3. Activity (Chatting)
 > In a week's time send 550 messages
@@ -62,14 +63,14 @@ The first thought that crosses your mind might be the reason behind your being g
 
 You can combine any combination of these methods or concentrate solely on one (2 & 3 are the most consistent). Also, keep in mind that they are **not** permanent points!
 
-What Are Points? 📊
+What Are Points? 
 Points are shown beside your name (e.g., 0/10). With more wars, chat, and recruiting activities, the points go up.
 
-Logging Progress 📝
+Logging Progress 
 Make sure to put down your achievements in <#1331020800551293030> always. This is a must to ensure the counting of your points and your elevation. **Why?**
 <:greenarrow:1459897308610039900> Logging your progression insures that you get the points you worked for. It also is a chart of your progression if that helps you in terms of motivation.
 
-Wishing you good luck and once again welcoming you to Solace 💙`;
+Wishing you good luck and once again welcoming you to Solace `;
 }
 
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
@@ -392,7 +393,7 @@ module.exports = {
           console.error('Failed updating leaderboards:', e);
         }
 
-        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${points}** points.` });
+        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.` });
       } catch (err) {
         console.error('Recruit command error:', err);
 

@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const InviteSystem = require('../lib/invite-system');
 const { hasAdministrator } = require('../lib/permissions');
+const analytics = require('../lib/analytics');
 
 // Global invite system instance
 let inviteSystem = null;
@@ -127,6 +128,10 @@ module.exports = {
           .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
+
+        if (!result.reused) {
+          await analytics.recordInviteCreated({ guildId: interaction.guild.id, timestamp: Date.now() }).catch(() => { });
+        }
 
         // Log the invite creation
         console.log(`🔗 Invite created: ${result.invite.code} by ${interaction.user.tag} (${interaction.user.id})`);
