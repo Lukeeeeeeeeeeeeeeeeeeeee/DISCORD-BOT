@@ -226,7 +226,7 @@ async function callGeminiEmbedding({ apiKey, text, model = GUIDE_EMBEDDING_MODEL
 
   const options = {
     hostname: 'generativelanguage.googleapis.com',
-    path: `/v1beta/models/${model}:embedContent?key=${apiKey}`,
+    path: `/v1/models/${model}:embedContent?key=${apiKey}`,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -833,7 +833,7 @@ async function callGemini({ apiKey, prompt, model = 'gemini-1.5-flash' }) {
 
   const options = {
     hostname: 'generativelanguage.googleapis.com',
-    path: `/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    path: `/v1/models/${model}:generateContent?key=${apiKey}`,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
