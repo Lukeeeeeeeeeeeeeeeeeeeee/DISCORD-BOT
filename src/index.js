@@ -10,15 +10,17 @@ const { dispatchCommand } = require('./lib/command-dispatcher');
 const { trackRookieChatMessage } = require('./lib/rookie-chat');
 const { handleRookieWarLogMessage } = require('./lib/rookie-war');
 
-const client = new Client({ intents: [
-  GatewayIntentBits.Guilds,
-  GatewayIntentBits.GuildMembers,
-  GatewayIntentBits.GuildMessages,
-  GatewayIntentBits.MessageContent,
-  GatewayIntentBits.GuildModeration,
-  GatewayIntentBits.GuildWebhooks,
-  GatewayIntentBits.GuildInvites
-] });
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildWebhooks,
+    GatewayIntentBits.GuildInvites
+  ]
+});
 client.commands = new Collection();
 
 // Create anti-nuke system instance
@@ -50,7 +52,7 @@ function onReady() {
   // Initialize invite system
   const { createInviteTables } = require('./lib/create-invite-tables');
   const inviteCommand = require('./commands/invite');
-  
+
   createInviteTables().then(() => {
     return inviteCommand.init();
   }).then(() => {
@@ -75,7 +77,7 @@ function onReady() {
   }
 }
 // Use the ready event to start schedulers and subsystems once the client is online.
-client.once('ready', onReady);
+client.once('clientReady', onReady);
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
@@ -146,16 +148,16 @@ client.on('guildMemberAdd', async (member) => {
     // Get invite system instance
     const inviteCommand = require('./commands/invite');
     const inviteSystem = await inviteCommand.init();
-    
+
     if (!inviteSystem) return;
 
     // This is a simplified approach - in production you'd want to track invite counts before/after
     // For now, we'll just log that a member joined
     console.log(`👋 Member ${member.user.tag} joined the server`);
-    
+
     // TODO: Implement proper invite tracking by comparing invite counts
     // This would require storing invite counts and comparing them when members join
-    
+
   } catch (error) {
     console.error('Error tracking invite usage:', error);
   }
@@ -185,7 +187,7 @@ client.on('guildMemberRemove', async member => {
 (async () => {
   // sanitize token from .env (trim, remove surrounding quotes)
   const rawToken = process.env.DISCORD_TOKEN;
-  const token = rawToken ? rawToken.trim().replace(/^"(.+)"$/,'$1') : null;
+  const token = rawToken ? rawToken.trim().replace(/^"(.+)"$/, '$1') : null;
   if (!token) {
     console.error('FATAL: DISCORD_TOKEN is missing from environment. Create a .env with DISCORD_TOKEN=<your token> and restart.');
     process.exit(1);
