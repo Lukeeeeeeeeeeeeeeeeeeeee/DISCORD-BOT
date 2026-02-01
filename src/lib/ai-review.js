@@ -820,20 +820,13 @@ function buildPrompt({ facts, guides, meta }) {
   return `You are the clan analytics reviewer. Use ONLY the facts and guides provided.\n\nGOAL: Provide a deep, structured diagnosis of activity/inactivity, structural issues, recruitment/verification health, and role/team balance.\n\nRULES:\n- Issues only. Do NOT provide fixes, action steps, or suggestions.\n- Use common sense based on facts. If data is missing, say so.\n- Cite facts by their IDs (F1, F2, etc.) in each issue.\n- Consider private/public channel structure, role activity, and team balance.\n\nFACTS (${meta.timeframe}, ${meta.guildName}):\n${factBlock}\n\nGUIDES (selected excerpts):\n${guides}\n\nOUTPUT FORMAT (Markdown):\n# Executive Summary\n# Key Issues (bullets with severity and facts)\n# Structural & Role Risks\n# Recruitment & Verification Signals\n# Channel & Engagement Signals\n# Inactive Cohorts\n# Evidence (facts used)\n\nRemember: issues only, no recommendations.`;
 }
 
-async function callGemini({ apiKey, prompt, model = 'gemini-1.5-flash' }) {
-  const payload = JSON.stringify({
-    contents: [
-      { role: 'user', parts: [{ text: prompt }] }
-    ],
-    generationConfig: {
-      temperature: 0.3,
-      maxOutputTokens: 4096
-    }
-  });
+const GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash'; // Stable, works on v1 and v1beta
 
+function doGeminiRequest({ apiKey, payload, model, apiVersion = 'v1beta' }) {
+  const path = `/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
   const options = {
     hostname: 'generativelanguage.googleapis.com',
-    path: `/v1/models/${model}:generateContent?key=${apiKey}`,
+    path,
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -846,18 +839,18 @@ async function callGemini({ apiKey, prompt, model = 'gemini-1.5-flash' }) {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          return reject(new Error(`Gemini API error: ${res.statusCode} ${data}`));
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            const json = JSON.parse(data);
+            const text = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts
+              ? json.candidates[0].content.parts.map(p => p.text || '').join('')
+              : '';
+            return resolve({ text: text || 'No response content.', model });
+          } catch (e) {
+            return reject(e);
+          }
         }
-        try {
-          const json = JSON.parse(data);
-          const text = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts
-            ? json.candidates[0].content.parts.map(p => p.text || '').join('')
-            : '';
-          resolve(text || 'No response content.');
-        } catch (e) {
-          reject(e);
-        }
+        reject(new Error(`Gemini API error: ${res.statusCode} ${data}`));
       });
     });
     req.setTimeout(GEMINI_REQUEST_TIMEOUT_MS, () => {
@@ -867,6 +860,41 @@ async function callGemini({ apiKey, prompt, model = 'gemini-1.5-flash' }) {
     req.write(payload);
     req.end();
   });
+}
+
+async function callGemini({ apiKey, prompt, model = 'gemini-2.5-pro' }) {
+  const payload = JSON.stringify({
+    contents: [
+      { role: 'user', parts: [{ text: prompt }] }
+    ],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 4096
+    }
+  });
+
+  // Prefer v1beta (current/preview models). On 404, retry with stable model so review doesn't fail.
+  try {
+    const result = await doGeminiRequest({ apiKey, payload, model, apiVersion: 'v1beta' });
+    return result.text;
+  } catch (err) {
+    const is404 = err.message && (err.message.includes('404') || err.message.includes('NOT_FOUND'));
+    if (is404 && model !== GEMINI_FALLBACK_MODEL) {
+      try {
+        const result = await doGeminiRequest({ apiKey, payload, model: GEMINI_FALLBACK_MODEL, apiVersion: 'v1beta' });
+        return result.text;
+      } catch (fallbackErr) {
+        // If v1beta fallback fails, try v1 with same stable model (in case deployment uses v1)
+        try {
+          const result = await doGeminiRequest({ apiKey, payload, model: GEMINI_FALLBACK_MODEL, apiVersion: 'v1' });
+          return result.text;
+        } catch (e) {
+          throw err; // throw original error so user sees requested model failed
+        }
+      }
+    }
+    throw err;
+  }
 }
 
 async function runReview({ guild, channelId, requesterId, force = false }) {
@@ -893,7 +921,8 @@ async function runReview({ guild, channelId, requesterId, force = false }) {
     });
     const prompt = buildPrompt({ facts, guides, meta });
 
-    const model = process.env.AI_REVIEW_MODEL || 'gemini-1.5-flash';
+    // Best model: gemini-2.5-pro (reasoning, complex analysis). Override with AI_REVIEW_MODEL (e.g. gemini-3-pro-preview for top tier).
+    const model = process.env.AI_REVIEW_MODEL || 'gemini-2.5-pro';
     const reportText = await callGemini({ apiKey, prompt, model });
 
     const channel = channelId
