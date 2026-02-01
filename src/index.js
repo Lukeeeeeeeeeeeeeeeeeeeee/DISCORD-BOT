@@ -7,11 +7,14 @@ const scheduler = require('./scheduler');
 const { GUILD_ID } = require('./constants');
 const AntiNukeSystem = require('./lib/antinuke-system');
 const { dispatchCommand } = require('./lib/command-dispatcher');
+const { trackRookieChatMessage } = require('./lib/rookie-chat');
+const { handleRookieWarLogMessage } = require('./lib/rookie-war');
 
 const client = new Client({ intents: [
   GatewayIntentBits.Guilds,
   GatewayIntentBits.GuildMembers,
   GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.MessageContent,
   GatewayIntentBits.GuildModeration,
   GatewayIntentBits.GuildWebhooks,
   GatewayIntentBits.GuildInvites
@@ -22,7 +25,9 @@ client.commands = new Collection();
 const antiNukeSystem = new AntiNukeSystem();
 
 const commandsPath = path.join(__dirname, 'commands');
-const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
+const commandFiles = fs.readdirSync(commandsPath)
+  .filter(f => f.endsWith('.js'))
+  .filter(f => f !== 'verify.js');
 for (const file of commandFiles) {
   const cmd = require(path.join(commandsPath, file));
   client.commands.set(cmd.data.name, cmd);
@@ -69,13 +74,30 @@ function onReady() {
     }
   }
 }
-// Use the new `clientReady` event; avoid the deprecated `ready` binding which logs a deprecation warning
-client.once('clientReady', onReady);
+// Use the ready event to start schedulers and subsystems once the client is online.
+client.once('ready', onReady);
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   const cmd = client.commands.get(interaction.commandName);
   if (!cmd) return;
+  const shouldSanitize = interaction.commandName !== 'invite';
+  const sanitizePayload = (payload) => {
+    if (!shouldSanitize || !payload || typeof payload !== 'object') return payload;
+    const cleaned = { ...payload };
+    if ('flags' in cleaned) delete cleaned.flags;
+    if (cleaned.ephemeral) delete cleaned.ephemeral;
+    return cleaned;
+  };
+  const wrapInteractionMethod = (methodName) => {
+    if (typeof interaction[methodName] !== 'function') return;
+    const original = interaction[methodName].bind(interaction);
+    interaction[methodName] = (payload, ...rest) => original(sanitizePayload(payload), ...rest);
+  };
+  wrapInteractionMethod('reply');
+  wrapInteractionMethod('editReply');
+  wrapInteractionMethod('deferReply');
+  wrapInteractionMethod('followUp');
   try {
     await dispatchCommand(cmd, interaction, { client, db });
   } catch (err) {
@@ -87,7 +109,7 @@ client.on('interactionCreate', async interaction => {
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply({ content: 'Command failed.' });
       } else {
-        await interaction.reply({ content: 'Command failed.', flags: 64 });
+        await interaction.reply({ content: 'Command failed.' });
       }
     } catch (err2) {
       // If the interaction is expired, Discord returns code 10062 — ignore silently
@@ -95,6 +117,26 @@ client.on('interactionCreate', async interaction => {
       // otherwise log
       console.error('Failed to send error response for interaction:', err2);
     }
+  }
+});
+
+client.on('messageCreate', async message => {
+  if (!message || !message.guild) return;
+  if (!message.author || message.author.bot) return;
+
+  const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
+  if (!member) return;
+
+  try {
+    await trackRookieChatMessage({ db, member, guild: message.guild, client });
+  } catch (e) {
+    console.error('Failed to track rookie chat message:', e);
+  }
+
+  try {
+    await handleRookieWarLogMessage({ db, message, member, guild: message.guild, client });
+  } catch (e) {
+    console.error('Failed to track rookie war log:', e);
   }
 });
 

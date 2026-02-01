@@ -18,16 +18,14 @@ module.exports = {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ 
-        content: '❌ Administrator permission required.', 
-        flags: 64 
+        content: '❌ Administrator permission required.'
       });
     }
 
     const antiNuke = global.antiNuke;
     if (!antiNuke) {
       return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.', 
-        flags: 64 
+        content: '❌ Anti-nuke system not initialized.'
       });
     }
 
@@ -56,7 +54,7 @@ module.exports = {
           resetType: 'individual'
         });
 
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
 
       } else {
         // Reset all users
@@ -79,7 +77,7 @@ module.exports = {
           resetType: 'all'
         });
 
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       }
 
     } catch (error) {
@@ -91,7 +89,7 @@ module.exports = {
         .setDescription(`Failed to reset scores: ${error.message}`)
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
     }
   }
 };

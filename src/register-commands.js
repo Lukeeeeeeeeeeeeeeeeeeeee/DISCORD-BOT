@@ -20,7 +20,6 @@ const commands = [
       return opt.addChoices(...BUY_CHOICES.map(c => ({ name: c.name, value: c.value })));
     }))
     .addSubcommand(s => s.setName('warn').setDescription('Admin: issue a warning to a recruiter').addUserOption(o => o.setName('member').setDescription('Recruiter to warn').setRequired(true)).addStringOption(o => o.setName('note').setDescription('Warning note (optional)')).addIntegerOption(o => o.setName('expires_days').setDescription('Expire after N days (optional, admin only)').setRequired(false)))
-    .addSubcommand(s => s.setName('dismiss').setDescription('Admin: dismiss flags for a recruiter').addUserOption(o => o.setName('member').setDescription('Recruiter to dismiss flags for').setRequired(true)).addStringOption(o => o.setName('reason').setDescription('Reason for dismissal (optional)')))
     .addSubcommand(s => s.setName('warnings-revoke').setDescription('Admin: revoke warnings for a recruiter').addUserOption(o => o.setName('member').setDescription('Recruiter to revoke warnings for').setRequired(true)).addIntegerOption(o => o.setName('warning_id').setDescription('Specific warning id to revoke (optional)'))),
   new SlashCommandBuilder().setName('revoke-recruit').setDescription('Revoke a recruit and update invite channels (admin only)')
     .addUserOption(opt => opt.setName('member').setDescription('Member to revoke recruit status from').setRequired(true))
@@ -28,13 +27,14 @@ const commands = [
   new SlashCommandBuilder().setName('absent').setDescription('Set absence period for recruiting requirements (MOD+ only)')
     .addStringOption(opt => opt.setName('date').setDescription('End date for absence (YYYY-MM-DD)').setRequired(true))
     .addUserOption(opt => opt.setName('member').setDescription('Member to set absence for (optional)').setRequired(false)),
-  new SlashCommandBuilder().setName('verify').setDescription('Verify a rookie (MOD+ only)')
-    .addUserOption(opt => opt.setName('member').setDescription('Rookie to verify').setRequired(true)),
   new SlashCommandBuilder().setName('rookiepoints').setDescription('Manage rookie points (MOD+ only)')
     .addSubcommand(s => s.setName('add').setDescription('Add rookie points')
       .addUserOption(opt => opt.setName('member').setDescription('Rookie member').setRequired(true))
-      .addNumberOption(opt => opt.setName('points').setDescription('Points to add').setRequired(true).setMinValue(0.1))),
-  new SlashCommandBuilder().setName('rookie_promote').setDescription('Instantly promote a rookie (MOD+ only, for events)')
+      .addNumberOption(opt => opt.setName('points').setDescription('Points to add').setRequired(true).setMinValue(0.1)))
+    .addSubcommand(s => s.setName('remove').setDescription('Remove rookie points')
+      .addUserOption(opt => opt.setName('member').setDescription('Rookie member').setRequired(true))
+      .addNumberOption(opt => opt.setName('points').setDescription('Points to remove').setRequired(true).setMinValue(0.1))),
+  new SlashCommandBuilder().setName('rookie_promote').setDescription('Verify and promote a rookie (MOD+ only)')
     .addUserOption(opt => opt.setName('member').setDescription('Rookie to promote').setRequired(true)),
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
     .addUserOption(opt => opt.setName('member').setDescription('Member to check').setRequired(true)),
@@ -73,9 +73,40 @@ const commands = [
     .addUserOption(opt => opt.setName('user').setDescription('User to add/remove (not required for list)')),
   new SlashCommandBuilder().setName('set_log_channel').setDescription('Configure anti-nuke log channel (Admin only)')
     .addChannelOption(opt => opt.setName('channel').setDescription('Channel to set as log channel').setRequired(true)),
-  new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover from emergency lockdown (Admin only)'),
+  new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover from emergency lockdown (Admin only)')
+    .addStringOption(opt => opt.setName('backup_id').setDescription('Backup ID to restore (optional)').setRequired(false))
+    .addBooleanOption(opt => opt.setName('force').setDescription('Force recovery even if not in emergency mode (owner only)').setRequired(false)),
   new SlashCommandBuilder().setName('force_backup').setDescription('Create manual backup of server (Admin only)'),
-  new SlashCommandBuilder().setName('view_backups').setDescription('View backup information (Admin only)')
+  new SlashCommandBuilder().setName('view_backups').setDescription('View backup information (Admin only)'),
+  new SlashCommandBuilder().setName('simulate_attack').setDescription('Simulate anti-nuke triggers (Admin only)')
+    .addStringOption(opt => opt.setName('type').setDescription('Action type to simulate').setRequired(true)
+      .addChoices(
+        { name: 'ban', value: 'ban' },
+        { name: 'kick', value: 'kick' },
+        { name: 'channel_delete', value: 'channel_delete' },
+        { name: 'role_delete', value: 'role_delete' },
+        { name: 'webhook', value: 'webhook' },
+        { name: 'bot_add', value: 'bot_add' },
+        { name: 'prune', value: 'prune' }
+      ))
+    .addIntegerOption(opt => opt.setName('count').setDescription('Number of simulated actions').setRequired(true))
+    .addIntegerOption(opt => opt.setName('window_seconds').setDescription('Window in seconds').setRequired(true)),
+  new SlashCommandBuilder().setName('toggle_strict_mode').setDescription('Enable or disable anti-nuke strict mode (Admin only)')
+    .addBooleanOption(opt => opt.setName('enabled').setDescription('Enable strict mode').setRequired(true))
+    .addIntegerOption(opt => opt.setName('duration_minutes').setDescription('Optional auto-disable duration in minutes').setRequired(false)),
+  new SlashCommandBuilder().setName('set_quarantine_options').setDescription('Configure anti-nuke quarantine options (Admin only)')
+    .addStringOption(opt => opt.setName('mode').setDescription('Quarantine mode').setRequired(true)
+      .addChoices(
+        { name: 'quarantine', value: 'quarantine' },
+        { name: 'quarantine_ban', value: 'quarantine_ban' },
+        { name: 'ban', value: 'ban' }
+      ))
+    .addBooleanOption(opt => opt.setName('preserve_view').setDescription('Preserve view/read permissions during quarantine').setRequired(false))
+    .addIntegerOption(opt => opt.setName('duration_hours').setDescription('Quarantine duration in hours').setRequired(false)),
+  new SlashCommandBuilder().setName('toggle_aggressive_ban').setDescription('Enable or disable aggressive anti-nuke bans (Admin only)')
+    .addBooleanOption(opt => opt.setName('enabled').setDescription('Enable aggressive bans').setRequired(true)),
+  new SlashCommandBuilder().setName('export_logs').setDescription('Export recent anti-nuke logs (Admin only)')
+    .addIntegerOption(opt => opt.setName('limit').setDescription('Number of log entries to export (max 200)').setRequired(false)),
 ];
 
 async function registerCommands({ guildId = null, global = false } = {}) {

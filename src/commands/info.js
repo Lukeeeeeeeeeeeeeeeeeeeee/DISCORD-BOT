@@ -13,6 +13,20 @@ function safeDaysLeftFromEndDate(endDateStr) {
   return Math.ceil(diffMs / (24 * 60 * 60 * 1000));
 }
 
+function parseRookiePointsFromName(rawName) {
+  if (!rawName) return null;
+  const match = String(rawName).match(/(\d+(?:\.\d+)?)\s*\/\s*10\s*$/i);
+  if (!match) return null;
+  const points = Number(match[1]);
+  return Number.isFinite(points) ? points : null;
+}
+
+function formatPoints(value) {
+  const rounded = Math.round(value * 10) / 10;
+  if (Number.isInteger(rounded)) return String(rounded);
+  return String(rounded).replace(/\.0$/, '');
+}
+
 function getPrimaryMemberRoleLabel(guildMember) {
   if (!guildMember || !guildMember.roles || !guildMember.roles.cache) return 'Member';
   const { ROLE_IDS } = require('../constants');
@@ -50,9 +64,38 @@ module.exports = {
     if (!rows || rows.length === 0) return interaction.reply({ content: 'No recruit record for that member.' });
     const recruit = rows[0];
 
+    const verification = await db.get(
+      'SELECT * FROM verifications WHERE recruited_id = ? ORDER BY verified_at DESC LIMIT 1',
+      member.id
+    );
+    const rookiePointsRow = await db.get(
+      'SELECT points, updated_at FROM rookie_points WHERE member_id = ?',
+      member.id
+    );
+    let points = rookiePointsRow ? Number(rookiePointsRow.points) : null;
+    let pointsUpdatedAt = rookiePointsRow ? rookiePointsRow.updated_at : null;
+
     const recruitMember = await interaction.guild.members.fetch(member.id).catch(() => null);
     const recruiterMember = await interaction.guild.members.fetch(recruit.recruiter_id).catch(() => null);
     const primaryRole = getPrimaryMemberRoleLabel(recruitMember);
+
+    if (points == null && recruitMember) {
+      const parsed = parseRookiePointsFromName(recruitMember.nickname || recruitMember.user.username);
+      if (parsed != null) {
+        points = parsed;
+        pointsUpdatedAt = Date.now();
+        try {
+          await db.run(
+            'INSERT OR REPLACE INTO rookie_points (member_id, points, updated_at) VALUES (?, ?, ?)',
+            member.id,
+            points,
+            pointsUpdatedAt
+          );
+        } catch (e) {
+          console.error('Failed to sync rookie points from nickname:', e);
+        }
+      }
+    }
 
     const embed = new EmbedBuilder()
       .setTitle(`Info: ${member.tag}`)
@@ -64,8 +107,20 @@ module.exports = {
       { name: 'Role', value: primaryRole, inline: true },
       { name: 'Valid', value: recruit.valid ? 'Yes' : 'No', inline: true },
       { name: 'Region', value: String(recruit.region || 'Unknown'), inline: true },
-      { name: 'IGN', value: String(recruit.ign || 'Unknown'), inline: true }
+      { name: 'IGN', value: String(recruit.ign || 'Unknown'), inline: true },
+      { name: 'Verified', value: verification ? 'Yes' : 'No', inline: true },
+      { name: 'Points', value: points != null ? `${formatPoints(points)}/10` : 'N/A', inline: true },
+      { name: 'Points updated', value: pointsUpdatedAt ? `<t:${toUnixSeconds(pointsUpdatedAt)}:R>` : 'Unknown', inline: true }
     );
+
+    if (verification && verification.verified_at) {
+      const verifiedBy = verification.verified_by ? `\nBy: <@${verification.verified_by}>` : '';
+      embed.addFields({
+        name: 'Verified at',
+        value: `<t:${toUnixSeconds(verification.verified_at)}:F> (<t:${toUnixSeconds(verification.verified_at)}:R>)${verifiedBy}`,
+        inline: false
+      });
+    }
 
     if (recruit.created_at) {
       embed.addFields({

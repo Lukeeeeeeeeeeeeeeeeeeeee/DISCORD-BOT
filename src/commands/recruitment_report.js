@@ -38,17 +38,47 @@ function formatPct(x) {
   return `${Math.round(Math.max(0, Math.min(1, x)) * 100)}%`;
 }
 
+async function getAverageWeeklyRecruits(db, recruiterId, weeks = 4) {
+  try {
+    const rows = await db.all(
+      'SELECT recruits7d FROM weekly_calculations WHERE recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT ?',
+      recruiterId,
+      weeks
+    );
+    if (rows && rows.length) {
+      const total = rows.reduce((sum, r) => sum + (Number(r.recruits7d) || 0), 0);
+      return Math.round((total / rows.length) * 10) / 10;
+    }
+  } catch (e) {
+    void e;
+  }
+
+  try {
+    const since = Date.now() - (28 * 24 * 60 * 60 * 1000);
+    const row = await db.get(
+      'SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND valid = 1 AND created_at >= ?',
+      recruiterId,
+      since
+    );
+    const count = row ? Number(row.c || 0) : 0;
+    return Math.round((count / 4) * 10) / 10;
+  } catch (e) {
+    return 0;
+  }
+}
+
 /**
  * Calculate performance score based on multiple factors:
- * - Recruitment progress (recruits/minReq) - 40%
+ * - Recruitment progress (avg of 7d recruits + avg recruits/week) - 40%
  * - Verify rate - 25%
  * - Retention rate - 20%
  * - Warning penalty - 15%
  */
-function calculatePerformanceScore({ recruits7d, minReq, verifyRate, retention, warnings }) {
+function calculatePerformanceScore({ recruits7d, avgRecruitsWeek, minReq, verifyRate, retention, warnings }) {
   if (minReq <= 0) minReq = 1; // Avoid division by zero
 
-  const recruitProgress = Math.min(2, recruits7d / minReq); // Cap at 200%
+  const avgRecruits = Number.isFinite(avgRecruitsWeek) ? avgRecruitsWeek : recruits7d;
+  const recruitProgress = Math.min(2, ((recruits7d + avgRecruits) / 2) / minReq); // Cap at 200%
   const warningPenalty = Math.max(0, 1 - (warnings * 0.25)); // Each warning reduces by 25%
 
   const score = (
@@ -158,6 +188,7 @@ module.exports = {
 
       const stats7d = await calculate7DayStats(db, id, interaction.guild).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
       const previousMinReq = await getPreviousMinReq(db, id).catch(() => null);
+      const avgRecruitsWeek = await getAverageWeeklyRecruits(db, id).catch(() => 0);
 
       const absence = await db.get(
         'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
@@ -193,6 +224,7 @@ module.exports = {
 
       const score = calculatePerformanceScore({
         recruits7d: stats7d.recruits7d,
+        avgRecruitsWeek,
         minReq,
         verifyRate: stats7d.verifyRate,
         retention: stats7d.retention,
@@ -207,16 +239,21 @@ module.exports = {
         absent: !!absence
       });
 
+      const recruiterRow = await db.get('SELECT points FROM recruiters WHERE id = ?', id).catch(() => null);
+      const points = recruiterRow ? (recruiterRow.points || 0) : 0;
+
       results.push({
         id,
         tag: member && member.user ? member.user.tag : null,
         recruits7d: stats7d.recruits7d,
+        avgRecruitsWeek,
         verifyRate: stats7d.verifyRate,
         retention: stats7d.retention,
         minReq,
         activeWarnings,
         score,
-        category
+        category,
+        points
       });
     }
 
@@ -264,11 +301,12 @@ module.exports = {
 
       const lines = arr.map(x => {
         const perf = `${x.recruits7d}/${x.minReq}`;
+        const avg = Number.isFinite(x.avgRecruitsWeek) ? String(x.avgRecruitsWeek).replace(/\.0$/, '') : '0';
         const verify = formatPct(x.verifyRate);
         const ret = formatPct(x.retention);
         const warn = x.activeWarnings > 0 ? ` ⚠️${x.activeWarnings}` : '';
         const scoreDisplay = Math.round(x.score * 100);
-        return `<@${x.id}> [${perf}] v${verify} r${ret}${warn} (${scoreDisplay}%)`;
+        return `<@${x.id}> [${perf}] avg${avg}/w v${verify} r${ret}${warn} pts${x.points} (${scoreDisplay}%)`;
       });
 
       const chunks = chunkLines(lines, 1024);

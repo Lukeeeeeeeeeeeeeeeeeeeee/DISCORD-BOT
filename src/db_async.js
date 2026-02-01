@@ -102,6 +102,29 @@ async function init() {
 
   CREATE UNIQUE INDEX IF NOT EXISTS uniq_verification_recruited ON verifications(recruited_id);
 
+  CREATE TABLE IF NOT EXISTS rookie_points (
+    member_id TEXT PRIMARY KEY,
+    points REAL NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS rookie_chat_activity (
+    member_id TEXT NOT NULL,
+    week_start INTEGER NOT NULL,
+    message_count INTEGER DEFAULT 0,
+    awarded_chunks INTEGER DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (member_id, week_start)
+  );
+
+  CREATE TABLE IF NOT EXISTS rookie_war_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    type TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS trial_fast_track (
     recruiter_id TEXT PRIMARY KEY,
     started_at INTEGER NOT NULL,
@@ -130,6 +153,16 @@ async function init() {
 
   try {
     await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_rookie_war_message ON rookie_war_logs(message_id)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_rookie_war_member_time ON rookie_war_logs(member_id, created_at)');
   } catch (e) {
     void e;
   }

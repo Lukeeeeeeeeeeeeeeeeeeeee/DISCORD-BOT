@@ -64,13 +64,22 @@ function calculateMinRecruitsRequired({
 
 function calculateRecruitPoints({ recruiterRole: _recruiterRole = 'NONE', multiplierValue = 1.0 } = {}) {
   const base = 1; // Base 1 point for every recruit
-  const total = Math.floor(base * (multiplierValue || 1.0));
-  return total;
+  const raw = base * (Number.isFinite(multiplierValue) ? multiplierValue : 1.0);
+  return Math.round(raw * 100) / 100;
+}
+
+function formatPointsValue(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '0';
+  const rounded = Math.round(num * 100) / 100;
+  return rounded.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
 }
 
 async function getActiveMultiplier(db, recruiterId) {
   try {
-    const row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1', recruiterId, Date.now());
+    const now = Date.now();
+    await db.run('DELETE FROM multipliers WHERE recruiter_id = ? AND expires_at <= ?', recruiterId, now).catch(() => { });
+    const row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1', recruiterId, now);
     return row ? { value: row.value, expiresAt: row.expires_at, type: row.type } : { value: 1.0, expiresAt: 0, type: null };
   } catch (e) {
     // If the multipliers table doesn't exist or other DB error, fall back to no multiplier
@@ -147,6 +156,7 @@ module.exports = {
   ECONOMY_CONFIG,
   calculateMinRecruitsRequired,
   calculateRecruitPoints,
+  formatPointsValue,
   getActiveMultiplier,
   applyMultiplier,
   resetMultipliers,

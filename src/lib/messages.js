@@ -1,4 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
+const { formatPointsValue } = require('./economy');
 
 function makeRecruitEmbed(recruiter, recruited, region, ign, lang = 'en', meta = {}) {
   const { REGION_INFO } = require('../constants');
@@ -21,6 +22,64 @@ function makeRecruitEmbed(recruiter, recruited, region, ign, lang = 'en', meta =
 
   if (info.thumbnail) embed.setThumbnail(info.thumbnail);
   return embed;
+}
+
+function normalizeMinReq(row) {
+  const rawMinReq = row && row.minReq !== undefined ? row.minReq : null;
+  if (rawMinReq == null) return row && row.absence ? 0 : 2;
+  if (rawMinReq <= 0 && !(row && row.absence)) return 2;
+  return rawMinReq;
+}
+
+function getRecruitCount(row) {
+  return (row && (row.recruits7d || row.cnt)) ? (row.recruits7d || row.cnt) : 0;
+}
+
+function sortLeaderboardRows(rows) {
+  return [...rows].sort((a, b) => {
+    const aCount = getRecruitCount(a);
+    const bCount = getRecruitCount(b);
+    if (bCount !== aCount) return bCount - aCount;
+    const aPoints = Number(a && a.points != null ? a.points : 0);
+    const bPoints = Number(b && b.points != null ? b.points : 0);
+    if (bPoints !== aPoints) return bPoints - aPoints;
+    const aMinReq = normalizeMinReq(a);
+    const bMinReq = normalizeMinReq(b);
+    if (aMinReq !== bMinReq) return aMinReq - bMinReq;
+    return 0;
+  });
+}
+
+function sortDemotionRows(rows) {
+  return [...rows].sort((a, b) => {
+    const aWarnings = Number(a && a.warningCount != null ? a.warningCount : (a && a.activeWarnings != null ? a.activeWarnings : 0)) || 0;
+    const bWarnings = Number(b && b.warningCount != null ? b.warningCount : (b && b.activeWarnings != null ? b.activeWarnings : 0)) || 0;
+    if (bWarnings !== aWarnings) return bWarnings - aWarnings;
+    const aCount = getRecruitCount(a);
+    const bCount = getRecruitCount(b);
+    if (bCount !== aCount) return bCount - aCount;
+    const aPoints = Number(a && a.points != null ? a.points : 0);
+    const bPoints = Number(b && b.points != null ? b.points : 0);
+    if (bPoints !== aPoints) return bPoints - aPoints;
+    const aMinReq = normalizeMinReq(a);
+    const bMinReq = normalizeMinReq(b);
+    if (aMinReq !== bMinReq) return aMinReq - bMinReq;
+    return 0;
+  });
+}
+
+function formatLeaderboardLine(row, index) {
+  const mention = row && row.recruiter_id ? `<@${row.recruiter_id}>` : 'Unknown';
+  const recruitCount = getRecruitCount(row);
+  const minReq = normalizeMinReq(row);
+  const points = row && row.points != null ? row.points : 0;
+  const warningCountRaw = row && row.warningCount != null
+    ? Number(row.warningCount)
+    : (row && row.activeWarnings != null ? Number(row.activeWarnings) : null);
+  const warningCount = Number.isFinite(warningCountRaw) ? warningCountRaw : null;
+  const warningCountText = warningCount && warningCount > 0 ? ` ⚠️${warningCount}` : '';
+  const warningFlag = row && row.systemWarning ? ' ⚠️**!**' : '';
+  return `${index + 1}. ${mention} [${recruitCount}/${minReq} | ${formatPointsValue(points)} pts]${warningCountText}${warningFlag}`;
 }
 
 function makeLeaderboardText(rows, regionLabel, lang = 'en') {
@@ -48,31 +107,41 @@ function makeLeaderboardText(rows, regionLabel, lang = 'en') {
     return msg.length > 2000 ? msg.slice(0, 1997) + '...' : msg;
   }
 
-  // Sort by recruit count descending, then by points
-  const sortedRows = [...rows].sort((a, b) => {
-    const aCount = a.recruits7d || a.cnt || 0;
-    const bCount = b.recruits7d || b.cnt || 0;
-    if (bCount !== aCount) return bCount - aCount;
-    return (b.points || 0) - (a.points || 0);
-  });
+  // Sort by recruits desc, then points desc, then minReq asc.
+  const sortedRows = sortLeaderboardRows(rows);
 
-  const lines = sortedRows.map((r, i) => {
-    // Always use @mention for visibility
-    const mention = r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown';
-    const recruitCount = r.recruits7d || r.cnt || 0;
-    const rawMinReq = r.minReq !== undefined ? r.minReq : null;
-    const minReq = rawMinReq == null
-      ? (r.absence ? 0 : 2)
-      : ((rawMinReq <= 0 && !r.absence) ? 2 : rawMinReq);
-    const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
-    return `${i + 1}. ${mention} [${recruitCount}/${minReq}]`;
-  });
+  const lines = sortedRows.map((r, i) => formatLeaderboardLine(r, i));
 
   const out = [title, ...lines];
   let text = out.join('\n');
   if (text.length <= 2000) return text;
 
   // Fit as many lines as possible into a single message
+  const kept = [title];
+  for (const line of lines) {
+    const next = kept.concat(line).join('\n');
+    if (next.length > 1950) break;
+    kept.push(line);
+  }
+  const remaining = lines.length - (kept.length - 1);
+  if (remaining > 0) kept.push(`...and ${remaining} more`);
+  text = kept.join('\n');
+  return text.length > 2000 ? text.slice(0, 1997) + '...' : text;
+}
+
+function makeDemotionWatchText(rows, _lang = 'en') {
+  const title = '# Demotion Watch';
+  if (!rows || rows.length === 0) {
+    const msg = `${title}\nNo recruiters on demotion watch.`;
+    return msg.length > 2000 ? msg.slice(0, 1997) + '...' : msg;
+  }
+
+  const sortedRows = sortDemotionRows(rows);
+  const lines = sortedRows.map((r, i) => formatLeaderboardLine(r, i));
+  const out = [title, ...lines];
+  let text = out.join('\n');
+  if (text.length <= 2000) return text;
+
   const kept = [title];
   for (const line of lines) {
     const next = kept.concat(line).join('\n');
@@ -137,16 +206,8 @@ function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
     return embed;
   }
 
-  const lines = rows.map((r, i) => {
-    const displayName = r.displayName
-      ? r.displayName
-      : (r.recruiter_id ? `<@${r.recruiter_id}>` : 'Unknown');
-    const recruitCount = r.recruits7d || r.cnt || 0;
-    const minReq = r.minReq !== undefined ? r.minReq : (r.absence ? 0 : 2);
-    const retention = r.retention !== undefined ? Math.round(r.retention * 100) : 0;
-
-    return `${i + 1}. ${displayName} [${recruitCount}/${minReq}]`;
-  });
+  const sortedRows = sortLeaderboardRows(rows);
+  const lines = sortedRows.map((r, i) => formatLeaderboardLine(r, i));
 
   const fieldName = t('leaderboard.title', lang, { region: info.name });
   const chunks = [];
@@ -193,5 +254,6 @@ module.exports = {
   upsertLeaderboardMessage,
   makeLeaderboardEmbed,
   makeLeaderboardText,
-  makeWarningsEmbed
+  makeWarningsEmbed,
+  makeDemotionWatchText
 };

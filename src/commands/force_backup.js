@@ -10,24 +10,26 @@ module.exports = {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ 
-        content: '❌ Administrator permission required.', 
-        flags: 64 
+        content: '❌ Administrator permission required.'
       });
     }
 
     const antiNuke = global.antiNuke;
     if (!antiNuke) {
       return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.', 
-        flags: 64 
+        content: '❌ Anti-nuke system not initialized.'
       });
     }
 
     try {
-      await interaction.deferReply({ flags: 64 });
+      await interaction.deferReply();
 
       // Create backup
-      await antiNuke.createBackup(interaction.guild);
+      const backup = await antiNuke.createBackup(interaction.guild, {
+        type: 'full',
+        manual: true,
+        executorId: interaction.user.id
+      });
       
       const embed = new EmbedBuilder()
         .setColor('#00FF00')
@@ -36,7 +38,8 @@ module.exports = {
         .addFields(
           { name: 'Server', value: interaction.guild.name, inline: true },
           { name: 'Created By', value: interaction.user.tag, inline: true },
-          { name: 'Backup Time', value: `<t:${Math.floor(Date.now()/1000)}:F>`, inline: true }
+          { name: 'Backup Time', value: `<t:${Math.floor(Date.now()/1000)}:F>`, inline: true },
+          { name: 'Backup ID', value: backup ? backup.id : 'Unknown', inline: true }
         )
         .addFields(
           {
@@ -68,7 +71,7 @@ module.exports = {
       if (interaction.replied || interaction.deferred) {
         await interaction.editReply({ embeds: [embed] });
       } else {
-        await interaction.reply({ embeds: [embed], flags: 64 });
+        await interaction.reply({ embeds: [embed] });
       }
     }
   }

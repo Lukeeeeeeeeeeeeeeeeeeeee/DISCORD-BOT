@@ -1,87 +1,78 @@
 const db = require('../db_async');
 const { ROLE_IDS } = require('../constants');
 const { hasModPlusPermissions } = require('../lib/recruiting-system');
+const { addRookiePoints, formatPoints } = require('../lib/rookie-points');
 
-function parseRookieNickname(rawName) {
-  if (!rawName) return { base: null, points: 0 };
-  const match = String(rawName).match(/^(.*?)(?:\s+(\d+(?:\.\d+)?)\s*\/\s*10)?$/i);
-  if (!match) return { base: rawName, points: 0 };
-  const base = (match[1] || '').trim();
-  const points = match[2] != null ? Number(match[2]) : 0;
-  return { base: base || rawName, points: Number.isFinite(points) ? points : 0 };
-}
-
-function formatPoints(value) {
-  const rounded = Math.round(value * 10) / 10;
-  if (Number.isInteger(rounded)) return String(rounded);
-  return String(rounded).replace(/\.0$/, '');
-}
+const { SlashCommandBuilder } = require('discord.js');
 
 module.exports = {
-  data: {
-    name: 'rookiepoints',
-    description: 'Manage rookie points (MOD+ only)'
-  },
+  data: new SlashCommandBuilder()
+    .setName('rookiepoints')
+    .setDescription('Manage rookie points (MOD+ only)')
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('add')
+        .setDescription('Add points to a rookie')
+        .addUserOption(option => option.setName('member').setDescription('The rookie').setRequired(true))
+        .addNumberOption(option => option.setName('points').setDescription('Points to add').setRequired(true))
+    )
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('remove')
+        .setDescription('Remove points from a rookie')
+        .addUserOption(option => option.setName('member').setDescription('The rookie').setRequired(true))
+        .addNumberOption(option => option.setName('points').setDescription('Points to remove').setRequired(true))
+    ),
   async execute(interaction) {
     if (!hasModPlusPermissions(interaction.member)) {
-      return interaction.reply({ content: 'MOD+ only.', flags: 64 });
+      return interaction.reply({ content: 'MOD+ only.' });
     }
 
     const sub = interaction.options && typeof interaction.options.getSubcommand === 'function'
       ? interaction.options.getSubcommand()
       : 'add';
 
-    if (sub !== 'add') {
-      return interaction.reply({ content: 'Unsupported subcommand.', flags: 64 });
+    if (sub !== 'add' && sub !== 'remove') {
+      return interaction.reply({ content: 'Unsupported subcommand.' });
     }
 
     const targetUser = interaction.options.getUser('member');
-    const addPoints = interaction.options.getNumber('points');
+    const rawPoints = interaction.options.getNumber('points');
 
-    if (!targetUser || !Number.isFinite(addPoints)) {
-      return interaction.reply({ content: 'Please provide a member and points to add.', flags: 64 });
+    if (!targetUser || !Number.isFinite(rawPoints)) {
+      return interaction.reply({ content: 'Please provide a member and points value.' });
     }
 
-    if (addPoints <= 0) {
-      return interaction.reply({ content: 'Points to add must be greater than 0.', flags: 64 });
+    if (rawPoints <= 0) {
+      return interaction.reply({ content: 'Points must be greater than 0.' });
     }
 
     const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
     if (!targetMember) {
-      return interaction.reply({ content: 'That member is not in this server.', flags: 64 });
+      return interaction.reply({ content: 'That member is not in this server.' });
     }
 
     if (!targetMember.roles.cache.has(ROLE_IDS.ROOKIE)) {
-      return interaction.reply({ content: 'That member is not a rookie.', flags: 64 });
+      return interaction.reply({ content: 'That member is not a rookie.' });
     }
 
-    const currentName = targetMember.nickname || targetMember.user.username;
-    const parsed = parseRookieNickname(currentName);
-    const currentPoints = parsed.points || 0;
-    const newPoints = Math.max(0, Math.min(10, currentPoints + addPoints));
+    const delta = sub === 'remove' ? -rawPoints : rawPoints;
+    const result = await addRookiePoints({
+      db,
+      member: targetMember,
+      delta,
+      guild: interaction.guild,
+      verifierId: interaction.user.id
+    });
 
-    if (newPoints >= 10) {
-      // Auto-promote
-      const { promoteMember } = require('../lib/promote');
-      const result = await promoteMember({
-        member: targetMember,
-        db,
-        guild: interaction.guild,
-        verifierId: interaction.user.id
-      });
-
+    if (result.promoted) {
       return interaction.reply({
-        content: `✅ Updated ${targetUser.tag} to **10/10** points.\n🎉 **PROMOTED** to ${result.teamEmoji} ${result.teamName}!`
+        content: `Updated ${targetUser.tag} to 10/10 points. Promoted to ${result.teamName}.`
       });
     }
-
-    const baseName = parsed.base || targetMember.user.username;
-    const nickname = `${baseName} ${formatPoints(newPoints)}/10`;
-
-    await targetMember.setNickname(nickname).catch(() => { });
 
     return interaction.reply({
-      content: `✅ Updated ${targetUser.tag} to **${formatPoints(newPoints)}/10** points.`
+      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/10 points.`
     });
   }
 };

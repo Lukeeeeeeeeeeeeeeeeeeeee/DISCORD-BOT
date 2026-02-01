@@ -29,16 +29,25 @@ module.exports = {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ 
-        content: '❌ Administrator permission required.', 
-        flags: 64 
+        content: '❌ Administrator permission required.'
       });
+    }
+
+    const botMember = interaction.guild && interaction.guild.members && interaction.guild.members.me
+      ? interaction.guild.members.me
+      : null;
+    if (botMember && interaction.member && interaction.member.roles && botMember.roles) {
+      const userTop = interaction.member.roles.highest;
+      const botTop = botMember.roles.highest;
+      if (userTop && botTop && userTop.comparePositionTo(botTop) <= 0) {
+        return interaction.reply({ content: '❌ You must be above the bot in role hierarchy to use whitelist actions.' });
+      }
     }
 
     const antiNuke = global.antiNuke;
     if (!antiNuke) {
       return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.', 
-        flags: 64 
+        content: '❌ Anti-nuke system not initialized.'
       });
     }
 
@@ -50,9 +59,31 @@ module.exports = {
         case 'add': {
           if (!targetUser) {
             return interaction.reply({ 
-              content: '❌ User parameter is required for add action.', 
-              flags: 64 
+              content: '❌ User parameter is required for add action.'
             });
+          }
+
+          const botMember = interaction.guild && interaction.guild.members && interaction.guild.members.me
+            ? interaction.guild.members.me
+            : null;
+          const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+          if (!targetMember) {
+            return interaction.reply({ content: '❌ That user is not in this server.' });
+          }
+
+          const hasAdminPerm = targetMember.permissions && targetMember.permissions.has
+            ? targetMember.permissions.has('Administrator')
+            : false;
+          if (!hasAdminPerm) {
+            return interaction.reply({ content: '❌ User must have Administrator permissions to be whitelisted.' });
+          }
+
+          if (botMember && targetMember.roles && botMember.roles) {
+            const targetTop = targetMember.roles.highest;
+            const botTop = botMember.roles.highest;
+            if (targetTop && botTop && targetTop.comparePositionTo(botTop) <= 0) {
+              return interaction.reply({ content: '❌ User must be above the bot in role hierarchy to be whitelisted.' });
+            }
           }
 
           if (antiNuke.isWhitelisted(targetUser.id)) {
@@ -61,46 +92,107 @@ module.exports = {
               .setTitle('⚠️ User Already Whitelisted')
               .setDescription(`${targetUser.tag} is already in the whitelist.`)
               .setTimestamp();
-            return interaction.reply({ embeds: [embed], flags: 64 });
+            return interaction.reply({ embeds: [embed] });
           }
 
-          antiNuke.addToWhitelist(targetUser.id);
+          const result = antiNuke.requestWhitelistAdd(interaction.guild.id, targetUser.id, interaction.user.id);
 
-          const addEmbed = new EmbedBuilder()
-            .setColor('#00FF00')
-            .setTitle('✅ User Added to Whitelist')
-            .setDescription(`${targetUser.tag} is now immune to anti-nuke actions.`)
+          if (result.status === 'already') {
+            const embed = new EmbedBuilder()
+              .setColor('#FFFF00')
+              .setTitle('⚠️ User Already Whitelisted')
+              .setDescription(`${targetUser.tag} is already in the whitelist.`)
+              .setTimestamp();
+            return interaction.reply({ embeds: [embed] });
+          }
+
+          if (result.status === 'invalid') {
+            return interaction.reply({ content: '❌ Invalid whitelist request.' });
+          }
+
+          if (result.status === 'approved') {
+            const addEmbed = new EmbedBuilder()
+              .setColor('#00FF00')
+              .setTitle('✅ User Added to Whitelist')
+              .setDescription(`${targetUser.tag} is now immune to automatic anti-nuke bans.`)
+              .addFields(
+                { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: true },
+                { name: 'Approved By', value: interaction.user.tag, inline: true },
+                { name: 'Approvals', value: `${result.approvals}/${result.required}`, inline: true }
+              )
+              .setTimestamp();
+
+            antiNuke.logAction(interaction.guild.id, {
+              type: 'whitelist_add',
+              executorId: interaction.user.id,
+              targetUserId: targetUser.id,
+              approvals: result.approvals,
+              required: result.required
+            });
+
+            return interaction.reply({ embeds: [addEmbed] });
+          }
+
+          const pendingEmbed = new EmbedBuilder()
+            .setColor('#FFFF00')
+            .setTitle('🟡 Whitelist Approval Pending')
+            .setDescription(`${targetUser.tag} requires another admin approval to be whitelisted.`)
             .addFields(
               { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: true },
-              { name: 'Added By', value: interaction.user.tag, inline: true }
+              { name: 'Approvals', value: `${result.approvals}/${result.required}`, inline: true },
+              { name: 'Requested By', value: interaction.user.tag, inline: true }
             )
+            .setFooter({ text: result.alreadyApproved ? 'You already approved this request.' : 'Awaiting additional admin approval.' })
             .setTimestamp();
 
-          // Log the action
           antiNuke.logAction(interaction.guild.id, {
-            type: 'whitelist_add',
+            type: 'whitelist_pending',
             executorId: interaction.user.id,
-            targetUserId: targetUser.id
+            targetUserId: targetUser.id,
+            approvals: result.approvals,
+            required: result.required
           });
 
-          return interaction.reply({ embeds: [addEmbed], flags: 64 });
+          return interaction.reply({ embeds: [pendingEmbed] });
         }
 
         case 'remove': {
           if (!targetUser) {
             return interaction.reply({ 
-              content: '❌ User parameter is required for remove action.', 
-              flags: 64 
+              content: '❌ User parameter is required for remove action.'
             });
           }
 
           if (!antiNuke.isWhitelisted(targetUser.id)) {
-            const embed = new EmbedBuilder()
-              .setColor('#FFFF00')
-              .setTitle('⚠️ User Not Whitelisted')
-              .setDescription(`${targetUser.tag} is not in the whitelist.`)
+            const cancelled = typeof antiNuke.cancelWhitelistRequest === 'function'
+              ? antiNuke.cancelWhitelistRequest(interaction.guild.id, targetUser.id)
+              : false;
+            if (!cancelled) {
+              const embed = new EmbedBuilder()
+                .setColor('#FFFF00')
+                .setTitle('⚠️ User Not Whitelisted')
+                .setDescription(`${targetUser.tag} is not in the whitelist or pending approval.`)
+                .setTimestamp();
+              return interaction.reply({ embeds: [embed] });
+            }
+
+            const pendingEmbed = new EmbedBuilder()
+              .setColor('#00FF00')
+              .setTitle('✅ Whitelist Request Cancelled')
+              .setDescription(`Cancelled pending whitelist request for ${targetUser.tag}.`)
+              .addFields(
+                { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: true },
+                { name: 'Cancelled By', value: interaction.user.tag, inline: true }
+              )
               .setTimestamp();
-            return interaction.reply({ embeds: [embed], flags: 64 });
+
+            antiNuke.logAction(interaction.guild.id, {
+              type: 'whitelist_remove',
+              executorId: interaction.user.id,
+              targetUserId: targetUser.id
+            });
+
+            return interaction.reply({ embeds: [pendingEmbed] });
           }
 
           antiNuke.removeFromWhitelist(targetUser.id);
@@ -108,36 +200,28 @@ module.exports = {
           const removeEmbed = new EmbedBuilder()
             .setColor('#00FF00')
             .setTitle('✅ User Removed from Whitelist')
-            .setDescription(`${targetUser.tag} is no longer immune to anti-nuke actions.`)
+            .setDescription(`${targetUser.tag} is no longer immune to automatic anti-nuke bans.`)
             .addFields(
               { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: true },
               { name: 'Removed By', value: interaction.user.tag, inline: true }
             )
             .setTimestamp();
 
-          // Log the action
           antiNuke.logAction(interaction.guild.id, {
             type: 'whitelist_remove',
             executorId: interaction.user.id,
             targetUserId: targetUser.id
           });
 
-          return interaction.reply({ embeds: [removeEmbed], flags: 64 });
+          return interaction.reply({ embeds: [removeEmbed] });
         }
 
         case 'list': {
           const whitelist = antiNuke.getWhitelist();
+          const pending = typeof antiNuke.getPendingWhitelist === 'function'
+            ? antiNuke.getPendingWhitelist(interaction.guild.id)
+            : [];
           
-          if (whitelist.length === 0) {
-            const embed = new EmbedBuilder()
-              .setColor('#0000FF')
-              .setTitle('📋 Anti-Nuke Whitelist')
-              .setDescription('No users are currently whitelisted.')
-              .setTimestamp();
-            return interaction.reply({ embeds: [embed], flags: 64 });
-          }
-
-          // Fetch user information for whitelisted users
           const userPromises = whitelist.map(async userId => {
             try {
               const user = await interaction.client.users.fetch(userId);
@@ -147,27 +231,49 @@ module.exports = {
             }
           });
 
+          const pendingPromises = pending.map(async entry => {
+            const label = `<@${entry.userId}>`;
+            const approvals = `${entry.approvals}/${entry.required}`;
+            let requestedBy = entry.requestedBy ? `<@${entry.requestedBy}>` : 'Unknown';
+            if (entry.requestedBy) {
+              try {
+                const user = await interaction.client.users.fetch(entry.requestedBy);
+                requestedBy = `<@${entry.requestedBy}> (${user.tag})`;
+              } catch {
+                requestedBy = `<@${entry.requestedBy}>`;
+              }
+            }
+            return `${label} — approvals ${approvals} (requested by ${requestedBy})`;
+          });
+
           const userList = await Promise.all(userPromises);
-          
+          const pendingList = await Promise.all(pendingPromises);
+
           const listEmbed = new EmbedBuilder()
             .setColor('#0000FF')
             .setTitle('📋 Anti-Nuke Whitelist')
-            .setDescription(`**${whitelist.length} whitelisted users:**\n\n${userList.join('\n')}`)
             .addFields(
-              { name: 'Total Users', value: whitelist.length.toString(), inline: true },
-              { name: 'Persistent', value: '✅ Yes', inline: true }
+              {
+                name: `✅ Whitelisted (${whitelist.length})`,
+                value: userList.length ? userList.join('\n') : 'No users are currently whitelisted.',
+                inline: false
+              },
+              {
+                name: `🟡 Pending Approvals (${pending.length})`,
+                value: pendingList.length ? pendingList.join('\n') : 'No pending whitelist requests.',
+                inline: false
+              }
             )
             .setFooter({ text: 'Whitelisted users are immune to automatic anti-nuke actions' })
             .setTimestamp();
 
-          return interaction.reply({ embeds: [listEmbed], flags: 64 });
+          return interaction.reply({ embeds: [listEmbed] });
 
         }
 
         default:
           return interaction.reply({ 
-            content: '❌ Invalid action specified.', 
-            flags: 64 
+            content: '❌ Invalid action specified.'
           });
       }
 
@@ -180,7 +286,7 @@ module.exports = {
         .setDescription(`Error: ${error.message}`)
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
     }
   }
 };

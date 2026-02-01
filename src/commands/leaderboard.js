@@ -11,25 +11,25 @@ module.exports = {
       const region = interaction.options.getString('region');
       const since = (typeof scheduler.getWeekStartUtcTs === 'function') ? scheduler.getWeekStartUtcTs() : (Date.now() - (7 * 24 * 60 * 60 * 1000));
       if (region) {
-        if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.', flags: 64 });
+        if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.' });
 
         try {
           await interaction.guild.members.fetch();
         } catch (e) {
           // best-effort
         }
-        
+
         // Get all recruiters for this region using the same logic as scheduler
         const recruiterRoleId = RECRUITER_ROLE_IDS[region];
         const recruiterRole = interaction.guild.roles.cache.get(recruiterRoleId);
-        
+
         const allRecruiterIds = new Set();
-        
+
         if (recruiterRole) {
           recruiterRole.members.forEach(member => {
             allRecruiterIds.add(member.id);
           });
-          
+
           // Also check guild members directly who have the role (in case they can't access channel)
           const guildMembersWithRole = interaction.guild.members.cache.filter(member => member.roles.cache.has(recruiterRoleId));
           guildMembersWithRole.forEach(member => {
@@ -45,7 +45,7 @@ module.exports = {
           const text = makeLeaderboardText([], region, lang);
           return interaction.reply({ content: text, ephemeral: false });
         }
-        
+
         // Get recruit data for all recruiters
         const unionSelects = recruiterMembers.map(() => 'SELECT ? AS id').join(' UNION ALL ');
         const rowsBase = await db.all(`
@@ -67,23 +67,30 @@ module.exports = {
         // Get 7-day stats and minReq for each recruiter
         const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
         const rows = [];
-        
+
         for (const r of rowsBase) {
           const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild);
           const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
           const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
-          
+
           const absence = await db.get(
             'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
             r.recruiter_id
           );
-          
+
           const warnings = await db.get(
             'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
             r.recruiter_id, Date.now()
           );
           const activeWarnings = warnings ? warnings.c : 0;
-          
+
+          const systemWarningRow = await db.get(
+            'SELECT 1 FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND note LIKE ? LIMIT 1',
+            r.recruiter_id,
+            Date.now(),
+            'Quota warning%'
+          );
+
           const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
           const roleBase = getBaseRequirement(staffMember);
 
@@ -91,9 +98,9 @@ module.exports = {
           const displayName = staffMember && staffMember.user
             ? `${staffMember.user.tag || staffMember.user.username} | ${teamName}`
             : `<@${r.recruiter_id}>`;
-          
+
           const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
-          
+
           const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
             roleBase,
             member: staffMember,
@@ -113,7 +120,9 @@ module.exports = {
             retention: stats7d.retention,
             minReq,
             absence: !!absence,
-            displayName
+            displayName,
+            systemWarning: !!systemWarningRow,
+            activeWarnings
           });
         }
 
@@ -125,7 +134,7 @@ module.exports = {
 
       // Global: get all recruiters from all regions
       const allRecruiterIds = new Set();
-      
+
       // Add all regional recruiters
       for (const rg of ['EU', 'NA', 'AS']) {
         const recruiterRoleId = RECRUITER_ROLE_IDS[rg];
@@ -134,7 +143,7 @@ module.exports = {
           recruiterRole.members.forEach(member => {
             allRecruiterIds.add(member.id);
           });
-          
+
           // Also check guild members directly who have the role (in case they can't access channel)
           const guildMembersWithRole = interaction.guild.members.cache.filter(member => member.roles.cache.has(recruiterRoleId));
           guildMembersWithRole.forEach(member => {
@@ -142,7 +151,7 @@ module.exports = {
           });
         }
       }
-      
+
       // Add all staff members
       const staffRoleIds = [
         ROLE_IDS.HELPER,
@@ -183,7 +192,7 @@ module.exports = {
         const text = makeLeaderboardText([], 'GLOBAL', lang);
         return interaction.reply({ content: text, ephemeral: false });
       }
-      
+
       // Get global recruit data
       const unionSelects = recruiterMembers.map(() => 'SELECT ? AS id').join(' UNION ALL ');
       const rowsBase = await db.all(`
@@ -205,28 +214,35 @@ module.exports = {
       // Get 7-day stats and minReq for global
       const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
       const rows = [];
-      
+
       for (const r of rowsBase) {
         const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild);
         const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
         const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
-        
+
         const absence = await db.get(
           'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
           r.recruiter_id
         );
-        
+
         const warnings = await db.get(
           'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
           r.recruiter_id, Date.now()
         );
         const activeWarnings = warnings ? warnings.c : 0;
-        
+
+        const systemWarningRow = await db.get(
+          'SELECT 1 FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND note LIKE ? LIMIT 1',
+          r.recruiter_id,
+          Date.now(),
+          'Quota warning%'
+        );
+
         const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
         const roleBase = getBaseRequirement(staffMember);
 
         const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
-        
+
         const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
           roleBase,
           member: staffMember,
@@ -245,7 +261,9 @@ module.exports = {
           recruits7d: stats7d.recruits7d,
           retention: stats7d.retention,
           minReq,
-          absence: !!absence
+          absence: !!absence,
+          systemWarning: !!systemWarningRow,
+          activeWarnings
         });
       }
 
@@ -257,14 +275,15 @@ module.exports = {
 
     if (sub === 'init') {
       // admin only
-      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin only.', flags: 64 });
+      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin only.' });
       try {
         const scheduler = require('../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);
-        return interaction.reply({ content: 'Leaderboards initialized/updated.', flags: 64 });
+        await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
+        return interaction.reply({ content: 'Leaderboards initialized/updated.' });
       } catch (e) {
         console.error(e);
-        return interaction.reply({ content: 'Failed to initialize leaderboards.', flags: 64 });
+        return interaction.reply({ content: 'Failed to initialize leaderboards.' });
       }
     }
   }

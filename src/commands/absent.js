@@ -8,48 +8,44 @@ module.exports = {
     description: 'Set absence period for recruiting requirements (MOD+ only)',
   },
   async execute(interaction) {
+    if (!interaction.guild) {
+      return interaction.reply({ content: 'This command can only be used in a server.' });
+    }
+
     // MOD+ only
     if (!hasModPlusPermissions(interaction.member)) {
-      return interaction.reply({ content: 'MOD+ only.', flags: 64 });
+      return interaction.reply({ content: 'MOD+ only.' });
     }
 
     const targetUser = interaction.options.getUser('member') || interaction.user;
     const targetId = targetUser.id;
     const targetMention = `<@${targetId}>`;
 
-    if (interaction.guild) {
-      const targetMember = await interaction.guild.members.fetch(targetId).catch(() => null);
-      if (!targetMember) {
-        return interaction.reply({ content: 'That member is not in this server.', flags: 64 });
-      }
+    const targetMember = await interaction.guild.members.fetch(targetId).catch(() => null);
+    if (!targetMember) {
+      return interaction.reply({ content: 'That member is not in this server.' });
     }
 
-    const endDateRaw = interaction.options.getString('date');
-    const endDate = (endDateRaw || '').trim().replace(/\u200B/g, '');
+    const dayjs = require('dayjs');
+    const parsedDate = dayjs(endDateRaw);
 
-    if (!endDate) {
-      return interaction.reply({ content: 'Invalid date format. Use YYYY-MM-DD format.', flags: 64 });
-    }
-    
-    // Validate ISO date format
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(endDate)) {
-      return interaction.reply({ content: 'Invalid date format. Use YYYY-MM-DD format.', flags: 64 });
+    if (!parsedDate.isValid()) {
+      return interaction.reply({ content: 'Invalid date. Please use YYYY-MM-DD format.' });
     }
 
-    // Parse and validate date
-    const absenceDate = new Date(endDate);
-    if (isNaN(absenceDate.getTime())) {
-      return interaction.reply({ content: 'Invalid date. Please use a valid date in YYYY-MM-DD format.', flags: 64 });
+    const endDate = parsedDate.format('YYYY-MM-DD');
+    const absenceDate = parsedDate.toDate();
+
+    const todayStart = dayjs().startOf('day');
+    if (parsedDate.isBefore(todayStart)) {
+      return interaction.reply({ content: 'Absence date must be in the future.' });
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    absenceDate.setHours(0, 0, 0, 0);
+    const todayStr = new Date().toISOString().split('T')[0];
 
     // Must be future date
     if (absenceDate <= today) {
-      return interaction.reply({ content: 'Absence date must be in the future.', flags: 64 });
+      return interaction.reply({ content: 'Absence date must be in the future.' });
     }
 
     // Check for existing active absence
@@ -59,17 +55,19 @@ module.exports = {
         targetId
       );
 
+      const startDate = existingAbsence && existingAbsence.start_date ? existingAbsence.start_date : todayStr;
+
       if (existingAbsence) {
         // Update existing absence
         await db.run(
-          'UPDATE absences SET end_date = ?, created_by = ? WHERE recruiter_id = ? AND active = 1',
-          endDate, interaction.user.id, targetId
+          'UPDATE absences SET end_date = ?, created_by = ?, start_date = ? WHERE recruiter_id = ? AND active = 1',
+          endDate, interaction.user.id, startDate, targetId
         );
       } else {
         // Create new absence
         await db.run(
           'INSERT INTO absences (recruiter_id, start_date, end_date, created_at, created_by, active) VALUES (?, ?, ?, ?, ?, 1)',
-          targetId, today.toISOString().split('T')[0], endDate, Date.now(), interaction.user.id
+          targetId, startDate, endDate, Date.now(), interaction.user.id
         );
       }
 
@@ -77,18 +75,18 @@ module.exports = {
         .setTitle('📅 Absence Set')
         .setDescription(`${targetMention}'s recruiting requirements have been suspended until **${endDate}**`)
         .addFields(
-          { name: 'Start Date', value: today.toISOString().split('T')[0], inline: true },
+          { name: 'Start Date', value: startDate, inline: true },
           { name: 'End Date', value: endDate, inline: true },
           { name: 'Status', value: 'Requirements suspended', inline: true }
         )
         .setColor(0x00AAFF)
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
 
     } catch (error) {
       console.error('Error setting absence:', error);
-      return interaction.reply({ content: 'Failed to set absence. Please try again later.', flags: 64 });
+      return interaction.reply({ content: 'Failed to set absence. Please try again later.' });
     }
   }
 };

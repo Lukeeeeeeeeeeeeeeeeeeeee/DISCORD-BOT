@@ -16,11 +16,11 @@ module.exports = {
   data: { name: 'dm' },
   async execute(interaction, _client, _db) {
     // admin only
-    if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin only.', flags: 64 });
+    if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin only.' });
 
     const perms = interaction.member.permissions || interaction.member.permissionsIn?.(interaction.channel);
     const isAdmin = perms && perms.has && perms.has(PermissionsBitField.Flags.Administrator);
-    if (!isAdmin) return interaction.reply({ content: 'Administrator permission required.', flags: 64 });
+    if (!isAdmin) return interaction.reply({ content: 'Administrator permission required.' });
 
     const role = interaction.options.getRole('role', false);  // Make role optional
     const message = interaction.options.getString('message', true);
@@ -30,16 +30,16 @@ module.exports = {
 
     // Validate inputs
     if (!message) {
-      return interaction.reply({ content: 'Missing required message parameter.', flags: 64 });
+      return interaction.reply({ content: 'Missing required message parameter.' });
     }
 
     // Must specify either role or everyone
     if (!role && !dmEveryone) {
-      return interaction.reply({ content: 'You must specify a role OR set everyone to true.', flags: 64 });
+      return interaction.reply({ content: 'You must specify a role OR set everyone to true.' });
     }
 
     if (limitOpt && (limitOpt < 1 || limitOpt > HARD_MAX)) {
-      return interaction.reply({ content: `Limit must be between 1 and ${HARD_MAX}.`, flags: 64 });
+      return interaction.reply({ content: `Limit must be between 1 and ${HARD_MAX}.` });
     }
 
     await interaction.deferReply({ flags: 64 });
@@ -50,7 +50,7 @@ module.exports = {
       const now = Date.now();
       if (now - last < COOLDOWN_MS) {
         const rem = Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
-        return interaction.editReply({ content: `Please wait ${rem}s before sending another DM broadcast. Use preview to test.`, flags: 64 });
+        return interaction.editReply({ content: `Please wait ${rem}s before sending another DM broadcast. Use preview to test.` });
       }
       cooldowns.set(interaction.user.id, now);
     }
@@ -72,14 +72,14 @@ module.exports = {
     }
     const targetLabel = dmEveryone ? 'everyone' : role.name;
     const totalFound = targets.size;
-    if (!totalFound) return interaction.editReply({ content: `No human members found${dmEveryone ? '' : ` with the role ${role.name}`}.`, flags: 64 });
+    if (!totalFound) return interaction.editReply({ content: `No human members found${dmEveryone ? '' : ` with the role ${role.name}`}.` });
 
     const cap = Math.min(limitOpt || DEFAULT_MAX, HARD_MAX);
     const recipients = Array.from(targets.values()).slice(0, cap);
 
     if (preview) {
       const sample = recipients.slice(0, 10).map(m => `<@${m.id}>`).join(', ');
-      return interaction.editReply({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}`, flags: 64 });
+      return interaction.editReply({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}` });
     }
 
     // Queue the job and return immediately to avoid interaction timeouts

@@ -124,66 +124,39 @@ function calculateMinRecruitsFixed({
 } = {}) {
   const roleLevel = member ? getRoleLevel(member) : 0;
 
-  // Absence override (MOD+ only)
-  if (absent && roleLevel >= 2) {
+  if (absent) {
     return 0;
   }
 
-  // Low-activity floor (CRITICAL FIX)
-  if (recruits7d <= 1) {
-    // Do not immediately drop brand-new recruiters/staff to 2.
-    // Only apply the low-activity floor after the recruiter has weekly history.
-    if (isNewStaff || previousMinReq == null) {
-      const base = (roleBase != null ? roleBase : 4);
-      return Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, Math.ceil(base)));
-    }
+  const safeRecruits = Number.isFinite(recruits7d) ? recruits7d : 0;
+  const activityRate = Number.isFinite(_activityRate) ? _activityRate : safeRecruits;
 
+  if (safeRecruits <= 1) {
     const floor = roleLevel >= 2 ? 3 : 2;
-    return floor;
+    return Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, floor));
   }
 
   const target = TARGET_RECRUITS_PER_WEEK;
-  const pivot = PIVOT_RECRUITS_PER_WEEK;
-  const denom = (target - pivot) || 1;
-  const activityFactor = (recruits7d - pivot) / denom;
-
-  const activityAdj = activityFactor * ACTIVITY_MAX_STEP;
-
-  const clampedVerifyRate = Math.max(0, Math.min(1, verifyRate != null ? verifyRate : 0.2));
-
-  let verifyAdj = 0;
-  if (recruits7d >= 3) {
-    verifyAdj = activityFactor * VERIFY_MAX_STEP * clampedVerifyRate;
-  }
+  const pressure = (target - activityRate) / target;
+  const activityAdj = pressure * ACTIVITY_MAX_STEP;
 
   let retentionAdj = 0;
-  if (recruits7d >= 3) {
-    retentionAdj = activityFactor * RETENTION_MAX_STEP * (retention || 0);
+  if (safeRecruits >= 3) {
+    retentionAdj = pressure * RETENTION_MAX_STEP * (retention || 0);
   }
 
-  const currentLevel = (previousMinReq != null) ? previousMinReq : roleBase;
-  let progressionBias = 0;
-  if (recruits7d >= 2 && currentLevel < PROGRESSION_TARGET) {
-    progressionBias = Math.max(0, Math.min(PROGRESSION_MAX, (PROGRESSION_TARGET - currentLevel) * PROGRESSION_RATE));
-  }
+  const base = Number.isFinite(roleBase) ? roleBase : MIN_MIN_REQ;
+  const rawMin = base + activityAdj + retentionAdj;
 
-  const rawMin = roleBase + activityAdj + verifyAdj + retentionAdj + progressionBias;
-
-  // Apply smoothing with warning-based delta limits
   let smoothed = rawMin;
-
   if (previousMinReq != null) {
-    const baseMaxDeltaUp = isNewStaff ? 1 : (roleBase < PROGRESSION_TARGET ? 3 : 2);
-    const baseMaxDeltaDown = isNewStaff ? 0 : BASE_MAX_DELTA_DOWN;
-    const maxDeltaUp = Math.max(0, baseMaxDeltaUp - warnings);
-    const maxDeltaDown = Math.max(0, baseMaxDeltaDown - warnings);
-
+    const maxDeltaUp = Math.max(0, BASE_MAX_DELTA_UP - (warnings || 0));
+    const maxDeltaDown = Math.max(0, BASE_MAX_DELTA_DOWN - (warnings || 0));
     let delta = rawMin - previousMinReq;
     delta = Math.max(-maxDeltaDown, Math.min(maxDeltaUp, delta));
     smoothed = previousMinReq + delta;
   }
 
-  // Final clamp and rounding
   return Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, Math.ceil(smoothed)));
 }
 
@@ -203,7 +176,7 @@ function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, ab
 
   // Attention if you meet the auto-warning criteria (computed by caller).
   if (attention && (recruits7d || 0) < (minReq || 0)) {
-    return { bucket: 'ATTENTION', label: `� Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
+    return { bucket: 'ATTENTION', label: `⚠️ Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
   }
 
   if ((recruits7d || 0) < (minReq || 0)) {

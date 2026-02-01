@@ -69,12 +69,20 @@ class InviteSystem {
       if (this.activeInvites.has(recruiterId)) {
         const activeInvite = this.activeInvites.get(recruiterId);
         const now = Date.now();
-        
+
         // Check if the existing invite is still valid
         if (activeInvite.currentUses === 0 && activeInvite.expiresAt > now) {
+          const timeLeft = activeInvite.expiresAt - now;
+          const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
           return {
-            success: false,
-            message: 'You already have an active unused invite. Use it first before creating a new one.'
+            success: true,
+            invite: {
+              code: activeInvite.code,
+              url: activeInvite.url,
+              expiresAt: new Date(activeInvite.expiresAt).toLocaleString(),
+              expiresIn: `${minutesLeft} minutes`
+            },
+            reused: true
           };
         } else {
           // Remove expired/used invite from memory
@@ -85,11 +93,11 @@ class InviteSystem {
       // Check cooldown (1 hour 30 minutes = 90 minutes = 5400000 ms)
       const cooldownTime = 90 * 60 * 1000; // 1.5 hours in ms
       const now = Date.now();
-      
+
       if (this.inviteCooldowns.has(recruiterId)) {
         const lastUsed = this.inviteCooldowns.get(recruiterId);
         const timeLeft = lastUsed + cooldownTime - now;
-        
+
         if (timeLeft > 0) {
           const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
           return {
@@ -100,7 +108,7 @@ class InviteSystem {
       }
 
       // Create Discord invite
-      const channel = guild.channels.cache.find(ch => 
+      const channel = guild.channels.cache.find(ch =>
         ch.type === 0 && ch.permissionsFor(guild.members.me).has('CreateInstantInvite')
       );
 
@@ -169,13 +177,13 @@ class InviteSystem {
       if (activeInvite.currentUses > 0 || activeInvite.expiresAt <= now) {
         // Remove expired/used invite from memory
         this.activeInvites.delete(userId);
-        
+
         // Check cooldown
         if (this.inviteCooldowns.has(userId)) {
           const lastUsed = this.inviteCooldowns.get(userId);
           const cooldownTime = 90 * 60 * 1000; // 1.5 hours
           const timeLeft = lastUsed + cooldownTime - now;
-          
+
           if (timeLeft > 0) {
             const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
             return {
@@ -185,18 +193,18 @@ class InviteSystem {
             };
           }
         }
-        
+
         return {
           hasActive: false,
           onCooldown: false,
           canCreate: true
         };
       }
-      
+
       // Invite is still active
       const timeLeft = activeInvite.expiresAt - now;
       const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
-      
+
       return {
         hasActive: true,
         code: activeInvite.code,
@@ -212,7 +220,7 @@ class InviteSystem {
       const lastUsed = this.inviteCooldowns.get(userId);
       const cooldownTime = 90 * 60 * 1000; // 1.5 hours
       const timeLeft = lastUsed + cooldownTime - now;
-      
+
       if (timeLeft > 0) {
         const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
         return {
@@ -285,7 +293,7 @@ class InviteSystem {
   async cleanupExpiredInvites() {
     try {
       const now = Date.now();
-      
+
       // Remove from memory
       for (const [recruiterId, invite] of this.activeInvites.entries()) {
         if (invite.expiresAt <= now) {

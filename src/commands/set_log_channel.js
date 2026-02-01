@@ -18,16 +18,14 @@ module.exports = {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ 
-        content: '❌ Administrator permission required.', 
-        flags: 64 
+        content: '❌ Administrator permission required.'
       });
     }
 
     const antiNuke = global.antiNuke;
     if (!antiNuke) {
       return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.', 
-        flags: 64 
+        content: '❌ Anti-nuke system not initialized.'
       });
     }
 
@@ -36,8 +34,7 @@ module.exports = {
     // Verify it's a text channel
     if (channel.type !== 0) { // GUILD_TEXT
       return interaction.reply({ 
-        content: '❌ Log channel must be a text channel.', 
-        flags: 64 
+        content: '❌ Log channel must be a text channel.'
       });
     }
 
@@ -71,7 +68,7 @@ module.exports = {
         channelName: channel.name
       });
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
 
     } catch (error) {
       console.error('Set log channel error:', error);
@@ -82,7 +79,7 @@ module.exports = {
         .setDescription(`Error: ${error.message}`)
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
     }
   }
 };

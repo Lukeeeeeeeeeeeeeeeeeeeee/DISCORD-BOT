@@ -10,8 +10,7 @@ module.exports = {
     // Check if user is the owner
     if (interaction.user.id !== '1381692847018868778') {
       return interaction.reply({ 
-        content: '❌ This command can only be used by the server owner.', 
-        flags: 64 
+        content: '❌ This command can only be used by the server owner.'
       });
     }
 
@@ -32,7 +31,7 @@ module.exports = {
         )
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
     }
 
     // Show confirmation dialog
@@ -72,8 +71,7 @@ module.exports = {
 
     await interaction.reply({ 
       embeds: [embed], 
-      components: [row],
-      flags: 64 
+      components: [row]
     });
 
     // Create collector for button interaction

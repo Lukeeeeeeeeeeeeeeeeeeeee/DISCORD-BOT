@@ -36,6 +36,42 @@ function pickOnboardingRole(team) {
   return list[0];
 }
 
+function buildRookieWelcomeMessage(teamName) {
+  return `Welcome to Solace! You have been recruited in ${teamName}.
+Make sure you read how to war, whats a war and see readme!
+
+# <:SOLACEONTOP:1460693669391765750> SOLACE ROOKIE INFO
+Hello there and welcome to Solace! 💛
+The first thought that crosses your mind might be the reason behind your being given the <@&1331020584473329726>—it's our basic role. You will have to earn <@&1331020565879984198> to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
+
+🌟 Point Earning Methods
+
+> 1. Wars / Ganks
+> Take part in 2 wars or ganks in a 2-week period
+> <:greenarrow:1459897308610039900> 5 points apiece
+> -# **Wars / Ganks happen randomly**
+
+2. Recruiting (Fast Track)
+> As <@&1459956798172827933>, get 3 people on board in 9 days
+> <:greenarrow:1459897308610039900> Direct promotion to <@&1331020565879984198> + <@&1331020553707847772>
+***⚠️ If 3 recruits are not reached within the specified time, the process goes back to zero.***
+
+3. Activity (Chatting)
+> In a week's time send 550 messages
+> <:greenarrow:1459897308610039900> 1.5 points for every 105 messages (public channels only)
+
+You can combine any combination of these methods or concentrate solely on one (2 & 3 are the most consistent). Also, keep in mind that they are **not** permanent points!
+
+What Are Points? 📊
+Points are shown beside your name (e.g., 0/10). With more wars, chat, and recruiting activities, the points go up.
+
+Logging Progress 📝
+Make sure to put down your achievements in <#1331020800551293030> always. This is a must to ensure the counting of your points and your elevation. **Why?**
+<:greenarrow:1459897308610039900> Logging your progression insures that you get the points you worked for. It also is a chart of your progression if that helps you in terms of motivation.
+
+Wishing you good luck and once again welcoming you to Solace 💙`;
+}
+
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
   try {
     const currentStats = await calculate7DayStats(db, recruiterMember.id);
@@ -229,13 +265,13 @@ module.exports = {
 
       // Validate inputs
       if (!member || !ign) {
-        return respond({ content: 'Missing required parameters. Please provide member and ign.', flags: 64 });
+        return respond({ content: 'Missing required parameters. Please provide member and ign.' });
       }
 
       // Check if user has permission to recruit (basic check)
       const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       if (!guildMember) {
-        return respond({ content: 'Unable to verify your guild membership.', flags: 64 });
+        return respond({ content: 'Unable to verify your guild membership.' });
       }
 
       // Only recruiters (incl trial/regional) or staff/admin can recruit.
@@ -243,12 +279,12 @@ module.exports = {
       if (process.env.NODE_ENV !== 'test') {
         const { hasRecruiterOrStaffPermissions } = require('../lib/permissions');
         if (!hasRecruiterOrStaffPermissions(guildMember)) {
-          return respond({ content: 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).', flags: 64 });
+          return respond({ content: 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).' });
         }
       }
 
       const recruitedGuildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-      if (!recruitedGuildMember) return respond({ content: 'Member not found in this guild.', flags: 64 });
+      if (!recruitedGuildMember) return respond({ content: 'Member not found in this guild.' });
 
       const { hasAdministrator } = require('../lib/permissions');
       const recruiterMemberForTeam = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
@@ -258,13 +294,13 @@ module.exports = {
         if (recruiterMemberForTeam && hasAdministrator(recruiterMemberForTeam)) {
           team = regionTag === 'NA' ? 'NA' : (regionTag === 'AS' ? 'AS' : 'EU');
         } else {
-          return respond({ content: 'You must have a team recruiter role (Fire/Water/Air) to use this command.', flags: 64 });
+          return respond({ content: 'You must have a team recruiter role (Fire/Water/Air) to use this command.' });
         }
       }
       const teamName = (REGION_INFO && REGION_INFO[team] && REGION_INFO[team].name) ? REGION_INFO[team].name : team;
 
       // checks
-      if (recruitedGuildMember.user.bot) return respond({ content: 'Cannot recruit bots.', flags: 64 });
+      if (recruitedGuildMember.user.bot) return respond({ content: 'Cannot recruit bots.' });
 
       const joinedAt = recruitedGuildMember.joinedAt;
       const now = new Date();
@@ -296,8 +332,19 @@ module.exports = {
         await recruitedGuildMember.setNickname(`${ign} | ${regionTag || team} 0/10`).catch(() => null);
 
         try {
-          if (typeof recruitedGuildMember.send === 'function') {
-            await recruitedGuildMember.send(`You have been recruited in ${teamName}. Welcome!`).catch(() => { });
+          await db.run(
+            'INSERT OR REPLACE INTO rookie_points (member_id, points, updated_at) VALUES (?, ?, ?)',
+            recruitedGuildMember.id,
+            0,
+            Date.now()
+          );
+        } catch (e) {
+          console.error('Failed to initialize rookie points:', e);
+        }
+
+        try {
+          if (recruitedGuildMember) {
+            await recruitedGuildMember.send(buildRookieWelcomeMessage(teamName)).catch(() => { });
           }
         } catch (e) {
           void e;
@@ -368,11 +415,12 @@ module.exports = {
     } catch (err) {
       console.error('Recruit command error:', err);
       if (typeof interaction.reply === 'function') {
-        return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.', ephemeral: true });
+        return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
       }
       if (typeof interaction.editReply === 'function') {
         return interaction.editReply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
       }
+
       return null;
     }
   }

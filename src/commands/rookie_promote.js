@@ -5,25 +5,31 @@ const { hasModPlusPermissions } = require('../lib/recruiting-system');
 module.exports = {
     data: {
         name: 'rookie_promote',
-        description: 'Instantly promote a rookie (MOD+ only, for events)'
+        description: 'Verify and promote a rookie (MOD+ only)'
     },
     async execute(interaction) {
+        if (!interaction.guild) {
+            return interaction.reply({ content: 'This command can only be used in a server.' });
+        }
+
         // MOD+ only
         if (!hasModPlusPermissions(interaction.member)) {
-            return interaction.reply({ content: 'MOD+ only.', flags: 64 });
+            return interaction.reply({ content: 'MOD+ only.' });
         }
 
         const targetUser = interaction.options.getUser('member');
         if (!targetUser) {
-            return interaction.reply({ content: 'Please specify a member to promote.', flags: 64 });
+            return interaction.reply({ content: 'Please specify a member to promote.' });
         }
 
         const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
         if (!targetMember) {
-            return interaction.reply({ content: 'That member is not in this server.', flags: 64 });
+            return interaction.reply({ content: 'That member is not in this server.' });
         }
 
-        const isRookie = targetMember.roles.cache.has(ROLE_IDS.ROOKIE);
+        if (!targetMember.roles.cache.has(ROLE_IDS.ROOKIE)) {
+            return interaction.reply({ content: 'That member is not a rookie.' });
+        }
 
         const { promoteMember } = require('../lib/promote');
         const result = await promoteMember({
@@ -33,9 +39,9 @@ module.exports = {
             verifierId: interaction.user.id
         });
 
-        const rookieNote = isRookie ? '' : ' (Note: Member was not a rookie)';
+        const teamLabel = result.teamEmoji ? `${result.teamEmoji} ${result.teamName}` : result.teamName;
         return interaction.reply({
-            content: `✅ Instantly promoted ${targetUser.tag} to SOLACE.\nAdded ${result.teamEmoji} ${result.teamName} member role.${rookieNote}`
+            content: `✅ Verified ${targetUser.tag}.\nAdded ${teamLabel} member role.`
         });
     }
 };

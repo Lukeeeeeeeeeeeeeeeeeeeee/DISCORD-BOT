@@ -23,6 +23,57 @@ function safeDaysLeftFromEndDate(endDateStr) {
   return Math.ceil(diffMs / (24 * 60 * 60 * 1000));
 }
 
+function formatPct(x) {
+  if (!Number.isFinite(x)) return '0%';
+  return `${Math.round(Math.max(0, Math.min(1, x)) * 100)}%`;
+}
+
+async function getAverageWeeklyRecruits(db, recruiterId, weeks = 4) {
+  try {
+    const rows = await db.all(
+      'SELECT recruits7d FROM weekly_calculations WHERE recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT ?',
+      recruiterId,
+      weeks
+    );
+    if (rows && rows.length) {
+      const total = rows.reduce((sum, r) => sum + (Number(r.recruits7d) || 0), 0);
+      return Math.round((total / rows.length) * 10) / 10;
+    }
+  } catch (e) {
+    void e;
+  }
+
+  try {
+    const since = Date.now() - (28 * 24 * 60 * 60 * 1000);
+    const row = await db.get(
+      'SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND valid = 1 AND created_at >= ?',
+      recruiterId,
+      since
+    );
+    const count = row ? Number(row.c || 0) : 0;
+    return Math.round((count / 4) * 10) / 10;
+  } catch (e) {
+    return 0;
+  }
+}
+
+async function postPurchaseLog({ guild, userId, item, cost }) {
+  if (!guild) return;
+  try {
+    const { CHANNELS } = require('../constants');
+    const channelId = CHANNELS && CHANNELS.ECONOMY_NOTIFICATIONS;
+    if (!channelId) return;
+    const channel = guild.channels && guild.channels.cache
+      ? guild.channels.cache.get(channelId)
+      : null;
+    if (channel && channel.send) {
+      await channel.send(`<@${userId}> bought **${item}** for **${cost}** pts!`).catch(() => { });
+    }
+  } catch (e) {
+    // best-effort logging
+  }
+}
+
 async function computeRetentionCounts({ db, guild, recruiterId, cohortStartMs, cohortEndMs, cap = 30 } = {}) {
   if (!db || !guild || !recruiterId) return { cohortSize: 0, retained: 0, sampled: false };
 
@@ -65,10 +116,10 @@ module.exports = {
           .setColor(0x00AAFF)
           .setTimestamp();
 
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to show multiplier list', e);
-        return interaction.reply({ content: 'Failed to show multipliers.', flags: 64 });
+        return interaction.reply({ content: 'Failed to show multipliers.' });
       }
     }
 
@@ -90,10 +141,10 @@ module.exports = {
           .setColor(0x00AAFF)
           .setTimestamp();
 
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to show multiplier view', e);
-        return interaction.reply({ content: 'Failed to show multiplier.', flags: 64 });
+        return interaction.reply({ content: 'Failed to show multiplier.' });
       }
     }
 
@@ -120,15 +171,15 @@ module.exports = {
           );
         }
 
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to show active multipliers', e);
-        return interaction.reply({ content: 'Failed to show active multipliers.', flags: 64 });
+        return interaction.reply({ content: 'Failed to show active multipliers.' });
       }
     }
 
     if (sub === 'multiplier-apply') {
-      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.', flags: 64 });
+      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
 
       const getUser = (key) => (interaction.options && typeof interaction.options.getUser === 'function' ? interaction.options.getUser(key) : null);
       const getString = (key) => (interaction.options && typeof interaction.options.getString === 'function' ? interaction.options.getString(key) : null);
@@ -152,7 +203,7 @@ module.exports = {
       }
 
       if (!target || !type) {
-        return interaction.reply({ content: 'Missing target or multiplier type.', flags: 64 });
+        return interaction.reply({ content: 'Missing target or multiplier type.' });
       }
 
       try {
@@ -176,15 +227,15 @@ module.exports = {
           .setDescription(`Applied **${type}** to <@${target.id}>.`)
           .setColor(0x00AAFF)
           .setTimestamp();
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to apply multiplier', e);
-        return interaction.reply({ content: 'Failed to apply multiplier.', flags: 64 });
+        return interaction.reply({ content: 'Failed to apply multiplier.' });
       }
     }
 
     if (sub === 'multiplier-reset') {
-      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.', flags: 64 });
+      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
 
       let target = interaction.options.getUser('member') || interaction.options.getUser('user') || interaction.options.getUser('target') || interaction.options.getUser('recruiter');
       if (!target) {
@@ -196,7 +247,7 @@ module.exports = {
       }
 
       if (!target) {
-        return interaction.reply({ content: 'Missing target user.', flags: 64 });
+        return interaction.reply({ content: 'Missing target user.' });
       }
 
       try {
@@ -220,10 +271,10 @@ module.exports = {
           .setDescription(`Reset multipliers for <@${target.id}>.`)
           .setColor(0x00AAFF)
           .setTimestamp();
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to reset multipliers', e);
-        return interaction.reply({ content: 'Failed to reset multipliers.', flags: 64 });
+        return interaction.reply({ content: 'Failed to reset multipliers.' });
       }
     }
 
@@ -233,16 +284,20 @@ module.exports = {
       // Check if user has permission to view info (basic check)
       const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       if (!guildMember) {
-        return interaction.reply({ content: 'Unable to verify your guild membership.', flags: 64 });
+        return interaction.reply({ content: 'Unable to verify your guild membership.' });
+      }
+
+      if (!hasRecruiterOrStaffPermissions(guildMember)) {
+        return interaction.reply({ content: 'Recruiter/staff only.' });
       }
 
       // Allow viewing own info or staff can view others
       if (member.id !== interaction.user.id && !hasAdminOrStaffPermissions(interaction.member)) {
-        return interaction.reply({ content: 'You can only view your own recruiter info.', flags: 64 });
+        return interaction.reply({ content: 'You can only view your own recruiter info.' });
       }
 
       if (!interaction.guild) {
-        return interaction.reply({ content: 'This command can only be used in a server.', flags: 64 });
+        return interaction.reply({ content: 'This command can only be used in a server.' });
       }
 
       // Basic rows
@@ -270,6 +325,10 @@ module.exports = {
       // Get 7-day stats using new system
       const stats7d = await calculate7DayStats(db, member.id);
       const previousMinReq = await getPreviousMinReq(db, member.id);
+      const avgRecruitsWeek = await getAverageWeeklyRecruits(db, member.id);
+      const avgRecruitsDisplay = Number.isFinite(avgRecruitsWeek)
+        ? String(avgRecruitsWeek).replace(/\.0$/, '')
+        : '0';
 
       // Check for active absence
       const absence = await db.get(
@@ -322,6 +381,8 @@ module.exports = {
           { name: 'Active Multiplier', value: mul && mul.type ? `${mul.type} — ×${mul.value}` : 'None', inline: true },
           { name: 'Total recruits (all time)', value: `${totalAll}`, inline: true },
           { name: 'Recruits (7 days)', value: `${stats7d.recruits7d}`, inline: true },
+          { name: 'Verify rate (7d)', value: formatPct(stats7d.verifyRate), inline: true },
+          { name: 'Avg recruits/week', value: avgRecruitsDisplay, inline: true },
           { name: 'Warnings (active)', value: `${activeWarningsRow ? activeWarningsRow.c : 0}`, inline: true },
           { name: 'Warnings (all time)', value: `${totalWarningsRow ? totalWarningsRow.c : 0}`, inline: true },
           { name: 'Min recruits required', value: `${minReq}`, inline: true }
@@ -417,7 +478,7 @@ module.exports = {
       // Additional info footnote
       embed.setFooter({ text: `7-Day Retention: ${Math.round(stats7d.retention * 100)}% • Last recruit: ${lastTs ? new Date(lastTs).toUTCString() : 'Never'}` });
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
     }
 
     if (sub === 'buy') {
@@ -438,7 +499,7 @@ module.exports = {
 
       // In production, roles.cache and permissions exist. In tests/mocks they may not.
       if ((hasRoleCache || hasPermissions) && !hasRecruiterOrStaffPermissions(guildMember) && !hasRole(ROLE_IDS.ROOKIE) && !hasRole(ROLE_IDS.VIP) && !hasRole(ROLE_IDS.MVP) && !hasRole(ROLE_IDS.CUSTOM) && !isAdmin) {
-        return interaction.reply({ content: 'You need to be verified (Rookie+) or a recruiter/staff to purchase items.', flags: 64 });
+        return interaction.reply({ content: 'You need to be verified (Rookie+) or a recruiter/staff to purchase items.' });
       }
 
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', userId);
@@ -450,12 +511,13 @@ module.exports = {
       const multCfg = ECONOMY_CONFIG.MULTIPLIERS[item];
       if (multCfg) {
         const cost = multCfg.cost;
-        if (points < cost) return interaction.reply({ content: 'Not enough points to buy that multiplier.', flags: 64 });
+        if (points < cost) return interaction.reply({ content: 'Not enough points to buy that multiplier.' });
         await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
         await applyMultiplier(db, userId, item);
         await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
+        await postPurchaseLog({ guild: interaction.guild, userId, item, cost });
         const embed = new EmbedBuilder().setTitle('Multiplier Purchased').setDescription(`Applied **${item}** for ${multCfg.days} days for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       }
 
       const cost = PURCHASE_ITEMS[item];
@@ -474,13 +536,14 @@ module.exports = {
           .setColor(0x00AAFF)
           .setFooter({ text: 'Use /recruiter buy <item_name> to purchase' })
           .setTimestamp();
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       }
 
-      if (points < cost) return interaction.reply({ content: 'Not enough points.', flags: 64 });
+      if (points < cost) return interaction.reply({ content: 'Not enough points.' });
       // Deduct
       await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
       await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
+      await postPurchaseLog({ guild: interaction.guild, userId, item, cost });
 
       // handle role grants for vip/mvp
       try {
@@ -496,21 +559,6 @@ module.exports = {
         }
       } catch (e) {
         // best-effort
-      }
-
-      // Send notification to economy channel for special items (custom-role, custom-suggestion, nickname, custom-vc)
-      const notifyItems = ['custom-role', 'custom-suggestion', 'nickname', 'custom-vc'];
-      if (notifyItems.includes(item)) {
-        try {
-          const { CHANNELS } = require('../constants');
-          const notifChannel = interaction.guild?.channels?.cache?.get(CHANNELS.ECONOMY_NOTIFICATIONS);
-          if (notifChannel && notifChannel.send) {
-            const notifText = `# 🛒 Economy Purchase\n<@${userId}> purchased **${item}** for **${cost}** points.`;
-            await notifChannel.send(notifText).catch(() => { });
-          }
-        } catch (e) {
-          // best-effort notification
-        }
       }
 
       const embed = new EmbedBuilder().setTitle('Purchase Complete').setDescription(`Purchased **${item}** for **${cost}** points.`).setColor(0x00AAFF).setTimestamp();
@@ -579,6 +627,7 @@ module.exports = {
         try {
           const scheduler = require('../scheduler');
           await scheduler.recomputeLeaderboards(db, interaction.guild);
+          await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
         } catch (e) {
           console.error('Failed to update leaderboards after warning:', e);
         }
@@ -667,6 +716,7 @@ module.exports = {
         try {
           const scheduler = require('../scheduler');
           await scheduler.recomputeLeaderboards(db, interaction.guild);
+          await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
         } catch (e) {
           console.error('Failed to update leaderboards after warning revocation:', e);
         }
@@ -678,30 +728,5 @@ module.exports = {
       }
     }
 
-    if (sub === 'dismiss') {
-      // admin/staff only
-      if (!hasAdminOrStaffPermissions(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
-      const member = interaction.options.getUser('member');
-      const reason = interaction.options.getString('reason') || 'Dismissed by staff';
-      try {
-        await db.run('UPDATE flags SET dismissed = 1 WHERE recruiter_id = ?', member.id);
-        const { EmbedBuilder } = require('discord.js');
-        const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
-        if (ch) {
-          const embed = new EmbedBuilder()
-            .setTitle('✅ Flags Dismissed')
-            .setDescription(`Flags for <@${member.id}> dismissed by <@${interaction.user.id}>`)
-            .addFields({ name: 'Reason', value: reason })
-            .setColor(0x00CC66)
-            .setTimestamp();
-          ch.send({ embeds: [embed] }).catch(e => console.error('Failed to post dismiss to channel', { error: e, channelId: ch.id }));
-        }
-        console.info('Flags dismissed', { recruiterId: member.id, by: interaction.user.id, reason });
-        return interaction.reply({ content: `Flags for ${member.tag} dismissed. ✅` });
-      } catch (e) {
-        console.error('Failed to dismiss flags', { error: e });
-        return interaction.reply({ content: 'Failed to dismiss flags.' });
-      }
-    }
   }
 };

@@ -10,21 +10,22 @@ module.exports = {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ 
-        content: '❌ Administrator permission required.', 
-        flags: 64 
+        content: '❌ Administrator permission required.'
       });
     }
 
     const antiNuke = global.antiNuke;
     if (!antiNuke) {
       return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.', 
-        flags: 64 
+        content: '❌ Anti-nuke system not initialized.'
       });
     }
 
     try {
       const status = antiNuke.getStatus(interaction.guild.id);
+      const backups = typeof antiNuke.listBackups === 'function'
+        ? antiNuke.listBackups(interaction.guild.id)
+        : [];
       
       if (!status.hasBackup) {
         const embed = new EmbedBuilder()
@@ -38,17 +39,28 @@ module.exports = {
           .addFields(
             {
               name: '💡 How to Create Backup',
-              value: 'Use `/force_backup` to create a manual backup\nAutomatic backups are created every 6 hours',
+              value: 'Use `/force_backup` to create a manual backup\nAutomatic full backups run every 6 hours\nIncremental backups run every 1 hour',
               inline: false
             }
           )
           .setTimestamp();
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.reply({ embeds: [embed] });
       }
 
-      // Get backup details (mock data since we don't have direct access to backup object)
-      const backupAge = 'Recent'; // Would calculate from backup timestamp
-      const backupSize = 'Medium'; // Would calculate from backup data
+      const backupAge = status.backupTimestamp
+        ? `<t:${Math.floor(status.backupTimestamp / 1000)}:R>`
+        : 'Unknown';
+      const backupSize = status.backupRoles || status.backupChannels
+        ? `${status.backupRoles || 0} roles, ${status.backupChannels || 0} channels`
+        : 'Unknown';
+      const recentList = backups.slice(0, 5).map(entry => {
+        const size = entry.counts
+          ? `${entry.counts.roles || 0} roles, ${entry.counts.channels || 0} channels`
+          : 'Unknown size';
+        const age = entry.timestamp ? `<t:${Math.floor(entry.timestamp / 1000)}:R>` : 'Unknown';
+        const encrypted = entry.encrypted ? '🔐' : '🔓';
+        return `• ${entry.id} — ${entry.type || 'full'} ${encrypted} — ${age} — ${size}`;
+      });
       
       const embed = new EmbedBuilder()
         .setColor('#0000FF')
@@ -60,7 +72,7 @@ module.exports = {
           { name: 'Backup Age', value: backupAge, inline: true }
         )
         .addFields(
-          { name: '📊 Backup Details', value: `• Size: ${backupSize}\n• Type: Full Server Backup\n• Format: JSON\n• Location: Memory Storage`, inline: false }
+          { name: '📊 Backup Details', value: `• Size: ${backupSize}\n• Latest ID: ${status.backupId || 'Unknown'}\n• Type: ${backups[0]?.type || 'full'}\n• Encrypted: ${status.backupEncrypted ? 'Yes' : 'No'}\n• Format: JSON (persisted)`, inline: false }
         )
         .addFields(
           {
@@ -74,10 +86,21 @@ module.exports = {
             inline: false
           }
         )
-        .setFooter({ text: 'This information is only visible to you' })
+        .addFields(
+          {
+            name: '🗂️ Recent Backups',
+            value: recentList.length ? recentList.join('\n') : 'No recent backups available.',
+            inline: false
+          },
+          {
+            name: '🧾 Retention',
+            value: `• Full: ${antiNuke.BACKUP_RETENTION_FULL} backups\n• Incremental: ${antiNuke.BACKUP_RETENTION_INCREMENTAL} backups`,
+            inline: false
+          }
+        )
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 }); // Ephemeral
+      return interaction.reply({ embeds: [embed] });
 
     } catch (error) {
       console.error('View backups error:', error);
@@ -88,7 +111,7 @@ module.exports = {
         .setDescription(`Error: ${error.message}`)
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.reply({ embeds: [embed] });
     }
   }
 };

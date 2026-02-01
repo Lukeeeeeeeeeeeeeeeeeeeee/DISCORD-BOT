@@ -6,21 +6,21 @@ const { hasAdministrator } = require('../lib/permissions');
 module.exports = {
   data: { name: 'status' },
   async execute(interaction) {
-    if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Administrator permission required.', flags: 64 });
+    if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Administrator permission required.' });
 
     const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'recruiter.db');
     let dbSize = 'N/A';
     try {
       const s = fs.statSync(DB_PATH);
-      dbSize = `${Math.round(s.size/1024)} KB`;
+      dbSize = `${Math.round(s.size / 1024)} KB`;
     } catch (e) { void e; }
 
     const backupsDir = path.join(path.dirname(DB_PATH), 'backups');
     let lastBackup = 'None';
     try {
-      const files = fs.readdirSync(backupsDir).filter(f => f.endsWith('.db')).map(f=>({f, t: fs.statSync(path.join(backupsDir,f)).mtime.getTime()}));
+      const files = fs.readdirSync(backupsDir).filter(f => f.endsWith('.db')).map(f => ({ f, t: fs.statSync(path.join(backupsDir, f)).mtime.getTime() }));
       if (files.length) {
-        files.sort((a,b)=>b.t-a.t);
+        files.sort((a, b) => b.t - a.t);
         lastBackup = files[0].f;
       }
     } catch (e) { void e; }
@@ -45,6 +45,6 @@ module.exports = {
       )
       .setTimestamp();
 
-    return interaction.reply({ embeds: [embed], flags: 64 });
+    return interaction.reply({ embeds: [embed] });
   }
 };

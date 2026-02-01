@@ -10,7 +10,7 @@ module.exports = {
   async execute(interaction) {
     // Admin/staff only
     if (!hasAdminOrStaffPermissions(interaction.member)) {
-      return interaction.reply({ content: 'Admin/Staff only.', flags: 64 });
+      return interaction.reply({ content: 'Admin/Staff only.' });
     }
 
     const member = interaction.options.getUser('member');
@@ -19,7 +19,7 @@ module.exports = {
     // Validate member exists
     const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
     if (!targetMember) {
-      return interaction.reply({ content: 'Member not found in this guild.', flags: 64 });
+      return interaction.reply({ content: 'Member not found in this guild.' });
     }
 
     try {
