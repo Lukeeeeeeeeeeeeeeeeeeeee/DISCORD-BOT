@@ -92,10 +92,16 @@ client.on('interactionCreate', async interaction => {
   if (!cmd) return;
   const shouldSanitize = interaction.commandName !== 'invite';
   const sanitizePayload = (payload) => {
-    if (!shouldSanitize || !payload || typeof payload !== 'object') return payload;
-    const cleaned = { ...payload };
-    if ('flags' in cleaned) delete cleaned.flags;
-    if (cleaned.ephemeral) delete cleaned.ephemeral;
+    if (!payload) return payload;
+    const cleaned = typeof payload === 'string' ? { content: payload } : { ...payload };
+
+    if (typeof cleaned.content === 'string' && cleaned.content.length > 2000) {
+      cleaned.content = cleaned.content.slice(0, 1997) + '...';
+    }
+
+    if (!shouldSanitize) return cleaned;
+    if (cleaned.flags !== undefined) delete cleaned.flags;
+    if (cleaned.ephemeral !== undefined) delete cleaned.ephemeral;
     return cleaned;
   };
   const wrapInteractionMethod = (methodName) => {

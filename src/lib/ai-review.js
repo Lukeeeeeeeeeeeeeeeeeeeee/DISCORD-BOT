@@ -952,7 +952,8 @@ async function runReview({ guild, channelId, requesterId, force = false }) {
 
     return { ok: true, reportText };
   } catch (e) {
-    return { ok: false, reason: e.message || 'AI review failed.' };
+    const errorMsg = e.message || 'AI review failed.';
+    return { ok: false, reason: errorMsg.length > 1800 ? errorMsg.slice(0, 1800) + '...' : errorMsg };
   } finally {
     reviewRunning = false;
     reviewStartedAt = 0;

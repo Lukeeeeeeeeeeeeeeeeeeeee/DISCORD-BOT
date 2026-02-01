@@ -39,7 +39,9 @@ module.exports = {
     await interaction.deferReply();
     const result = await runReview({ guild: interaction.guild, channelId: channel ? channel.id : null, requesterId: interaction.user.id, force: true });
     if (!result.ok) {
-      return interaction.editReply({ content: `AI review failed: ${result.reason}` });
+      const reason = result.reason || 'Unknown error';
+      const safeReason = reason.length > 1900 ? reason.slice(0, 1900) + '...' : reason;
+      return interaction.editReply({ content: `AI review failed: ${safeReason}` });
     }
 
     const channelText = channel ? ` and posted in <#${channel.id}>` : '';
