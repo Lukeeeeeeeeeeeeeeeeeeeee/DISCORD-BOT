@@ -2799,6 +2799,11 @@ class AntiNuke {
     }));
   }
 
+  setLogChannel(guildId, channelId) {
+    this.logChannels.set(guildId, channelId);
+    this.saveData();
+  }
+
   requestWhitelistAdd(guildId, userId, approverId) {
     if (!guildId || !userId || !approverId) {
       return { status: 'invalid' };
