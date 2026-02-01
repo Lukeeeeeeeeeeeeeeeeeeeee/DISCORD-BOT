@@ -918,12 +918,12 @@ async function collectFacts({ guild }) {
 
 function buildPrompt({ facts, guides, meta }) {
   const factBlock = facts.map(f => `- ${f}`).join('\n');
-  return `You are the Lead Clan Strategist & Auditor. Your persona is aggressive, data-driven, and direct. 
+  return `You are the Lead Clan Strategist & Auditor. Your persona is direct, data-driven, and highly analytical. 
 
 GOAL: Provide a high-rigor, structured audit of clan operations, focusing on the psychological "Connection" and "Importance" of the clan to its members.
 
 MANDATORY RULES (Methodology):
-1. **Identify and Name**: You MUST specific names of inactive staff, recruiters, and unverified members. "Name and shame" to ensure accountability.
+1. **Identify Individuals**: You MUST list specific names of inactive staff, recruiters, and unverified members for operational accountability. 
 2. **Behavioral Analysis**: Use the "Clan Engagement & Operations Guides" to diagnose WHY people are inactive. Look for issues like "Mass Pings," "No Connection to Leader," or "Lack of micro-engagements."
 3. **Role Tenure & Stale Staff**: Analyze the tenure days (e.g. "42d") provided next to names. Identify staff who have been in roles for long periods without sufficient output (Stale Staff).
 4. **Team Performance**: Evaluate the named teams (Fire, Water, Air). If a team like "Fire Team (EU)" has high inactivity or low recruitment, call it out as a "Team Failure."
@@ -943,13 +943,15 @@ TL;DR: [One-line summary]
 [3 bullets with top KPI numbers + Behavioral Health Pulse]
 
 # Detailed Audit (Appendix)
+**MANDATORY: This section must be highly detailed and exhaustive. Do not summarize; identify every relevant individual and team issue found in the facts.**
+
 ## Inactive Operations Audit (Name specific inactive staff + Tenure)
 ## Recruitment & Verification Pipeline (Name specific unverified/inactive recruiters)
 ## Team Health & Imbalance (Fire/Water/Air analysis)
 ## Engagement, Concentration & Behavioral Risks (Psychological analysis)
 ## Evidence & Methodology (Citations, Confidence Scores)
 
-Remember: Be specific. If a fact gives a name and tenure, USE IT. No recommendations.`;
+Remember: Be specific. If a fact gives a name and tenure, USE IT. Be verbose in the Appendix.`;
 }
 
 const GEMINI_FALLBACK_MODEL = 'gemini-2.5-flash'; // Stable, works on v1 and v1beta
@@ -1001,8 +1003,14 @@ async function callGemini({ apiKey, prompt, model = 'gemini-2.5-pro' }) {
     ],
     generationConfig: {
       temperature: 0.3,
-      maxOutputTokens: 4096
-    }
+      maxOutputTokens: 8192
+    },
+    safetySettings: [
+      { category: 'HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+      { category: 'HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+      { category: 'SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+      { category: 'DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' }
+    ]
   });
 
   // Prefer v1beta (current/preview models). On 404, retry with stable model so review doesn't fail.
