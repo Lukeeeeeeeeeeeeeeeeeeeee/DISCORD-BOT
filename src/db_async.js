@@ -210,6 +210,14 @@ async function init() {
     PRIMARY KEY (day, guild_id, user_id)
   );
 
+  CREATE TABLE IF NOT EXISTS analytics_user_daily_messages (
+    day TEXT NOT NULL,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    message_count INTEGER DEFAULT 0,
+    PRIMARY KEY (day, guild_id, user_id)
+  );
+
   CREATE TABLE IF NOT EXISTS analytics_command_usage (
     day TEXT NOT NULL,
     guild_id TEXT NOT NULL,

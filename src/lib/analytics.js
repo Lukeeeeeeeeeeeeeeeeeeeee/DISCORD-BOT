@@ -78,6 +78,19 @@ async function recordMessage({ guildId, channelId, userId, timestamp = Date.now(
   }
 
   await db.run(
+    'INSERT OR IGNORE INTO analytics_user_daily_messages (day, guild_id, user_id, message_count) VALUES (?, ?, ?, 0)',
+    day,
+    guildId,
+    userId
+  );
+  await db.run(
+    'UPDATE analytics_user_daily_messages SET message_count = message_count + 1 WHERE day = ? AND guild_id = ? AND user_id = ?',
+    day,
+    guildId,
+    userId
+  );
+
+  await db.run(
     'INSERT OR IGNORE INTO analytics_user_activity (user_id, last_message_at, last_voice_at, last_active_at) VALUES (?, ?, NULL, ?)',
     userId,
     timestamp,

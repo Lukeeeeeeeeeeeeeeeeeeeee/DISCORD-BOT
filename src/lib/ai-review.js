@@ -461,18 +461,46 @@ async function collectFacts({ guild }) {
   const joinsDelta = pctChange(last7.joins, prev7.joins);
   const invitesDelta = pctChange(last7.invites_used, prev7.invites_used);
 
-  // Concentration check (top 10% speakers message contribution)
-  const speakerRows = await db.all(
-    'SELECT user_id, SUM(message_count) as messages FROM analytics_user_daily WHERE guild_id = ? AND day >= ? GROUP BY user_id ORDER BY messages DESC',
+  // Concentration checks
+  const recruitConcRows = await db.all(
+    'SELECT recruiter_id, COUNT(*) as c FROM recruits WHERE valid = 1 AND created_at >= ? GROUP BY recruiter_id ORDER BY c DESC',
+    now - 7 * 24 * 60 * 60 * 1000
+  );
+  if (recruitConcRows.length > 3) {
+    const top10Count = Math.max(1, Math.round(recruitConcRows.length * 0.1));
+    const top10Sum = recruitConcRows.slice(0, top10Count).reduce((s, r) => s + Number(r.c || 0), 0);
+    const totalSum = recruitConcRows.reduce((s, r) => s + Number(r.c || 0), 0);
+    const concentration = totalSum > 0 ? (top10Sum / totalSum * 100).toFixed(1) : 0;
+    facts.push(`F4b: Recruitment Concentration=Top 10% of recruiters (${top10Count}) produced ${concentration}% of total recruits (${top10Sum}/${totalSum}).`);
+  }
+
+  const voiceConcRows = await db.all(
+    'SELECT user_id, SUM(minutes) as m FROM analytics_voice_daily WHERE guild_id = ? AND day >= ? GROUP BY user_id ORDER BY m DESC',
     guildId,
     day7
   );
-  if (speakerRows.length > 5) {
-    const top10Count = Math.max(1, Math.round(speakerRows.length * 0.1));
-    const top10Sum = speakerRows.slice(0, top10Count).reduce((s, r) => s + Number(r.messages || 0), 0);
-    const totalSum = speakerRows.reduce((s, r) => s + Number(r.messages || 0), 0);
+  if (voiceConcRows.length > 5) {
+    const top10Count = Math.max(1, Math.round(voiceConcRows.length * 0.1));
+    const top10Sum = voiceConcRows.slice(0, top10Count).reduce((s, r) => s + Number(r.m || 0), 0);
+    const totalSum = voiceConcRows.reduce((s, r) => s + Number(r.m || 0), 0);
     const concentration = totalSum > 0 ? (top10Sum / totalSum * 100).toFixed(1) : 0;
-    facts.push(`F4b: Message Concentration=Top 10% of speakers (${top10Count}) produced ${concentration}% of total messages (${top10Sum}/${totalSum}).`);
+    facts.push(`F4c: Voice Concentration=Top 10% of voice users (${top10Count}) produced ${concentration}% of total minutes (${top10Sum}/${totalSum}).`);
+  }
+
+  // Message Concentration (newly implemented table)
+  const msgConcRows = await db.all(
+    'SELECT user_id, SUM(message_count) as c FROM analytics_user_daily_messages WHERE guild_id = ? AND day >= ? GROUP BY user_id ORDER BY c DESC',
+    guildId,
+    day7
+  );
+  if (msgConcRows.length > 5) {
+    const top10Count = Math.max(1, Math.round(msgConcRows.length * 0.1));
+    const top10Sum = msgConcRows.slice(0, top10Count).reduce((s, r) => s + Number(r.c || 0), 0);
+    const totalSum = msgConcRows.reduce((s, r) => s + Number(r.c || 0), 0);
+    const concentration = totalSum > 0 ? (top10Sum / totalSum * 100).toFixed(1) : 0;
+    facts.push(`F4d: Message Concentration=Top 10% of users (${top10Count}) produced ${concentration}% of total messages (${top10Sum}/${totalSum}).`);
+  } else {
+    facts.push(`F4d: Message Concentration=N/A (Collecting data...)`);
   }
 
   const channelRows = await db.all(
