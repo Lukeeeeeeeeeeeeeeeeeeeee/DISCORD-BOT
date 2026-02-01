@@ -51,7 +51,7 @@ const BASE_MAX_DELTA_DOWN = 1;
  */
 function getRoleLevel(member) {
   if (!member || !member.roles) return 0;
-  
+
   let maxLevel = 0;
   for (const [roleId, level] of Object.entries(ROLE_HIERARCHY)) {
     if (member.roles.cache.has(roleId)) {
@@ -68,7 +68,7 @@ function getRoleLevel(member) {
  */
 function getBaseRequirement(member) {
   if (!member || !member.roles) return 4;
-  
+
   let maxBase = 4;
   for (const [roleId, base] of Object.entries(ROLE_BASE_REQUIREMENTS)) {
     if (member.roles.cache.has(roleId)) {
@@ -231,9 +231,17 @@ async function calculate7DayStats(db, recruiterId, guild = null) {
       const cohortSize = retentionCohort.length;
       if (cohortSize > 0) {
         let retainedCount = 0;
-        for (const r of retentionCohort) {
-          const member = await guild.members.fetch(r.recruited_id).catch(() => null);
-          if (member) retainedCount++;
+        try {
+          const recruitedIds = retentionCohort.map(r => r.recruited_id);
+          // Fetch members in bulk to avoid repetitive individual fetch calls
+          const members = (await guild.members.fetch({ user: recruitedIds }).catch(() => new Map())) || new Map();
+          retainedCount = members.size;
+        } catch (e) {
+          // Fallback to loop if bulk fetch fails for some reason
+          for (const r of retentionCohort) {
+            const member = await guild.members.fetch(r.recruited_id).catch(() => null);
+            if (member) retainedCount++;
+          }
         }
         retention = retainedCount / cohortSize;
       }

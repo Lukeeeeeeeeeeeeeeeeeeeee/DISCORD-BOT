@@ -28,12 +28,17 @@ async function resolveGuild(client) {
   return null;
 }
 
-function getWeekStartUtcTs(now = new Date()) {
-  const day = now.getUTCDay();
+function getWeekStartUtcTs(now = new Date(), offsetMs = 300000) {
+  // Use a 5-minute offset by default to align with the 00:05 UTC snapshot.
+  // This ensures the logical "week" rolls over exactly when the snapshot is taken.
+  const date = new Date(now);
+  date.setTime(date.getTime() - offsetMs);
+
+  const day = date.getUTCDay();
   const diffToMonday = (day + 6) % 7;
-  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  const weekStart = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0));
   weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
-  return weekStart.getTime();
+  return weekStart.getTime() + offsetMs;
 }
 
 async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
@@ -396,25 +401,29 @@ async function reconcileTrialRecruiters(_db, _client) {
   // Intentionally disabled/handled elsewhere.
 }
 
-async function runWeeklySnapshotAndReset(db, client) {
+async function runWeeklySnapshotAndReset(db, client, options = {}) {
+  const { announce = true } = options || {};
   debugLog('Starting weekly MinReq and stats reset...');
   try {
     const weekStart = getWeekStartUtcTs();
+    const weekStartIso = new Date(weekStart).toISOString().slice(0, 10);
 
-    // One-time announcement per week in the overall invites channel
-    try {
-      const announceKey = `weekly_reset_announce_${weekStart}`;
-      const existing = await db.get('SELECT key FROM system_events WHERE key = ?', announceKey);
-      if (!existing) {
-        await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', announceKey, Date.now());
-        const guild = await resolveGuild(client);
-        const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
-        if (ch) {
-          await ch.send('@everyone Weekly invite/recruit tables have been reset for the new week.').catch(() => { });
+    // One-time announcement per week in the overall invites channel (scheduled runs only)
+    if (announce) {
+      try {
+        const announceKey = `weekly_reset_announce_${weekStart}`;
+        const existing = await db.get('SELECT key FROM system_events WHERE key = ?', announceKey);
+        if (!existing) {
+          await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', announceKey, Date.now());
+          const guild = await resolveGuild(client);
+          const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
+          if (ch) {
+            await ch.send(`@everyone Weekly invite/recruit snapshot captured (week start ${weekStartIso} UTC).`).catch(() => { });
+          }
         }
+      } catch (e) {
+        console.error('Weekly reset announcement failed:', e);
       }
-    } catch (e) {
-      console.error('Weekly reset announcement failed:', e);
     }
 
     const recruiters = await db.all('SELECT id FROM recruiters');
@@ -523,13 +532,21 @@ function start(client, db) {
     }
 
     // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
+    // Sanity Window: Only catch up if we are within 24 hours of the scheduled time.
+    // This prevents a Monday reset from triggering on a Sunday.
     try {
-      const weekStart = getWeekStartUtcTs();
+      const weekStart = getWeekStartUtcTs(); // Uses default 5m offset
       const snapKey = `weekly_snapshot_${weekStart}`;
       const existing = await db.get('SELECT key FROM system_events WHERE key = ?', snapKey);
-      const scheduledTs = weekStart + (5 * 60 * 1000);
-      if (!existing && Date.now() >= scheduledTs) {
-        await runWeeklySnapshotAndReset(db, client);
+
+      const now = Date.now();
+      const sanityWindow = 24 * 60 * 60 * 1000; // 24 hours
+
+      if (!existing && now >= weekStart && now < weekStart + sanityWindow) {
+        debugLog(`Catch-up: Running missed weekly snapshot for ${new Date(weekStart).toUTCString()}`);
+        await runWeeklySnapshotAndReset(db, client, { announce: false });
+      } else if (!existing && now >= weekStart + sanityWindow) {
+        debugLog(`Catch-up skipped: Outside 24h sanity window for ${new Date(weekStart).toUTCString()}`);
       }
     } catch (e) {
       console.error('Weekly snapshot catch-up check failed:', e);

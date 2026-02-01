@@ -293,7 +293,7 @@ module.exports = {
         return interaction.reply({ content: 'Recruiter/staff only.' });
       }
 
-      // Allow viewing own info or staff can view others
+      console.log('DEBUG: Checking own info or permissions');
       if (member.id !== interaction.user.id && !hasAdminOrStaffPermissions(interaction.member)) {
         return interaction.reply({ content: 'You can only view your own recruiter info.' });
       }

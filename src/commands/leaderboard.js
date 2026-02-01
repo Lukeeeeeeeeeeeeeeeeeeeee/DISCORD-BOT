@@ -13,14 +13,14 @@ module.exports = {
       if (region) {
         if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.' });
 
+        // Instead of fetching all members (which hits rate limits), 
+        // fetch only the members with the relevant recruiter role.
+        const recruiterRoleId = RECRUITER_ROLE_IDS[region];
         try {
-          await interaction.guild.members.fetch();
+          if (recruiterRoleId) await interaction.guild.members.fetch({ role: recruiterRoleId });
         } catch (e) {
           // best-effort
         }
-
-        // Get all recruiters for this region using the same logic as scheduler
-        const recruiterRoleId = RECRUITER_ROLE_IDS[region];
         const recruiterRole = interaction.guild.roles.cache.get(recruiterRoleId);
 
         const allRecruiterIds = new Set();
@@ -152,7 +152,6 @@ module.exports = {
         }
       }
 
-      // Add all staff members
       const staffRoleIds = [
         ROLE_IDS.HELPER,
         ROLE_IDS.HELPER_PLUS,
@@ -166,22 +165,16 @@ module.exports = {
         ROLE_IDS.HIGH_STAFF
       ];
 
-      for (const roleId of [ROLE_IDS.RECRUITER, ROLE_IDS.TRIAL_RECRUITER].filter(Boolean)) {
-        const role = interaction.guild.roles.cache.get(roleId);
-        if (role) {
-          role.members.forEach(member => {
-            allRecruiterIds.add(member.id);
-          });
-        }
-      }
+      // Fetch all relevant roles to avoid Opcode 8 rate limits
+      const allFetchRoles = [
+        ROLE_IDS.RECRUITER,
+        ROLE_IDS.TRIAL_RECRUITER,
+        ...Object.values(RECRUITER_ROLE_IDS),
+        ...staffRoleIds
+      ].filter(Boolean);
 
-      for (const roleId of staffRoleIds) {
-        const staffRole = interaction.guild.roles.cache.get(roleId);
-        if (staffRole) {
-          staffRole.members.forEach(member => {
-            allRecruiterIds.add(member.id);
-          });
-        }
+      for (const rid of allFetchRoles) {
+        await interaction.guild.members.fetch({ role: rid }).catch(() => null);
       }
 
       const recruiterMembers = Array.from(allRecruiterIds);

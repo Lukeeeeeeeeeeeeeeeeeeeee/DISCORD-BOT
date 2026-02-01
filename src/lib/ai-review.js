@@ -7,7 +7,11 @@ const { ROLE_IDS, RECRUITER_ROLE_IDS, CHANNELS } = require('../constants');
 const { toDayKey } = require('./analytics');
 
 const REVIEW_INTERVAL_MS = 72 * 60 * 60 * 1000;
+const REVIEW_MAX_RUNTIME_MS = parseEnvNumber(process.env.AI_REVIEW_MAX_RUNTIME_MS, 15 * 60 * 1000); // Reduced to 15m
+const GEMINI_REQUEST_TIMEOUT_MS = parseEnvNumber(process.env.GEMINI_REQUEST_TIMEOUT_MS, 120 * 1000);
 let reviewRunning = false;
+let reviewStartedAt = 0;
+let reviewSource = null; // Track who started the review
 const GUIDE_MAX_CHARS = parseEnvNumber(process.env.AI_REVIEW_GUIDE_MAX_CHARS, 4200);
 const GUIDE_MAX_CHUNKS = parseEnvNumber(process.env.AI_REVIEW_GUIDE_MAX_CHUNKS, 8);
 const GUIDE_CHUNK_SIZE = parseEnvNumber(process.env.AI_REVIEW_GUIDE_CHUNK_SIZE, 1600);
@@ -40,6 +44,17 @@ function parseEnvBoolean(value, fallback) {
   if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
   return fallback;
+}
+
+function isReviewStale(now = Date.now()) {
+  return reviewRunning && reviewStartedAt && now - reviewStartedAt > REVIEW_MAX_RUNTIME_MS;
+}
+
+function clearStaleReview(now = Date.now()) {
+  if (!isReviewStale(now)) return false;
+  reviewRunning = false;
+  reviewStartedAt = 0;
+  return true;
 }
 
 function dayKeyFromOffset(days) {
@@ -239,6 +254,9 @@ async function callGeminiEmbedding({ apiKey, text, model = GUIDE_EMBEDDING_MODEL
         }
       });
     });
+    req.setTimeout(GEMINI_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error('Gemini embedding request timed out.'));
+    });
     req.on('error', reject);
     req.write(payload);
     req.end();
@@ -404,7 +422,7 @@ async function collectFacts({ guild }) {
   const now = Date.now();
   const day7 = dayKeyFromOffset(7);
   const day14 = dayKeyFromOffset(14);
-  
+
 
   await guild.members.fetch().catch(() => null);
 
@@ -842,6 +860,9 @@ async function callGemini({ apiKey, prompt, model = 'gemini-1.5-flash' }) {
         }
       });
     });
+    req.setTimeout(GEMINI_REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error('Gemini request timed out.'));
+    });
     req.on('error', reject);
     req.write(payload);
     req.end();
@@ -849,8 +870,16 @@ async function callGemini({ apiKey, prompt, model = 'gemini-1.5-flash' }) {
 }
 
 async function runReview({ guild, channelId, requesterId, force = false }) {
-  if (reviewRunning) return { ok: false, reason: 'Review already running.' };
+  clearStaleReview();
+  if (reviewRunning) {
+    if (reviewSource === 'scheduler' && requesterId !== 'scheduler') {
+      return { ok: false, reason: 'A scheduled AI review is currently running in the background. Please try again in 10-15 minutes.' };
+    }
+    return { ok: false, reason: 'Review already running.' };
+  }
   reviewRunning = true;
+  reviewStartedAt = Date.now();
+  reviewSource = requesterId || 'manual';
   try {
     const apiKey = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : null;
     if (!apiKey) return { ok: false, reason: 'GEMINI_API_KEY missing.' };
@@ -897,10 +926,13 @@ async function runReview({ guild, channelId, requesterId, force = false }) {
     return { ok: false, reason: e.message || 'AI review failed.' };
   } finally {
     reviewRunning = false;
+    reviewStartedAt = 0;
+    reviewSource = null;
   }
 }
 
 async function maybeRunScheduledReview({ client }) {
+  clearStaleReview();
   if (reviewRunning) return;
   const last = await db.get('SELECT timestamp FROM system_events WHERE key = ?', 'ai_review_last_run');
   const lastTs = last ? last.timestamp : 0;

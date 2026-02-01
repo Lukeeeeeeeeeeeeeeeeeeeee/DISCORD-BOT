@@ -29,9 +29,21 @@ function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member
 
   const guild = {
     members: {
-      fetch: jest.fn(async (id) => {
-        if (id === member.id) return guildMember;
-        if (id === recruiterId) return recruiterMember;
+      fetch: jest.fn(async (arg) => {
+        if (typeof arg === 'string') {
+          if (arg === member.id) return guildMember;
+          if (arg === recruiterId) return recruiterMember;
+          return null;
+        }
+        if (arg && arg.user) {
+          const ids = Array.isArray(arg.user) ? arg.user : [arg.user];
+          const collection = new Map();
+          for (const id of ids) {
+            if (id === member.id) collection.set(id, guildMember);
+            if (id === recruiterId) collection.set(id, recruiterMember);
+          }
+          return collection;
+        }
         return null;
       })
     },
@@ -206,7 +218,23 @@ describe('/recruit command', () => {
     // create interaction for recruiter info
     const options = { getSubcommand: () => 'info', getUser: (_k) => ({ id: 'R1', tag: 'Recruiter#0001' }) };
     const reply = jest.fn();
-    const guild = { members: { fetch: jest.fn(async (id) => ({ id, roles: { cache: { has: () => false } } })) } };
+    const guild = {
+      members: {
+        fetch: jest.fn(async (arg) => {
+          const RECRUITER_ROLE = require('../src/constants').ROLE_IDS.RECRUITER;
+          if (typeof arg === 'string') return { id: arg, roles: { cache: { has: (rid) => rid === RECRUITER_ROLE } } };
+          if (arg && arg.user) {
+            const ids = Array.isArray(arg.user) ? arg.user : [arg.user];
+            const collection = new Map();
+            for (const id of ids) {
+              collection.set(id, { id, roles: { cache: { has: (rid) => rid === RECRUITER_ROLE } } });
+            }
+            return collection;
+          }
+          return null;
+        })
+      }
+    };
     const interaction = { options, reply, user: { id: 'R1', tag: 'Recruiter#0001' }, member: { permissions: { has: () => true } }, guild };
 
     const cmd = require('../src/commands/recruiter.js');

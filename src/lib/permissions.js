@@ -16,10 +16,10 @@ function hasAdministrator(member) {
 function hasRecruiterOrStaffPermissions(member) {
   if (!member) return false;
   const hasRoleCache = !!member.roles && !!member.roles.cache && typeof member.roles.cache.has === 'function';
-  
+
   // Check Discord admin permission
   if (hasAdministrator(member)) return true;
-  
+
   // Check staff roles
   const staffRoles = [
     ROLE_IDS.HELPER,
@@ -33,14 +33,14 @@ function hasRecruiterOrStaffPermissions(member) {
     ROLE_IDS.CO_LEADER,
     ROLE_IDS.LEADER
   ];
-  
+
   // Check recruiter roles
   const recruiterRoles = [
     ROLE_IDS.RECRUITER,
     ROLE_IDS.TRIAL_RECRUITER,
     ...Object.values(RECRUITER_ROLE_IDS)
   ];
-  
+
   const allAllowedRoles = [...staffRoles, ...recruiterRoles];
 
   if (!hasRoleCache) return false;
@@ -55,10 +55,10 @@ function hasRecruiterOrStaffPermissions(member) {
 function hasAdminOrStaffPermissions(member) {
   if (!member) return false;
   const hasRoleCache = !!member.roles && !!member.roles.cache && typeof member.roles.cache.has === 'function';
-  
+
   // Check Discord admin permission
   if (hasAdministrator(member)) return true;
-  
+
   // Check staff roles
   const staffRoles = [
     ROLE_IDS.HELPER,
@@ -72,7 +72,7 @@ function hasAdminOrStaffPermissions(member) {
     ROLE_IDS.CO_LEADER,
     ROLE_IDS.LEADER
   ];
-  
+
   if (!hasRoleCache) return false;
   return staffRoles.some(roleId => member.roles.cache.has(roleId));
 }
