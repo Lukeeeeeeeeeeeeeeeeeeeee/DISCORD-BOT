@@ -879,19 +879,29 @@ async function callGemini({ apiKey, prompt, model = 'gemini-2.5-pro' }) {
     return result.text;
   } catch (err) {
     const is404 = err.message && (err.message.includes('404') || err.message.includes('NOT_FOUND'));
-    if (is404 && model !== GEMINI_FALLBACK_MODEL) {
+    const is429 = err.message && (err.message.includes('429') || err.message.includes('RESOURCE_EXHAUSTED') || err.message.includes('quota'));
+
+    if ((is404 || is429) && model !== GEMINI_FALLBACK_MODEL) {
       try {
         const result = await doGeminiRequest({ apiKey, payload, model: GEMINI_FALLBACK_MODEL, apiVersion: 'v1beta' });
         return result.text;
       } catch (fallbackErr) {
-        // If v1beta fallback fails, try v1 with same stable model (in case deployment uses v1)
+        // If v1beta fallback fails, try v1 with same stable model
         try {
           const result = await doGeminiRequest({ apiKey, payload, model: GEMINI_FALLBACK_MODEL, apiVersion: 'v1' });
           return result.text;
         } catch (e) {
-          throw err; // throw original error so user sees requested model failed
+          // If fallback also fails with quota, throw a cleaner error
+          if (is429) {
+            throw new Error(`Gemini Quota Exceeded for both ${model} and ${GEMINI_FALLBACK_MODEL}. Please check your Gemini API plan or try again later.`);
+          }
+          throw err;
         }
       }
+    }
+
+    if (is429) {
+      throw new Error(`Gemini Quota Exceeded (429). Please check your plan at ai.google.dev or try again later.`);
     }
     throw err;
   }
