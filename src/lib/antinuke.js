@@ -480,7 +480,7 @@ class AntiNuke {
     this.client.on('channelDelete', (channel) => this.handleChannelDelete(channel));
     this.client.on('roleDelete', (role) => this.handleRoleDelete(role));
     this.client.on('guildMemberAdd', (member) => this.handleMemberAdd(member));
-    this.client.on('webhookUpdate', (channel) => this.handleWebhookUpdate(channel));
+    this.client.on('webhooksUpdate', (channel) => this.handleWebhookUpdate(channel));
     this.client.on('guildAuditLogEntryCreate', (entry, guild) => this.handleAuditLogEntry(entry, guild));
   }
 
