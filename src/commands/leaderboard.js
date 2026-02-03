@@ -1,15 +1,15 @@
 const db = require('../db_async');
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS, REGION_INFO } = require('../constants');
 const { hasAdministrator } = require('../lib/permissions');
+const { getWeekStartUtcTs } = require('../lib/week');
 
 module.exports = {
   data: { name: 'leaderboard' },
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
     if (sub === 'show') {
-      const scheduler = require('../scheduler');
       const region = interaction.options.getString('region');
-      const since = (typeof scheduler.getWeekStartUtcTs === 'function') ? scheduler.getWeekStartUtcTs() : (Date.now() - (7 * 24 * 60 * 60 * 1000));
+      const weekStart = getWeekStartUtcTs();
       if (region) {
         if (!REGIONS.includes(region) && region !== 'GLOBAL') return interaction.reply({ content: 'Invalid region.' });
 
@@ -52,7 +52,8 @@ module.exports = {
           SELECT 
             r.id AS recruiter_id, 
             COALESCE(c.cnt, 0) AS cnt, 
-            COALESCE(db_rec.points, 0) AS points 
+            COALESCE(db_rec.points, 0) AS points,
+            wc.calculated_min_req AS min_req
           FROM (${unionSelects}) r
           LEFT JOIN (
             SELECT recruiter_id, COUNT(*) as cnt 
@@ -61,18 +62,16 @@ module.exports = {
             GROUP BY recruiter_id
           ) c ON c.recruiter_id = r.id 
           LEFT JOIN recruiters db_rec ON db_rec.id = r.id
+          LEFT JOIN weekly_calculations wc ON wc.recruiter_id = r.id AND wc.week_start = ?
           ORDER BY cnt DESC, points DESC
-        `, ...recruiterMembers, region, since);
+        `, ...recruiterMembers, region, weekStart, weekStart);
 
         // Get 7-day stats and minReq for each recruiter
         const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
         const rows = [];
+        const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
 
         for (const r of rowsBase) {
-          const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild);
-          const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
-          const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
-
           const absence = await db.get(
             'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
             r.recruiter_id
@@ -93,6 +92,7 @@ module.exports = {
 
           const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
           const roleBase = getBaseRequirement(staffMember);
+          const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
 
           const teamName = REGION_INFO && REGION_INFO[region] ? REGION_INFO[region].name : region;
           const displayName = staffMember && staffMember.user
@@ -101,23 +101,35 @@ module.exports = {
 
           const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
-          const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
-            roleBase,
-            member: staffMember,
-            recruits7d: stats7d.recruits7d,
-            activityRate: stats7d.activityRate,
-            verifyRate: stats7d.verifyRate,
-            retention: stats7d.retention,
-            warnings: activeWarnings,
-            previousMinReq,
-            absent: !!absence,
-            isNewStaff: newStaffCheck
-          });
+          let minReq = Number.isFinite(r.min_req) ? Number(r.min_req) : null;
+          let previousMinReq = null;
+          if (minReq == null) {
+            previousMinReq = await getPreviousMinReq(db, r.recruiter_id).catch(() => null);
+            minReq = previousMinReq;
+          }
+          if (minReq == null) {
+            const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+            minReq = calculateMinRecruitsFixed({
+              roleBase,
+              member: staffMember,
+              recruits7d: stats7d.recruits7d,
+              activityRate: stats7d.activityRate,
+              verifyRate: stats7d.verifyRate,
+              retention: stats7d.retention,
+              warnings: activeWarnings,
+              previousMinReq,
+              absent: !!absence,
+              isNewStaff: newStaffCheck
+            });
+          }
+
+          if (isTrialRecruiter) minReq = 3;
+          if (absence) minReq = 0;
+          if (!Number.isFinite(minReq)) minReq = 2;
 
           rows.push({
             ...r,
-            recruits7d: stats7d.recruits7d,
-            retention: stats7d.retention,
+            recruits7d: Number(r.cnt || 0),
             minReq,
             absence: !!absence,
             displayName,
@@ -192,7 +204,8 @@ module.exports = {
         SELECT 
           r.id AS recruiter_id, 
           COALESCE(c.cnt, 0) AS cnt, 
-          COALESCE(db_rec.points, 0) AS points 
+          COALESCE(db_rec.points, 0) AS points,
+          wc.calculated_min_req AS min_req
         FROM (${unionSelects}) r
         LEFT JOIN (
           SELECT recruiter_id, COUNT(*) as cnt 
@@ -201,18 +214,16 @@ module.exports = {
           GROUP BY recruiter_id
         ) c ON c.recruiter_id = r.id 
         LEFT JOIN recruiters db_rec ON db_rec.id = r.id
+        LEFT JOIN weekly_calculations wc ON wc.recruiter_id = r.id AND wc.week_start = ?
         ORDER BY cnt DESC, points DESC
-      `, ...recruiterMembers, since);
+      `, ...recruiterMembers, weekStart, weekStart);
 
       // Get 7-day stats and minReq for global
       const { calculate7DayStats, getPreviousMinReq, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
       const rows = [];
+      const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
 
       for (const r of rowsBase) {
-        const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild);
-        const previousMinReq = await getPreviousMinReq(db, r.recruiter_id);
-        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
-
         const absence = await db.get(
           'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
           r.recruiter_id
@@ -233,26 +244,39 @@ module.exports = {
 
         const staffMember = await interaction.guild.members.fetch(r.recruiter_id).catch(() => null);
         const roleBase = getBaseRequirement(staffMember);
+        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
 
         const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
-        const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
-          roleBase,
-          member: staffMember,
-          recruits7d: stats7d.recruits7d,
-          activityRate: stats7d.activityRate,
-          verifyRate: stats7d.verifyRate,
-          retention: stats7d.retention,
-          warnings: activeWarnings,
-          previousMinReq,
-          absent: !!absence,
-          isNewStaff: newStaffCheck
-        });
+        let minReq = Number.isFinite(r.min_req) ? Number(r.min_req) : null;
+        let previousMinReq = null;
+        if (minReq == null) {
+          previousMinReq = await getPreviousMinReq(db, r.recruiter_id).catch(() => null);
+          minReq = previousMinReq;
+        }
+        if (minReq == null) {
+          const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+          minReq = calculateMinRecruitsFixed({
+            roleBase,
+            member: staffMember,
+            recruits7d: stats7d.recruits7d,
+            activityRate: stats7d.activityRate,
+            verifyRate: stats7d.verifyRate,
+            retention: stats7d.retention,
+            warnings: activeWarnings,
+            previousMinReq,
+            absent: !!absence,
+            isNewStaff: newStaffCheck
+          });
+        }
+
+        if (isTrialRecruiter) minReq = 3;
+        if (absence) minReq = 0;
+        if (!Number.isFinite(minReq)) minReq = 2;
 
         rows.push({
           ...r,
-          recruits7d: stats7d.recruits7d,
-          retention: stats7d.retention,
+          recruits7d: Number(r.cnt || 0),
           minReq,
           absence: !!absence,
           systemWarning: !!systemWarningRow,

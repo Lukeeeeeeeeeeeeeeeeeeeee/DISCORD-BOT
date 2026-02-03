@@ -1,9 +1,9 @@
 const cron = require('node-cron');
 const { GUILD_ID, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS, REGION_INFO } = require('./constants');
 const { formatPointsValue } = require('./lib/economy');
+const { getWeekStartUtcTs } = require('./lib/week');
 
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
-const { maybeRunScheduledReview } = require('./lib/ai-review');
 
 const { calculate7DayStats, getPreviousMinReq, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
 
@@ -28,17 +28,45 @@ async function resolveGuild(client) {
   return null;
 }
 
-function getWeekStartUtcTs(now = new Date(), offsetMs = 300000) {
-  // Use a 5-minute offset by default to align with the 00:05 UTC snapshot.
-  // This ensures the logical "week" rolls over exactly when the snapshot is taken.
-  const date = new Date(now);
-  date.setTime(date.getTime() - offsetMs);
+async function resolveAllRecruiterIds(guild) {
+  if (!guild) return [];
+  const staffRoleIds = [
+    ROLE_IDS.HELPER,
+    ROLE_IDS.HELPER_PLUS,
+    ROLE_IDS.MOD,
+    ROLE_IDS.CHIEF,
+    ROLE_IDS.CHIEF_OF_WAR,
+    ROLE_IDS.CHIEF_OF_COMMUNITY,
+    ROLE_IDS.CHIEF_OF_RECRUITMENT,
+    ROLE_IDS.CO_LEADER,
+    ROLE_IDS.LEADER,
+    ROLE_IDS.HIGH_STAFF
+  ].filter(Boolean);
 
-  const day = date.getUTCDay();
-  const diffToMonday = (day + 6) % 7;
-  const weekStart = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0));
-  weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
-  return weekStart.getTime() + offsetMs;
+  const recruiterRoleIds = [
+    ROLE_IDS.RECRUITER,
+    ROLE_IDS.TRIAL_RECRUITER,
+    ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
+  ].filter(Boolean);
+
+  const ids = new Set();
+  const allRoleIds = [...staffRoleIds, ...recruiterRoleIds];
+
+  for (const roleId of allRoleIds) {
+    try {
+      if (guild.members && typeof guild.members.fetch === 'function') {
+        await guild.members.fetch({ role: roleId }).catch(() => null);
+      }
+    } catch (e) {
+      void e;
+    }
+    const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(roleId) : null;
+    if (role && role.members) {
+      role.members.forEach(m => ids.add(m.id));
+    }
+  }
+
+  return Array.from(ids);
 }
 
 async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
@@ -46,7 +74,7 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
   for (const recruiter of recruiters) {
     const recruiterId = recruiter.id;
     const snapshots = await db.all(
-      'SELECT week_start, recruits7d, calculated_min_req, absent FROM weekly_calculations WHERE recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 3',
+      'SELECT week_start, recruits7d, calculated_min_req, previous_min_req, absent FROM weekly_calculations WHERE recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 3',
       recruiterId
     );
 
@@ -56,7 +84,11 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
 
     const eligible = snapshots.filter(row => !row.absent);
     const misses = eligible.filter(row => {
-      const minReq = Number(row.calculated_min_req || 0);
+      const minReq = Number(
+        row && row.previous_min_req !== null && row.previous_min_req !== undefined
+          ? row.previous_min_req
+          : (row.calculated_min_req || 0)
+      );
       const recruits7d = Number(row.recruits7d || 0);
       return minReq > 0 && recruits7d < minReq;
     });
@@ -67,10 +99,13 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
 
     const latest = eligible[0] || snapshots[0];
     const recruits7d = Number(latest && latest.recruits7d ? latest.recruits7d : 0);
-    const minReq = Number(latest && latest.calculated_min_req ? latest.calculated_min_req : 0);
+    const minReq = Number(
+      latest && latest.previous_min_req !== null && latest.previous_min_req !== undefined
+        ? latest.previous_min_req
+        : (latest && latest.calculated_min_req ? latest.calculated_min_req : 0)
+    );
     const effectiveWeekStart = latest && latest.week_start ? latest.week_start : weekStart;
-    const tier = minReq <= 3 ? 1 : (minReq <= 5 ? 2 : 3);
-    const note = `Quota warning T${tier} week_start=${effectiveWeekStart} recruits=${recruits7d} minReq=${minReq}`;
+    const note = `Quota warning week_start=${effectiveWeekStart}`;
 
     const existing = await db.get(
       'SELECT id FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND note = ? LIMIT 1',
@@ -109,7 +144,7 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
         const watchMsg = activeWarnings >= 2 ? ' You are now on demotion watch.' : '';
         await member.send(
           `⚠️ Recruiter warning: you missed your quota in ${misses.length} of the last 3 weeks. `
-          + `Current week: ${recruits7d}/${minReq}.${watchMsg} If you need help, DM a staffer.`
+          + `Last week: ${recruits7d}/${minReq}.${watchMsg} If you need help, DM a staffer.`
         ).catch(() => { });
       }
     } catch (e) {
@@ -140,7 +175,7 @@ async function recomputeLeaderboards(db, guild) {
     { key: 'NA', channel: CHANNELS.INVITES_NA },
     { key: 'AS', channel: CHANNELS.INVITES_AS }
   ];
-  const since = getWeekStartUtcTs();
+  const weekStart = getWeekStartUtcTs();
   const { upsertLeaderboardMessage, makeLeaderboardText } = require('./lib/messages');
 
   // Ensure member cache is populated so role.members is accurate
@@ -178,7 +213,7 @@ async function recomputeLeaderboards(db, guild) {
       const ids = await db.all(
         'SELECT DISTINCT recruiter_id FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ?',
         rg.key,
-        since
+        weekStart
       );
       (ids || []).forEach(r => allRecruiterIds.add(r.recruiter_id));
     }
@@ -200,7 +235,8 @@ async function recomputeLeaderboards(db, guild) {
         SELECT
           r.id AS recruiter_id,
           COALESCE(c.cnt, 0) AS cnt,
-          COALESCE(db_rec.points, 0) AS points
+          COALESCE(db_rec.points, 0) AS points,
+          wc.calculated_min_req AS min_req
         FROM (${unionSelects}) r
         LEFT JOIN (
           SELECT recruiter_id, COUNT(*) as cnt
@@ -209,14 +245,14 @@ async function recomputeLeaderboards(db, guild) {
           GROUP BY recruiter_id
         ) c ON c.recruiter_id = r.id
         LEFT JOIN recruiters db_rec ON db_rec.id = r.id
+        LEFT JOIN weekly_calculations wc ON wc.recruiter_id = r.id AND wc.week_start = ?
         ORDER BY cnt DESC, points DESC
-      `, ...recruiterMembers, rg.key, since);
-      const enriched = [];
-      for (const r of (rowsBase || [])) {
-        const stats7d = await calculate7DayStats(db, r.recruiter_id, guild).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
-        const previousMinReq = await getPreviousMinReq(db, r.recruiter_id).catch(() => null);
-        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
+      `, ...recruiterMembers, rg.key, weekStart, weekStart);
 
+      const enriched = [];
+      const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+
+      for (const r of (rowsBase || [])) {
         const absence = await db.get(
           'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
           r.recruiter_id
@@ -233,6 +269,7 @@ async function recomputeLeaderboards(db, guild) {
           ? await guild.members.fetch(r.recruiter_id).catch(() => null)
           : null;
         const roleBase = getBaseRequirement(staffMember);
+        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
 
         const isTrialRecruiter = !!staffMember
           && staffMember.roles
@@ -240,18 +277,31 @@ async function recomputeLeaderboards(db, guild) {
           && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)
           && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
-        const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
-          roleBase,
-          member: staffMember,
-          recruits7d: stats7d.recruits7d,
-          activityRate: stats7d.activityRate,
-          verifyRate: stats7d.verifyRate,
-          retention: stats7d.retention,
-          warnings: activeWarnings,
-          previousMinReq,
-          absent: !!absence,
-          isNewStaff: newStaffCheck
-        });
+        let minReq = Number.isFinite(r.min_req) ? Number(r.min_req) : null;
+        let previousMinReq = null;
+        if (minReq == null) {
+          previousMinReq = await getPreviousMinReq(db, r.recruiter_id).catch(() => null);
+          minReq = previousMinReq;
+        }
+        if (minReq == null) {
+          const stats7d = await calculate7DayStats(db, r.recruiter_id, guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+          minReq = calculateMinRecruitsFixed({
+            roleBase,
+            member: staffMember,
+            recruits7d: stats7d.recruits7d,
+            activityRate: stats7d.activityRate,
+            verifyRate: stats7d.verifyRate,
+            retention: stats7d.retention,
+            warnings: activeWarnings,
+            previousMinReq,
+            absent: !!absence,
+            isNewStaff: newStaffCheck
+          });
+        }
+
+        if (isTrialRecruiter) minReq = 3;
+        if (absence) minReq = 0;
+        if (!Number.isFinite(minReq)) minReq = 2;
 
         const systemWarningRow = await db.get(
           'SELECT 1 FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND note LIKE ? LIMIT 1',
@@ -262,8 +312,7 @@ async function recomputeLeaderboards(db, guild) {
 
         enriched.push({
           ...r,
-          recruits7d: stats7d.recruits7d,
-          retention: stats7d.retention,
+          recruits7d: Number(r.cnt || 0),
           minReq,
           absence: !!absence,
           systemWarning: !!systemWarningRow,
@@ -316,13 +365,14 @@ async function recomputeWarningsLeaderboard(db, guild) {
     return;
   }
 
-  const since = getWeekStartUtcTs();
+  const weekStart = getWeekStartUtcTs();
   const unionSelects = recruiterIds.map(() => 'SELECT ? AS id').join(' UNION ALL ');
   const rowsBase = await db.all(`
     SELECT
       r.id AS recruiter_id,
       COALESCE(c.cnt, 0) AS cnt,
-      COALESCE(db_rec.points, 0) AS points
+      COALESCE(db_rec.points, 0) AS points,
+      wc.calculated_min_req AS min_req
     FROM (${unionSelects}) r
     LEFT JOIN (
       SELECT recruiter_id, COUNT(*) as cnt
@@ -331,15 +381,13 @@ async function recomputeWarningsLeaderboard(db, guild) {
       GROUP BY recruiter_id
     ) c ON c.recruiter_id = r.id
     LEFT JOIN recruiters db_rec ON db_rec.id = r.id
+    LEFT JOIN weekly_calculations wc ON wc.recruiter_id = r.id AND wc.week_start = ?
     ORDER BY cnt DESC, points DESC
-  `, ...recruiterIds, since);
+  `, ...recruiterIds, weekStart, weekStart);
 
   const rows = [];
+  const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
   for (const r of rowsBase || []) {
-    const stats7d = await calculate7DayStats(db, r.recruiter_id, guild).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
-    const previousMinReq = await getPreviousMinReq(db, r.recruiter_id).catch(() => null);
-    const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
-
     const absence = await db.get(
       'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
       r.recruiter_id
@@ -357,6 +405,7 @@ async function recomputeWarningsLeaderboard(db, guild) {
       ? await guild.members.fetch(r.recruiter_id).catch(() => null)
       : null;
     const roleBase = getBaseRequirement(staffMember);
+    const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
 
     const systemWarningRow = await db.get(
       'SELECT 1 FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND note LIKE ? LIMIT 1',
@@ -367,24 +416,37 @@ async function recomputeWarningsLeaderboard(db, guild) {
 
     const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
-    const minReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
-      roleBase,
-      member: staffMember,
-      recruits7d: stats7d.recruits7d,
-      activityRate: stats7d.activityRate,
-      verifyRate: stats7d.verifyRate,
-      retention: stats7d.retention,
-      warnings: activeWarnings,
-      previousMinReq,
-      absent: !!absence,
-      isNewStaff: newStaffCheck
-    });
+    let minReq = Number.isFinite(r.min_req) ? Number(r.min_req) : null;
+    let previousMinReq = null;
+    if (minReq == null) {
+      previousMinReq = await getPreviousMinReq(db, r.recruiter_id).catch(() => null);
+      minReq = previousMinReq;
+    }
+    if (minReq == null) {
+      const stats7d = await calculate7DayStats(db, r.recruiter_id, guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+      minReq = calculateMinRecruitsFixed({
+        roleBase,
+        member: staffMember,
+        recruits7d: stats7d.recruits7d,
+        activityRate: stats7d.activityRate,
+        verifyRate: stats7d.verifyRate,
+        retention: stats7d.retention,
+        warnings: activeWarnings,
+        previousMinReq,
+        absent: !!absence,
+        isNewStaff: newStaffCheck
+      });
+    }
+
+    if (isTrialRecruiter) minReq = 3;
+    if (absence) minReq = 0;
+    if (!Number.isFinite(minReq)) minReq = 2;
 
     const warningCount = warningCountMap.get(r.recruiter_id) || activeWarnings;
 
     rows.push({
       ...r,
-      recruits7d: stats7d.recruits7d,
+      recruits7d: Number(r.cnt || 0),
       minReq,
       absence: !!absence,
       systemWarning: !!systemWarningRow,
@@ -426,12 +488,25 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
       }
     }
 
-    const recruiters = await db.all('SELECT id FROM recruiters');
     const guild = await resolveGuild(client);
+    let recruiterIds = guild ? await resolveAllRecruiterIds(guild) : [];
+    if (!recruiterIds.length) {
+      const rows = await db.all('SELECT id FROM recruiters');
+      recruiterIds = (rows || []).map(r => r.id);
+    }
+    const recruiters = Array.from(new Set(recruiterIds)).map(id => ({ id }));
+    const lastWeekStart = weekStart - (7 * 24 * 60 * 60 * 1000);
+    const statsWindow = { sinceTs: lastWeekStart, untilTs: weekStart };
 
     for (const recruiter of recruiters) {
-      const currentStats = await calculate7DayStats(db, recruiter.id, guild || null);
-      const previousMinReq = await getPreviousMinReq(db, recruiter.id);
+      await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', recruiter.id);
+      const currentStats = await calculate7DayStats(db, recruiter.id, guild || null, statsWindow);
+      const prevMinRow = await db.get(
+        'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
+        recruiter.id,
+        weekStart
+      );
+      const previousMinReq = prevMinRow ? prevMinRow.calculated_min_req : null;
 
       let newStaffCheck = false;
       try {
@@ -525,17 +600,11 @@ function start(client, db) {
     await reconcileTrialRecruiters(db, client).catch((e) => console.error('reconcileTrialRecruiters failed:', e));
     await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
 
-    try {
-      await maybeRunScheduledReview({ client });
-    } catch (e) {
-      console.error('Scheduled AI review startup check failed:', e);
-    }
-
     // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
     // Sanity Window: Only catch up if we are within 24 hours of the scheduled time.
     // This prevents a Monday reset from triggering on a Sunday.
     try {
-      const weekStart = getWeekStartUtcTs(); // Uses default 5m offset
+      const weekStart = getWeekStartUtcTs();
       const snapKey = `weekly_snapshot_${weekStart}`;
       const existing = await db.get('SELECT key FROM system_events WHERE key = ?', snapKey);
 
@@ -571,18 +640,6 @@ function start(client, db) {
   // Cron: Monday at 00:05 UTC - Weekly MinReq and stats snapshot (5 minutes after recalculation)
   cron.schedule('5 0 * * 1', async () => {
     await runWeeklySnapshotAndReset(db, client);
-  }, {
-    scheduled: true,
-    timezone: 'UTC'
-  });
-
-  // AI review check every 6 hours (gated to 72h intervals)
-  cron.schedule('0 */6 * * *', async () => {
-    try {
-      await maybeRunScheduledReview({ client });
-    } catch (error) {
-      console.error('AI review schedule failed:', error);
-    }
   }, {
     scheduled: true,
     timezone: 'UTC'

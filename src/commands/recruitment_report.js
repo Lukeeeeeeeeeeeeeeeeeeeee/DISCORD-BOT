@@ -10,6 +10,7 @@ const {
 } = require('../lib/recruiting-system');
 const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_INFO } = require('../constants');
 const { formatPointsValue } = require('../lib/economy');
+const { getWeekStartUtcTs } = require('../lib/week');
 
 // Team mappings
 const TEAM_INFO = {
@@ -93,18 +94,19 @@ function calculatePerformanceScore({ recruits7d, avgRecruitsWeek, minReq, verify
 }
 
 /**
- * Categories based on performance score:
- * FAILING: score < 0.5 OR warnings >= 2
- * ATTENTION: 0.5 <= score < 0.8
- * PASSING: 0.8 <= score < 1.2
- * SUCCEEDING: score >= 1.2 AND recruits > minReq
+ * Categories based on relative performance (percentiles):
+ * FAILING: bottom 20% OR warnings >= 2
+ * ATTENTION: 20-40%
+ * PASSING: 40-80%
+ * SUCCEEDING: top 20% (and meeting minReq)
  */
-function getPerformanceCategory({ score, warnings, recruits7d, minReq, absent }) {
+function getPerformanceCategory({ percentile, warnings, recruits7d, minReq, absent }) {
   if (absent) return { bucket: 'ABSENT', label: '🏖️ Absent', color: 0x808080 };
   if (warnings >= 2) return { bucket: 'FAILING', label: '❌ Failing', color: 0xFF0000 };
-  if (score < 0.5) return { bucket: 'FAILING', label: '❌ Failing', color: 0xFF0000 };
-  if (score < 0.8) return { bucket: 'ATTENTION', label: '⚠️ Attention', color: 0xFFA500 };
-  if (score >= 1.2 && recruits7d >= minReq) return { bucket: 'SUCCEEDING', label: '🌟 Succeeding', color: 0x00FF00 };
+  const p = Number.isFinite(percentile) ? percentile : 0.5;
+  if (p < 0.2) return { bucket: 'FAILING', label: '❌ Failing', color: 0xFF0000 };
+  if (p < 0.4) return { bucket: 'ATTENTION', label: '⚠️ Attention', color: 0xFFA500 };
+  if (p >= 0.8 && (recruits7d || 0) >= (minReq || 0)) return { bucket: 'SUCCEEDING', label: '🌟 Succeeding', color: 0x00FF00 };
   return { bucket: 'PASSING', label: '✅ Passing', color: 0x00AAFF };
 }
 
@@ -182,13 +184,15 @@ module.exports = {
       return interaction.editReply({ content: `No recruiters found for ${team}.` });
     }
 
+    const weekStart = getWeekStartUtcTs();
+    const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+
     const results = [];
 
     for (const id of recruiterIds) {
       const member = await interaction.guild.members.fetch(id).catch(() => null);
 
-      const stats7d = await calculate7DayStats(db, id, interaction.guild).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
-      const previousMinReq = await getPreviousMinReq(db, id).catch(() => null);
+      const stats7d = await calculate7DayStats(db, id, interaction.guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
       const avgRecruitsWeek = await getAverageWeeklyRecruits(db, id).catch(() => 0);
 
       const absence = await db.get(
@@ -208,9 +212,21 @@ module.exports = {
       const roleBase = getBaseRequirement(member);
       const isTrialRecruiter = !!member && !!member.roles && !!member.roles.cache && member.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !member.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
-      const minReq = isTrialRecruiter
-        ? 3
-        : calculateMinRecruitsFixed({
+      const weekCalc = await db.get(
+        'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? AND week_start = ? LIMIT 1',
+        id,
+        weekStart
+      ).catch(() => null);
+
+      let minReq = weekCalc && weekCalc.calculated_min_req != null ? Number(weekCalc.calculated_min_req) : null;
+      let previousMinReq = null;
+      if (minReq == null) {
+        previousMinReq = await getPreviousMinReq(db, id).catch(() => null);
+        minReq = previousMinReq;
+      }
+
+      if (minReq == null) {
+        minReq = calculateMinRecruitsFixed({
           roleBase,
           member,
           recruits7d: stats7d.recruits7d,
@@ -222,6 +238,11 @@ module.exports = {
           absent: !!absence,
           isNewStaff: newStaffCheck
         });
+      }
+
+      if (isTrialRecruiter) minReq = 3;
+      if (absence) minReq = 0;
+      if (!Number.isFinite(minReq)) minReq = 2;
 
       const score = calculatePerformanceScore({
         recruits7d: stats7d.recruits7d,
@@ -230,14 +251,6 @@ module.exports = {
         verifyRate: stats7d.verifyRate,
         retention: stats7d.retention,
         warnings: activeWarnings
-      });
-
-      const category = getPerformanceCategory({
-        score,
-        warnings: activeWarnings,
-        recruits7d: stats7d.recruits7d,
-        minReq,
-        absent: !!absence
       });
 
       const recruiterRow = await db.get('SELECT points FROM recruiters WHERE id = ?', id).catch(() => null);
@@ -253,9 +266,39 @@ module.exports = {
         minReq,
         activeWarnings,
         score,
-        category,
-        points
+        category: null,
+        points,
+        absent: !!absence
       });
+    }
+
+    const scores = results.filter(r => !r.absent).map(r => r.score).sort((a, b) => a - b);
+    const percentileFor = (score) => {
+      if (!scores.length) return 0.5;
+      let below = 0;
+      let equal = 0;
+      for (const s of scores) {
+        if (s < score - 1e-9) {
+          below++;
+        } else if (Math.abs(s - score) <= 1e-9) {
+          equal++;
+        } else {
+          break;
+        }
+      }
+      return (below + (equal / 2)) / scores.length;
+    };
+
+    for (const r of results) {
+      const percentile = r.absent ? null : percentileFor(r.score);
+      r.category = getPerformanceCategory({
+        percentile,
+        warnings: r.activeWarnings,
+        recruits7d: r.recruits7d,
+        minReq: r.minReq,
+        absent: r.absent
+      });
+      r.percentile = percentile;
     }
 
     // Define buckets in display order
@@ -292,7 +335,7 @@ module.exports = {
     const embed = new EmbedBuilder()
       .setTitle(`📊 Recruitment Report - ${teamLabel}`)
       .setColor(0x00AAFF)
-      .setDescription('Performance based on: recruits (40%), verify rate (25%), retention (20%), warnings penalty (15%)')
+      .setDescription('Performance score: recruits (40%), verify rate (25%), retention (20%), warnings penalty (15%). Buckets are relative percentiles (warnings/absence override).')
       .setTimestamp();
 
     let fieldCount = 0;

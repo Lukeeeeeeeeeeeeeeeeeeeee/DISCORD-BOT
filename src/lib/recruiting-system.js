@@ -1,4 +1,4 @@
-const { ROLE_IDS } = require('../constants');
+const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 const { hasAdministrator } = require('./permissions');
 
 // Role hierarchy for permissions
@@ -43,6 +43,7 @@ const PROGRESSION_RATE = 0.5;
 const PROGRESSION_MAX = 1.5;
 const BASE_MAX_DELTA_UP = 2;
 const BASE_MAX_DELTA_DOWN = 1;
+const NEW_RECRUITER_GRACE_DAYS = 14;
 
 /**
  * Get role hierarchy level for a user
@@ -88,7 +89,37 @@ function hasModPlusPermissions(member) {
   return getRoleLevel(member) >= 2;
 }
 
-async function isNewStaff(db, recruiterId) {
+async function isNewStaff(db, recruiterId, opts = {}) {
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  try {
+    const recruiterRoleIds = [
+      ROLE_IDS.RECRUITER,
+      ROLE_IDS.TRIAL_RECRUITER,
+      ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
+    ].filter(Boolean);
+
+    if (recruiterRoleIds.length) {
+      const placeholders = recruiterRoleIds.map(() => '?').join(', ');
+      const row = await db.get(
+        `SELECT MAX(created_at) as last_added
+         FROM analytics_role_changes
+         WHERE user_id = ? AND action = 'added' AND role_id IN (${placeholders})`,
+        recruiterId,
+        ...recruiterRoleIds
+      );
+      if (row && row.last_added) {
+        const ageMs = now - Number(row.last_added);
+        const graceMs = NEW_RECRUITER_GRACE_DAYS * 24 * 60 * 60 * 1000;
+        if (ageMs >= 0 && ageMs <= graceMs) return true;
+      }
+    }
+  } catch (error) {
+    const msg = (error && error.message) ? String(error.message) : '';
+    if (!msg.toLowerCase().includes('no such table: analytics_role_changes')) {
+      console.error('Error checking recruiter start date:', error);
+    }
+  }
+
   try {
     const calculationCount = await db.get(
       'SELECT COUNT(*) as c FROM weekly_calculations WHERE recruiter_id = ?',
@@ -126,6 +157,11 @@ function calculateMinRecruitsFixed({
 
   if (absent) {
     return 0;
+  }
+
+  if (isNewStaff) {
+    const floor = roleLevel >= 2 ? 3 : 2;
+    return Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, floor));
   }
 
   const safeRecruits = Number.isFinite(recruits7d) ? recruits7d : 0;
@@ -192,16 +228,21 @@ function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, ab
  * @param {string} recruiterId - Recruiter Discord ID
  * @returns {Object} - Activity and retention data
  */
-async function calculate7DayStats(db, recruiterId, guild = null) {
-  const now = Date.now();
-  const sevenDaysAgo = now - (7 * 24 * 60 * 60 * 1000);
-  const fourteenDaysAgo = now - (14 * 24 * 60 * 60 * 1000);
+async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
+  const windowEnd = Number.isFinite(opts.untilTs) ? opts.untilTs : Date.now();
+  const windowStart = Number.isFinite(opts.sinceTs)
+    ? opts.sinceTs
+    : (windowEnd - (7 * 24 * 60 * 60 * 1000));
+  const retentionEnd = Number.isFinite(opts.retentionEndTs) ? opts.retentionEndTs : windowStart;
+  const retentionStart = Number.isFinite(opts.retentionStartTs)
+    ? opts.retentionStartTs
+    : (retentionEnd - (7 * 24 * 60 * 60 * 1000));
 
   try {
     // Get recruits from last 7 days
     const recentRecruits = await db.all(
-      'SELECT * FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND valid = 1 ORDER BY created_at DESC',
-      recruiterId, sevenDaysAgo
+      'SELECT * FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC',
+      recruiterId, windowStart, windowEnd
     );
 
     const recruits7d = recentRecruits.length;
@@ -210,9 +251,10 @@ async function calculate7DayStats(db, recruiterId, guild = null) {
     let verifyRate = 0;
     try {
       const verifiedRow = await db.get(
-        'SELECT COUNT(*) as c FROM recruits r INNER JOIN verifications v ON v.recruited_id = r.recruited_id WHERE r.recruiter_id = ? AND r.created_at >= ? AND r.valid = 1',
+        'SELECT COUNT(*) as c FROM recruits r INNER JOIN verifications v ON v.recruited_id = r.recruited_id WHERE r.recruiter_id = ? AND r.created_at >= ? AND r.created_at < ? AND r.valid = 1',
         recruiterId,
-        sevenDaysAgo
+        windowStart,
+        windowEnd
       );
       const verified7d = verifiedRow ? Number(verifiedRow.c || 0) : 0;
       verifyRate = recruits7d > 0 ? (verified7d / recruits7d) : 0;
@@ -225,7 +267,7 @@ async function calculate7DayStats(db, recruiterId, guild = null) {
     if (guild) {
       const retentionCohort = await db.all(
         'SELECT recruited_id FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC',
-        recruiterId, fourteenDaysAgo, sevenDaysAgo
+        recruiterId, retentionStart, retentionEnd
       );
 
       const cohortSize = retentionCohort.length;

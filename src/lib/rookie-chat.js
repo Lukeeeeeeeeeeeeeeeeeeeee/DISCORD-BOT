@@ -1,16 +1,9 @@
 const { CHANNELS, ROLE_IDS } = require('../constants');
 const { addRookiePoints, formatPoints } = require('./rookie-points');
+const { getWeekStartUtcTs } = require('./week');
 
 const CHAT_MESSAGES_PER_BLOCK = 105;
 const CHAT_POINTS_PER_BLOCK = 1.5;
-
-function getWeekStartUtcTs(now = new Date()) {
-  const day = now.getUTCDay();
-  const diffToMonday = (day + 6) % 7;
-  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
-  weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
-  return weekStart.getTime();
-}
 
 async function trackRookieChatMessage({ db, member, guild, client }) {
   if (!db || !member || !guild) return;

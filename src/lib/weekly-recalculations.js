@@ -1,5 +1,6 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
+const { getWeekStartUtcTs } = require('./week');
 const { 
   calculate7DayStats, 
   getPreviousMinReq, 
@@ -10,14 +11,6 @@ const {
   getRoleLevel
 } = require('../lib/recruiting-system');
 const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
-
-function getWeekStartUtcTs(now = new Date()) {
-  const day = now.getUTCDay();
-  const diffToMonday = (day + 6) % 7;
-  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
-  weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
-  return weekStart.getTime();
-}
 
 /**
  * Perform weekly recalculation for all recruiters
@@ -139,9 +132,6 @@ async function performWeeklyRecalculations(guild) {
         if (roleLevel > 0) {
           // Send DM notification
           await sendWeeklyRecalculationDM(result);
-
-          // Post minReq and retention to invite channels
-          await postRetentionToInviteChannels(guild, result);
         }
 
       } catch (error) {
@@ -318,7 +308,6 @@ async function handleExpiredAbsences(guild) {
 module.exports = {
   performWeeklyRecalculations,
   sendWeeklyRecalculationDM,
-  postRetentionToInviteChannels,
   handleExpiredAbsences,
   isNewStaff
 };

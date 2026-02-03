@@ -40,9 +40,6 @@ const commands = [
     .addUserOption(opt => opt.setName('member').setDescription('Rookie to promote').setRequired(true)),
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
     .addUserOption(opt => opt.setName('member').setDescription('Member to check').setRequired(true)),
-  new SlashCommandBuilder().setName('ai').setDescription('AI analytics and reviews')
-    .addSubcommand(sub => sub.setName('review').setDescription('Run a deep AI review of server activity')
-      .addChannelOption(opt => opt.setName('channel').setDescription('Channel to post the report').setRequired(false))),
   new SlashCommandBuilder()
     .setName('dm')
     .setDescription('DM members of a role or everyone (admin only). Use preview to test.')
