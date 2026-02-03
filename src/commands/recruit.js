@@ -3,6 +3,7 @@ const db = require('../db_async');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../lib/economy');
 
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
+const { getWeekStartUtcTs } = require('../lib/week');
 
 function inferTeamFromRecruiter(member) {
   if (!member || !member.roles || !member.roles.cache || typeof member.roles.cache.has !== 'function') return null;
@@ -75,7 +76,9 @@ Wishing you good luck and once again welcoming you to Solace `;
 
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
   try {
-    const currentStats = await calculate7DayStats(db, recruiterMember.id);
+    const weekStart = getWeekStartUtcTs();
+    const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+    const currentStats = await calculate7DayStats(db, recruiterMember.id, guild || null, statsWindow);
 
     const warnings = await db.get(
       'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
@@ -102,6 +105,7 @@ async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
 
     await storeWeeklyCalculation(db, {
       recruiterId: recruiterMember.id,
+      weekStart,
       recruits7d: currentStats.recruits7d,
       activityRate: currentStats.activityRate,
       verifyRate: currentStats.verifyRate,

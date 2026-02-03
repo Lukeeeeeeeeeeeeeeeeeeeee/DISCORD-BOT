@@ -10,6 +10,10 @@ async function init() {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const db = await open({ filename: DB_PATH, driver: sqlite3.Database });
+  // Reduce "database is locked" errors under concurrent access.
+  try { await db.exec('PRAGMA journal_mode = WAL'); } catch (e) { void e; }
+  try { await db.exec('PRAGMA synchronous = NORMAL'); } catch (e) { void e; }
+  try { await db.exec('PRAGMA busy_timeout = 5000'); } catch (e) { void e; }
 
   // Create schema if not exists
   await db.exec(`
@@ -236,24 +240,6 @@ async function init() {
     created_at INTEGER NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS analytics_ai_reports (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at INTEGER NOT NULL,
-    guild_id TEXT NOT NULL,
-    channel_id TEXT NOT NULL,
-    summary TEXT,
-    full_report TEXT,
-    facts_json TEXT,
-    model TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS analytics_guide_embeddings (
-    id TEXT PRIMARY KEY,
-    chunk_title TEXT,
-    chunk_text TEXT NOT NULL,
-    embedding_json TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
   `);
 
   try {

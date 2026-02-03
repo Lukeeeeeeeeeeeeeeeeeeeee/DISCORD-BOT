@@ -26,6 +26,16 @@ module.exports = {
       return interaction.reply({ content: 'That member is not in this server.' });
     }
 
+    const endDateRaw = interaction.options.getString('date');
+    if (!endDateRaw) {
+      return interaction.reply({ content: 'Missing required date. Please use YYYY-MM-DD.' });
+    }
+
+    // Basic YYYY-MM-DD validation before parsing.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(endDateRaw)) {
+      return interaction.reply({ content: 'Invalid date. Please use YYYY-MM-DD format.' });
+    }
+
     const dayjs = require('dayjs');
     const parsedDate = dayjs(endDateRaw);
 
@@ -34,19 +44,12 @@ module.exports = {
     }
 
     const endDate = parsedDate.format('YYYY-MM-DD');
-    const absenceDate = parsedDate.toDate();
-
     const todayStart = dayjs().startOf('day');
-    if (parsedDate.isBefore(todayStart)) {
+    if (!parsedDate.isAfter(todayStart)) {
       return interaction.reply({ content: 'Absence date must be in the future.' });
     }
 
     const todayStr = new Date().toISOString().split('T')[0];
-
-    // Must be future date
-    if (absenceDate <= today) {
-      return interaction.reply({ content: 'Absence date must be in the future.' });
-    }
 
     // Check for existing active absence
     try {

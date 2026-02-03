@@ -11,6 +11,7 @@ const {
   isNewStaff,
   getRecruiterStatus
 } = require('../lib/recruiting-system');
+const { getWeekStartUtcTs } = require('../lib/week');
 
 function toUnixSeconds(ms) {
   return Math.floor(ms / 1000);
@@ -324,9 +325,10 @@ module.exports = {
       const recentFlags = await db.all('SELECT * FROM flags WHERE recruiter_id = ? ORDER BY created_at DESC LIMIT 5', member.id);
       const recentWarnings = await db.all('SELECT * FROM warnings WHERE recruiter_id = ? ORDER BY created_at DESC LIMIT 5', member.id);
 
-      // Get 7-day stats using new system
-      const stats7d = await calculate7DayStats(db, member.id);
-      const previousMinReq = await getPreviousMinReq(db, member.id);
+      // Get 7-day stats using current week window
+      const weekStart = getWeekStartUtcTs();
+      const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+      const stats7d = await calculate7DayStats(db, member.id, interaction.guild, statsWindow);
       const avgRecruitsWeek = await getAverageWeeklyRecruits(db, member.id);
       const avgRecruitsDisplay = Number.isFinite(avgRecruitsWeek)
         ? String(avgRecruitsWeek).replace(/\.0$/, '')
@@ -356,9 +358,21 @@ module.exports = {
 
       const isTrialRecruiter = !!targetMember && targetMember.roles.cache.has(require('../constants').ROLE_IDS.TRIAL_RECRUITER) && !targetMember.roles.cache.has(require('../constants').ROLE_IDS.AUTO_PROMOTE_ROLE);
 
-      const minReq = isTrialRecruiter
-        ? 3
-        : calculateMinRecruitsFixed({
+      const weekCalc = await db.get(
+        'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? AND week_start = ? LIMIT 1',
+        member.id,
+        weekStart
+      ).catch(() => null);
+
+      let minReq = weekCalc && weekCalc.calculated_min_req != null ? Number(weekCalc.calculated_min_req) : null;
+      let previousMinReq = null;
+      if (minReq == null) {
+        previousMinReq = await getPreviousMinReq(db, member.id);
+        minReq = previousMinReq;
+      }
+
+      if (minReq == null) {
+        minReq = calculateMinRecruitsFixed({
           roleBase,
           member: targetMember,
           recruits7d: stats7d.recruits7d,
@@ -370,6 +384,11 @@ module.exports = {
           absent: !!absence,
           isNewStaff: newStaffCheck
         });
+      }
+
+      if (isTrialRecruiter) minReq = 3;
+      if (absence) minReq = 0;
+      if (!Number.isFinite(minReq)) minReq = 2;
 
       const recentText = recruits.length
         ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT', '')}) — ${formatPointsValue(r.points || 0)} pts`).join('\n')
@@ -603,6 +622,7 @@ module.exports = {
         await db.run('BEGIN TRANSACTION');
         try {
           await db.run('INSERT INTO warnings (recruiter_id, created_at, note, expired_at) VALUES (?, ?, ?, ?)', member.id, createdAt, note, expiredAt);
+          await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', member.id);
           await db.run('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?', member.id);
           await db.run('COMMIT');
         } catch (e) {
@@ -673,62 +693,16 @@ module.exports = {
           }
 
           await db.run('UPDATE warnings SET revoked = 1 WHERE id = ? AND recruiter_id = ?', warningId, member.id);
-
-          // DM the user about warning revocation
-          try {
-            const { EmbedBuilder } = require('discord.js');
-            const revokeEmbed = new EmbedBuilder()
-              .setTitle('✅ Warning Revoked')
-              .setDescription(`Warning #${warningId} has been revoked by <@${interaction.user.id}>`)
-              .addFields(
-                { name: 'Original Reason', value: warning.note || 'No reason provided', inline: true },
-                { name: 'Revoked By', value: `<@${interaction.user.id}>`, inline: true }
-              )
-              .setColor(0x00CC66)
-              .setTimestamp();
-            const warnedMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-            if (warnedMember) await warnedMember.send({ embeds: [revokeEmbed] }).catch(() => { });
-          } catch (e) {
-            console.error('Failed to DM warning revocation:', e);
-          }
         } else {
           // Revoke all warnings for this recruiter
           await db.run('UPDATE warnings SET revoked = 1 WHERE recruiter_id = ?', member.id);
-
-          // DM the user about all warnings being revoked
-          try {
-            const { EmbedBuilder } = require('discord.js');
-            const revokeEmbed = new EmbedBuilder()
-              .setTitle('✅ All Warnings Revoked')
-              .setDescription(`All your warnings have been revoked by <@${interaction.user.id}>`)
-              .setColor(0x00CC66)
-              .setTimestamp();
-            const warnedMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-            if (warnedMember) await warnedMember.send({ embeds: [revokeEmbed] }).catch(() => { });
-          } catch (e) {
-            console.error('Failed to DM warning revocation:', e);
-          }
         }
 
         // Recompute warnings count
         const cntRow = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', member.id, Date.now());
         const active = cntRow ? cntRow.c : 0;
+        await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', member.id);
         await db.run('UPDATE recruiters SET warnings = ? WHERE id = ?', active, member.id);
-
-        // Notify staff channel
-        const { EmbedBuilder } = require('discord.js');
-        const ch = interaction.guild.channels.cache.get(require('../constants').CHANNELS.RECRUITER_WARNINGS);
-        if (ch) {
-          const embed = new EmbedBuilder()
-            .setTitle('🧾 Warning Revoked')
-            .setDescription(`<@${member.id}> has had ${warningId ? `warning #${warningId}` : 'all warnings'} revoked by <@${interaction.user.id}>`)
-            .addFields(
-              { name: 'Active Warnings Remaining', value: `${active}`, inline: true }
-            )
-            .setColor(0x00CC66)
-            .setTimestamp();
-          ch.send({ embeds: [embed] }).catch(() => { });
-        }
 
         // Update leaderboards
         try {

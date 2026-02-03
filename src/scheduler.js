@@ -169,7 +169,10 @@ function formatLeaderboardMessage(rows, regionLabel) {
   return `# ${teamName} Leaderboard\n\n` + lines.join('\n');
 }
 
-async function recomputeLeaderboards(db, guild) {
+let leaderboardsInFlight = null;
+let warningsInFlight = null;
+
+async function recomputeLeaderboardsInternal(db, guild) {
   const regions = [
     { key: 'EU', channel: CHANNELS.INVITES_EU },
     { key: 'NA', channel: CHANNELS.INVITES_NA },
@@ -344,13 +347,42 @@ async function recomputeLeaderboards(db, guild) {
   }
 }
 
-async function recomputeWarningsLeaderboard(db, guild) {
+async function recomputeLeaderboards(db, guild) {
+  if (leaderboardsInFlight) return leaderboardsInFlight;
+  leaderboardsInFlight = recomputeLeaderboardsInternal(db, guild);
+  try {
+    return await leaderboardsInFlight;
+  } finally {
+    leaderboardsInFlight = null;
+  }
+}
+
+async function recomputeWarningsLeaderboardInternal(db, guild) {
   if (!db || !guild) return;
   const { upsertLeaderboardMessage, makeDemotionWatchText } = require('./lib/messages');
   const channel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
     ? guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS)
     : null;
   if (!channel) return;
+
+  try {
+    const existing = await db.get(
+      'SELECT id FROM leaderboard_messages WHERE channel_id = ? AND region = ?',
+      channel.id,
+      'WARNINGS'
+    );
+    if (!existing) {
+      const legacy = await db.get(
+        'SELECT id FROM leaderboard_messages WHERE channel_id = ? AND (region IS NULL OR region = "") ORDER BY id DESC LIMIT 1',
+        channel.id
+      );
+      if (legacy && legacy.id) {
+        await db.run('UPDATE leaderboard_messages SET region = ? WHERE id = ?', 'WARNINGS', legacy.id);
+      }
+    }
+  } catch (e) {
+    console.error('Failed to reconcile warnings leaderboard record:', e);
+  }
 
   const warningRows = await db.all(
     'SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id HAVING cnt >= 2 ORDER BY cnt DESC',
@@ -457,6 +489,16 @@ async function recomputeWarningsLeaderboard(db, guild) {
 
   const text = makeDemotionWatchText(rows);
   await upsertLeaderboardMessage(db, channel, 'WARNINGS', text);
+}
+
+async function recomputeWarningsLeaderboard(db, guild) {
+  if (warningsInFlight) return warningsInFlight;
+  warningsInFlight = recomputeWarningsLeaderboardInternal(db, guild);
+  try {
+    return await warningsInFlight;
+  } finally {
+    warningsInFlight = null;
+  }
 }
 
 async function reconcileTrialRecruiters(_db, _client) {
