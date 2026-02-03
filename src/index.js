@@ -84,7 +84,7 @@ function onReady() {
   }
 }
 // Use the ready event to start schedulers and subsystems once the client is online.
-client.once('clientReady', onReady);
+client.once('ready', onReady);
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;

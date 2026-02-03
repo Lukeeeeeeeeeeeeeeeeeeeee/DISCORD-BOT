@@ -149,7 +149,8 @@ if (require.main === module) {
       const rawArgs = process.argv.slice(2);
       const useGlobal = rawArgs.includes('--global');
       const guildArgIndex = rawArgs.findIndex(a => a === '--guild');
-      const guildId = guildArgIndex !== -1 ? rawArgs[guildArgIndex + 1] : (process.env.GUILD_ID || null);
+      const { GUILD_ID } = require('./constants');
+      const guildId = guildArgIndex !== -1 ? rawArgs[guildArgIndex + 1] : (process.env.GUILD_ID || GUILD_ID || null);
       await registerCommands({ guildId, global: useGlobal });
     } catch (error) {
       if (error && error.message && error.message.includes('DISCORD_TOKEN missing')) {
