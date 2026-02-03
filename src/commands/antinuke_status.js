@@ -28,8 +28,14 @@ module.exports = {
       if (ms % 60000 === 0) return `${ms / 60000}m`;
       return `${Math.round(ms / 1000)}s`;
     };
-    const emergencyThresholds = Array.isArray(antiNuke.THRESHOLDS?.emergency)
-      ? antiNuke.THRESHOLDS.emergency
+    const scaled = typeof antiNuke.getScaledThresholds === 'function'
+      ? antiNuke.getScaledThresholds(interaction.guild.id)
+      : null;
+    const thresholds = scaled && scaled.thresholds ? scaled.thresholds : antiNuke.THRESHOLDS;
+    const scaleLabel = scaled ? `${scaled.scale}x` : 'N/A';
+    const beastWindow = formatWindow(status.beastModeWindow || antiNuke.BEAST_MODE_WINDOW);
+    const emergencyThresholds = Array.isArray(thresholds?.emergency)
+      ? thresholds.emergency
         .map((t) => `• ${t.count} bans in ${formatWindow(t.time)}`)
         .join('\n')
       : 'No emergency thresholds configured.';
@@ -50,14 +56,14 @@ module.exports = {
         },
         { 
           name: '⚙️ Configuration', 
-          value: `• Emergency Mode: ${status.isEmergency ? '🔴 ACTIVE' : '🟢 Normal'}\n• Emergency Lockdown Until: ${emergencyUntil}\n• Log Channel: ${status.logChannel ? `<#${status.logChannel}>` : '❌ Not Set'}\n• Backup Available: ${status.hasBackup ? '✅ Yes' : '❌ No'}\n• Backup ID: ${status.backupId || 'N/A'}\n• Backup Encrypted: ${status.backupEncrypted ? '✅ Yes' : '❌ No'}\n• Beast Mode Window: 24h`, 
+          value: `• Emergency Mode: ${status.isEmergency ? '🔴 ACTIVE' : '🟢 Normal'}\n• Emergency Lockdown Until: ${emergencyUntil}\n• Log Channel: ${status.logChannel ? `<#${status.logChannel}>` : '❌ Not Set'}\n• Backup Available: ${status.hasBackup ? '✅ Yes' : '❌ No'}\n• Backup ID: ${status.backupId || 'N/A'}\n• Backup Encrypted: ${status.backupEncrypted ? '✅ Yes' : '❌ No'}\n• Beast Mode Window: ${beastWindow}\n• Threshold Scale: ${scaleLabel}\n• Member Count: ${status.memberCount || 'N/A'}`,
           inline: true 
         }
       )
       .addFields(
         {
           name: '🚨 Protection Features',
-          value: '✅ Ban Protection\n✅ Kick Protection\n✅ Channel/Role Deletion Protection\n✅ Member Prune Protection\n✅ Bot Addition Protection\n✅ Webhook Spam Protection\n✅ Emergency Mode\n✅ Beast Mode (24h rolling)\n✅ Whitelist Approvals\n✅ Backup & Recovery',
+          value: '✅ Ban Protection\n✅ Kick Protection\n✅ Channel/Role Deletion Protection\n✅ Member Prune Protection\n✅ Bot Addition Protection\n✅ Webhook Spam Protection\n✅ Emergency Mode\n✅ Beast Mode (rolling)\n✅ Whitelist Approvals\n✅ Backup & Recovery',
           inline: false
         },
         {
@@ -77,3 +83,5 @@ module.exports = {
     return interaction.reply({ embeds: [embed] });
   }
 };
+
+

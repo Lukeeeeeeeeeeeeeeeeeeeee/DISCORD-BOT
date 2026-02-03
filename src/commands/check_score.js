@@ -29,6 +29,13 @@ module.exports = {
       });
     }
 
+    const formatWindow = (ms) => {
+      if (!ms && ms !== 0) return 'unknown';
+      if (ms % 3600000 === 0) return `${ms / 3600000}h`;
+      if (ms % 60000 === 0) return `${ms / 60000}m`;
+      return `${Math.round(ms / 1000)}s`;
+    };
+    const windowLabel = formatWindow(antiNuke.BEAST_MODE_WINDOW || (24 * 60 * 60 * 1000));
     const user = interaction.options.getUser('user');
     const score = antiNuke.getUserScore(interaction.guild.id, user.id);
     const isWhitelisted = antiNuke.isWhitelisted(user.id);
@@ -98,13 +105,13 @@ module.exports = {
         },
         {
           name: '🕒 Window',
-          value: 'Last 24 hours',
+          value: `Last ${windowLabel}`,
           inline: true
         }
       )
       .addFields(
         {
-          name: '📋 Recent Actions (24h)',
+          name: `📋 Recent Actions (${windowLabel})`,
           value: recentLines.join('\n'),
           inline: false
         }

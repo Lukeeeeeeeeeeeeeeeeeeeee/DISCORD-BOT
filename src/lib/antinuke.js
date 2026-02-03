@@ -16,23 +16,30 @@ class AntiNuke {
     this.OWNER_ID = '1381692847018868778';
     this.LOG_DM_ID = '1262471979215355969';
 
-    // Protection thresholds
+    // Protection thresholds (base values; per-guild scaling is applied at runtime)
     this.THRESHOLDS = {
-      ban: { count: 4, time: 2500, stackCount: 8, stackTime: 3000 },
-      kick: { count: 4, time: 2500 },
-      channelDelete: { count: 4, time: 2500 },
-      roleDelete: { count: 3, time: 5000 },
-      webhookCreate: { count: 5, time: 10000 },
+      ban: { count: 3, time: 2500, stackCount: 6, stackTime: 2500 },
+      kick: { count: 3, time: 2500 },
+      channelDelete: { count: 3, time: 2500 },
+      roleDelete: { count: 2, time: 4000 },
+      webhookCreate: { count: 4, time: 10000 },
       emergency: [
-        { count: 10, time: 10000 },
-        { count: 20, time: 30000 },
-        { count: 30, time: 300000 },
-        { count: 50, time: 600000 },
-        { count: 75, time: 1800000 },
-        { count: 100, time: 3600000 }
+        { count: 8, time: 10000 },
+        { count: 16, time: 30000 },
+        { count: 25, time: 300000 },
+        { count: 40, time: 600000 },
+        { count: 60, time: 1800000 },
+        { count: 80, time: 3600000 }
       ],
-      massBanLockdown: { count: 100, time: 3600000 }
+      massBanLockdown: { count: 80, time: 3600000 }
     };
+    // Scale thresholds up for larger servers to keep fairness while staying strict on smaller servers.
+    this.THRESHOLD_SCALES = [
+      { minMembers: 15000, scale: 1.5 },
+      { minMembers: 8000, scale: 1.35 },
+      { minMembers: 3000, scale: 1.2 },
+      { minMembers: 1000, scale: 1.1 }
+    ];
 
     // Beast mode settings
     this.BEAST_MODE_THRESHOLD = 40;
@@ -804,6 +811,60 @@ class AntiNuke {
     this.rapidActionTimers.set(key, timer);
   }
 
+  getGuildMemberCount(guildId) {
+    const guild = this.client && this.client.guilds && this.client.guilds.cache
+      ? this.client.guilds.cache.get(guildId)
+      : null;
+    if (!guild) return null;
+    if (Number.isFinite(guild.memberCount)) return guild.memberCount;
+    if (guild.members && guild.members.cache && Number.isFinite(guild.members.cache.size)) {
+      return guild.members.cache.size;
+    }
+    return null;
+  }
+
+  getThresholdScale(guildId) {
+    const memberCount = this.getGuildMemberCount(guildId);
+    if (!Number.isFinite(memberCount)) return 1;
+    for (const entry of this.THRESHOLD_SCALES) {
+      if (memberCount >= entry.minMembers) return entry.scale;
+    }
+    return 1;
+  }
+
+  scaleThresholdCount(count, scale, min = 1, max = null) {
+    const scaled = Math.max(min, Math.ceil(count * scale));
+    if (Number.isFinite(max)) return Math.min(max, scaled);
+    return scaled;
+  }
+
+  getScaledThresholds(guildId) {
+    const scale = this.getThresholdScale(guildId);
+    const base = this.THRESHOLDS;
+    const scaleCount = (value, min, max) => this.scaleThresholdCount(value, scale, min, max);
+    return {
+      scale,
+      thresholds: {
+        ban: {
+          ...base.ban,
+          count: scaleCount(base.ban.count, 2),
+          stackCount: base.ban.stackCount ? scaleCount(base.ban.stackCount, 3) : undefined
+        },
+        kick: { ...base.kick, count: scaleCount(base.kick.count, 2) },
+        channelDelete: { ...base.channelDelete, count: scaleCount(base.channelDelete.count, 2) },
+        roleDelete: { ...base.roleDelete, count: scaleCount(base.roleDelete.count, 2) },
+        webhookCreate: { ...base.webhookCreate, count: scaleCount(base.webhookCreate.count, 3) },
+        emergency: Array.isArray(base.emergency)
+          ? base.emergency.map(t => ({ ...t, count: scaleCount(t.count, 5) }))
+          : [],
+        massBanLockdown: {
+          ...base.massBanLockdown,
+          count: scaleCount(base.massBanLockdown.count, 20)
+        }
+      }
+    };
+  }
+
   isWhitelistBypassAllowed(guildId, userId) {
     if (!this.isProtectedUser(userId)) return false;
     const config = this.getGuildConfig(guildId);
@@ -1424,7 +1485,8 @@ class AntiNuke {
     const userActions = guildTracker.get(userId);
     if (!userActions) return;
 
-    const threshold = this.THRESHOLDS[actionType];
+    const { thresholds } = this.getScaledThresholds(guildId);
+    const threshold = thresholds[actionType];
     if (!threshold) return;
 
     // Count recent actions
@@ -1824,8 +1886,10 @@ class AntiNuke {
   }
 
   checkMassBanLockdown(guildId, banTimestamps, now = Date.now(), meta = {}) {
-    const count = this.getWindowCount(banTimestamps, this.BAN_WINDOW, now);
-    if (count < this.THRESHOLDS.massBanLockdown.count) return;
+    const { thresholds } = this.getScaledThresholds(guildId);
+    const massThreshold = thresholds.massBanLockdown || this.THRESHOLDS.massBanLockdown;
+    const count = this.getWindowCount(banTimestamps, massThreshold.time || this.BAN_WINDOW, now);
+    if (count < massThreshold.count) return;
     if (meta.simulated) {
       this.handleMassBanLockdown(guildId, count, meta);
       return;
@@ -1838,7 +1902,9 @@ class AntiNuke {
 
   // Check emergency thresholds
   checkEmergencyThresholds(guildId, banTimestamps, now = Date.now(), meta = {}) {
-    for (const threshold of this.THRESHOLDS.emergency) {
+    const { thresholds } = this.getScaledThresholds(guildId);
+    const emergencyThresholds = Array.isArray(thresholds.emergency) ? thresholds.emergency : this.THRESHOLDS.emergency;
+    for (const threshold of emergencyThresholds) {
       const count = this.getWindowCount(banTimestamps, threshold.time, now);
       if (count >= threshold.count) {
         this.handleEmergencyMode(guildId, { count, threshold }, meta);
@@ -1864,7 +1930,9 @@ class AntiNuke {
 
     const config = this.getGuildConfig(guildId);
     const traceId = this.createTraceId();
-    const confidence = Math.min(1, 0.6 + Math.min(0.4, banCount / this.THRESHOLDS.massBanLockdown.count * 0.4));
+    const { thresholds } = this.getScaledThresholds(guildId);
+    const massThreshold = thresholds.massBanLockdown || this.THRESHOLDS.massBanLockdown;
+    const confidence = Math.min(1, 0.6 + Math.min(0.4, banCount / massThreshold.count * 0.4));
     const threshold = this.getConfidenceThreshold(config);
     let approved = confidence >= threshold || config.strictForce || config.strictActive;
     if (!approved) {
@@ -2902,6 +2970,8 @@ class AntiNuke {
     const pendingWhitelist = this.pendingWhitelist.get(guildId);
     const config = this.getGuildConfig(guildId);
     const history = this.logHistory.get(guildId) || [];
+    const memberCount = this.getGuildMemberCount(guildId);
+    const thresholdScale = this.getThresholdScale(guildId);
 
     let totalTrackedUsers = 0;
     let totalActions = 0;
@@ -2938,7 +3008,10 @@ class AntiNuke {
       quarantinePreserveView: config.quarantine?.preserveView || false,
       quarantineDuration: config.quarantine?.durationMs || this.QUARANTINE_DURATION,
       autoActionThreshold: config.autoActionThreshold || this.AUTO_ACTION_THRESHOLD,
-      logHistoryCount: history.length
+      logHistoryCount: history.length,
+      memberCount,
+      thresholdScale,
+      beastModeWindow: this.BEAST_MODE_WINDOW
     };
   }
 
