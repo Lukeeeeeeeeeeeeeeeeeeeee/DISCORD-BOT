@@ -1,5 +1,6 @@
 const AntiNuke = require('./antinuke');
 const AntiNukeRollback = require('./antinuke-rollback');
+const runtime = require('./runtime');
 
 class AntiNukeSystem {
   constructor() {
@@ -17,9 +18,9 @@ class AntiNukeSystem {
       await this.antiNuke.init(client);
       await this.rollback.init();
 
-      // Make anti-nuke globally accessible
-      global.antiNuke = this.antiNuke;
-      global.antiNukeRollback = this.rollback;
+      runtime.setClient(client);
+      runtime.setAntiNuke(this.antiNuke);
+      runtime.setAntiNukeRollback(this.rollback);
 
       // Set up integration between systems
       this.setupIntegration();

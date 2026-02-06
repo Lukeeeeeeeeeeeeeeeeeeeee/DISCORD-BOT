@@ -1,6 +1,8 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { hasModPlusPermissions } = require('../lib/recruiting-system');
+const { formatUtcDateOnly } = require('../lib/time');
+const { replyError } = require('../lib/embeds');
 
 module.exports = {
   data: {
@@ -9,13 +11,23 @@ module.exports = {
   },
   async execute(interaction) {
     if (!interaction.guild) {
-      return interaction.reply({ content: 'This command can only be used in a server.' });
+      return replyError(interaction, 'This command can only be used in a server.');
     }
 
     // MOD+ only
     if (!hasModPlusPermissions(interaction.member)) {
-      return interaction.reply({ content: 'MOD+ only.' });
+      return replyError(interaction, 'MOD+ only.');
     }
+
+    if (typeof interaction.deferReply === 'function') {
+      await interaction.deferReply({ flags: 64 });
+    }
+    const respond = (payload) => {
+      if ((interaction.deferred || interaction.replied) && typeof interaction.editReply === 'function') {
+        return interaction.editReply(payload);
+      }
+      return interaction.reply(payload);
+    };
 
     const targetUser = interaction.options.getUser('member') || interaction.user;
     const targetId = targetUser.id;
@@ -23,33 +35,33 @@ module.exports = {
 
     const targetMember = await interaction.guild.members.fetch(targetId).catch(() => null);
     if (!targetMember) {
-      return interaction.reply({ content: 'That member is not in this server.' });
+      return replyError(interaction, 'That member is not in this server.');
     }
 
     const endDateRaw = interaction.options.getString('date');
     if (!endDateRaw) {
-      return interaction.reply({ content: 'Missing required date. Please use YYYY-MM-DD.' });
+      return replyError(interaction, 'Missing required date. Please use YYYY-MM-DD.');
     }
 
     // Basic YYYY-MM-DD validation before parsing.
     if (!/^\d{4}-\d{2}-\d{2}$/.test(endDateRaw)) {
-      return interaction.reply({ content: 'Invalid date. Please use YYYY-MM-DD format.' });
+      return replyError(interaction, 'Invalid date. Please use YYYY-MM-DD format.');
     }
 
     const dayjs = require('dayjs');
     const parsedDate = dayjs(endDateRaw);
 
     if (!parsedDate.isValid()) {
-      return interaction.reply({ content: 'Invalid date. Please use YYYY-MM-DD format.' });
+      return replyError(interaction, 'Invalid date. Please use YYYY-MM-DD format.');
     }
 
     const endDate = parsedDate.format('YYYY-MM-DD');
     const todayStart = dayjs().startOf('day');
     if (!parsedDate.isAfter(todayStart)) {
-      return interaction.reply({ content: 'Absence date must be in the future.' });
+      return replyError(interaction, 'Absence date must be in the future.');
     }
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = formatUtcDateOnly();
 
     // Check for existing active absence
     try {
@@ -85,11 +97,11 @@ module.exports = {
         .setColor(0x00AAFF)
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed] });
+      return respond({ embeds: [embed] });
 
     } catch (error) {
       console.error('Error setting absence:', error);
-      return interaction.reply({ content: 'Failed to set absence. Please try again later.' });
+      return replyError(interaction, 'Failed to set absence. Please try again later.');
     }
   }
 };

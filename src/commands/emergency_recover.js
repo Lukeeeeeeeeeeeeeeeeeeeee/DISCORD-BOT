@@ -1,5 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
+const runtime = require('../lib/runtime');
+const { replyError } = require('../lib/embeds');
 
 module.exports = {
   data: {
@@ -24,14 +26,16 @@ module.exports = {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ 
-        content: '❌ Administrator permission required.'
+        content: '❌ Administrator permission required.',
+        flags: 64
       });
     }
 
-    const antiNuke = global.antiNuke;
+    const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
       return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.'
+        content: '❌ Anti-nuke system not initialized.',
+        flags: 64
       });
     }
 
@@ -39,7 +43,7 @@ module.exports = {
       const backupId = interaction.options.getString('backup_id');
       const force = interaction.options.getBoolean('force') || false;
       if (force && !antiNuke.isOwner(interaction.user.id)) {
-        return interaction.reply({ content: '❌ Force recovery is restricted to the bot owner.' });
+        return replyError(interaction, 'Force recovery is restricted to the bot owner.', { flags: 64 });
       }
 
       // Check if server is in emergency mode
@@ -54,7 +58,7 @@ module.exports = {
             { name: 'Backup Available', value: status.hasBackup ? '✅ Yes' : '❌ No', inline: true }
           )
           .setTimestamp();
-        return interaction.reply({ embeds: [embed] });
+        return interaction.reply({ embeds: [embed], flags: 64 });
       }
 
       // Check if backup exists
@@ -64,10 +68,10 @@ module.exports = {
           .setTitle('❌ No Backup Available')
           .setDescription('Cannot recover: no backup found for this server.')
           .setTimestamp();
-        return interaction.reply({ embeds: [embed] });
+        return interaction.reply({ embeds: [embed], flags: 64 });
       }
 
-      await interaction.deferReply();
+      await interaction.deferReply({ flags: 64 });
 
       // Perform emergency recovery
       const result = await antiNuke.emergencyRecover(interaction.guild.id, backupId, {
@@ -83,6 +87,8 @@ module.exports = {
         .addFields(
           { name: 'Roles Restored', value: result.rolesRestored.toString(), inline: true },
           { name: 'Channels Restored', value: result.channelsRestored.toString(), inline: true },
+          { name: 'Channels Recreated', value: String(result.channelsCreated || 0), inline: true },
+          { name: 'Channels Missing', value: String(result.channelsMissing || 0), inline: true },
           { name: 'Recovered By', value: interaction.user.tag, inline: true },
           { name: 'Backup ID', value: backupId || status.backupId || 'Latest', inline: true }
         )
@@ -110,7 +116,7 @@ module.exports = {
       if (interaction.replied || interaction.deferred) {
         await interaction.editReply({ embeds: [embed] });
       } else {
-        await interaction.reply({ embeds: [embed] });
+        await interaction.reply({ embeds: [embed], flags: 64 });
       }
     }
   }

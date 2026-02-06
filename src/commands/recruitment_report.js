@@ -8,16 +8,13 @@ const {
   getBaseRequirement,
   isNewStaff
 } = require('../lib/recruiting-system');
-const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_INFO } = require('../constants');
+const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
+const { fetchMembersByIds } = require('../lib/member-fetch');
 const { formatPointsValue } = require('../lib/economy');
 const { getWeekStartUtcTs } = require('../lib/week');
-
-// Team mappings
-const TEAM_INFO = {
-  EU: { name: 'Fire', emoji: '🔥' },
-  NA: { name: 'Water', emoji: '💧' },
-  AS: { name: 'Air', emoji: '🌬️' }
-};
+const { clampText } = require('../lib/text');
+const { getTeamLabel, normalizeRegionInput } = require('../lib/regions');
+const { replyError } = require('../lib/embeds');
 
 function chunkLines(lines, maxLen = 1024) {
   const chunks = [];
@@ -110,7 +107,7 @@ function getPerformanceCategory({ percentile, warnings, recruits7d, minReq, abse
   return { bucket: 'PASSING', label: '✅ Passing', color: 0x00AAFF };
 }
 
-async function resolveRecruiterIdsForTeam(guild, team) {
+async function resolveRecruiterIdsForTeam(guild, team, db) {
   const ids = new Set();
 
   const addRoleMembers = (roleId) => {
@@ -120,23 +117,40 @@ async function resolveRecruiterIdsForTeam(guild, team) {
     role.members.forEach(m => ids.add(m.id));
   };
 
-  // Map team names to region codes
-  const regionMap = { 'Fire': 'EU', 'Water': 'NA', 'Air': 'AS' };
-  const region = regionMap[team] || team;
-
-  if (['EU', 'NA', 'AS'].includes(region)) {
+  const region = team && team !== 'ALL' ? team : null;
+  const roleIds = [];
+  if (region) {
     const regionalRoleId = RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS[region] ? RECRUITER_ROLE_IDS[region] : null;
-    addRoleMembers(regionalRoleId);
-    return Array.from(ids);
+    if (regionalRoleId) roleIds.push(regionalRoleId);
+  } else {
+    for (const rg of ['EU', 'NA', 'AS']) {
+      const regionalRoleId = RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS[rg] ? RECRUITER_ROLE_IDS[rg] : null;
+      if (regionalRoleId) roleIds.push(regionalRoleId);
+    }
+    if (ROLE_IDS.RECRUITER) roleIds.push(ROLE_IDS.RECRUITER);
+    if (ROLE_IDS.TRIAL_RECRUITER) roleIds.push(ROLE_IDS.TRIAL_RECRUITER);
   }
 
-  // ALL - get all recruiters
-  for (const rg of ['EU', 'NA', 'AS']) {
-    const regionalRoleId = RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS[rg] ? RECRUITER_ROLE_IDS[rg] : null;
-    addRoleMembers(regionalRoleId);
+  for (const roleId of roleIds) addRoleMembers(roleId);
+
+  if (db) {
+    try {
+      const rows = await db.all('SELECT id FROM recruiters');
+      const dbIds = (rows || []).map(r => r.id).filter(Boolean);
+      const memberMap = await fetchMembersByIds(guild, dbIds);
+      for (const member of memberMap.values()) {
+        if (!member.roles || !member.roles.cache) continue;
+        for (const roleId of roleIds) {
+          if (member.roles.cache.has(roleId)) {
+            ids.add(member.id);
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Failed to resolve recruiter members for report', e);
+    }
   }
-  addRoleMembers(ROLE_IDS.RECRUITER);
-  addRoleMembers(ROLE_IDS.TRIAL_RECRUITER);
 
   return Array.from(ids);
 }
@@ -144,15 +158,15 @@ async function resolveRecruiterIdsForTeam(guild, team) {
 module.exports = {
   data: {
     name: 'recruitment_report',
-    description: 'Admin: show recruiting performance by team (Fire/Water/Air)'
+    description: 'Admin: show recruiting performance by team'
   },
   async execute(interaction) {
     if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ content: '❌ Administrator permission required.' });
+      return replyError(interaction, 'Administrator permission required.', { flags: 64 });
     }
 
     if (!interaction.guild) {
-      return interaction.reply({ content: 'This command can only be used in a server.' });
+      return replyError(interaction, 'This command can only be used in a server.');
     }
 
     const rawTeam = interaction.options && typeof interaction.options.getString === 'function'
@@ -163,60 +177,103 @@ module.exports = {
     let team = 'ALL';
     if (rawTeam) {
       const upper = rawTeam.toUpperCase();
-      if (['FIRE', 'EU'].includes(upper)) team = 'Fire';
-      else if (['WATER', 'NA'].includes(upper)) team = 'Water';
-      else if (['AIR', 'AS'].includes(upper)) team = 'Air';
-      else if (upper === 'ALL') team = 'ALL';
-    }
-
-    await interaction.deferReply();
-
-    try {
-      if (interaction.guild.members && typeof interaction.guild.members.fetch === 'function') {
-        await interaction.guild.members.fetch().catch(() => { });
+      if (upper === 'ALL') {
+        team = 'ALL';
+      } else {
+        const normalized = normalizeRegionInput(upper);
+        if (normalized) team = normalized;
       }
-    } catch (e) {
-      void e;
     }
 
-    const recruiterIds = await resolveRecruiterIdsForTeam(interaction.guild, team);
+    await interaction.deferReply({ flags: 64 });
+
+    const allowFullFetch = (process.env.REPORT_ALLOW_FULL_FETCH || '').toLowerCase() === 'true';
+    if (allowFullFetch) {
+      try {
+        if (interaction.guild.members && typeof interaction.guild.members.fetch === 'function') {
+          await interaction.guild.members.fetch().catch(err => {
+            console.error('Failed to prime member cache for recruitment report:', err);
+          });
+        }
+      } catch (e) {
+        void e;
+      }
+    }
+
+    const recruiterIds = await resolveRecruiterIdsForTeam(interaction.guild, team, db);
     if (!recruiterIds.length) {
-      return interaction.editReply({ content: `No recruiters found for ${team}.` });
+      return replyError(interaction, `No recruiters found for ${team}.`);
     }
 
     const weekStart = getWeekStartUtcTs();
-    const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+    const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
+
+    const placeholders = recruiterIds.map(() => '?').join(',');
+    const absencesMap = new Map();
+    const warningsMap = new Map();
+    const weekCalcMap = new Map();
+    const pointsMap = new Map();
+
+    if (placeholders) {
+      const [absences, warnings, weekCalcs, points] = await Promise.all([
+        db.all(
+          `SELECT recruiter_id, start_date, end_date FROM absences WHERE active = 1 AND end_date >= date("now") AND recruiter_id IN (${placeholders})`,
+          ...recruiterIds
+        ).catch(() => []),
+        db.all(
+          `SELECT recruiter_id, COUNT(*) as c FROM warnings WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND recruiter_id IN (${placeholders}) GROUP BY recruiter_id`,
+          ...recruiterIds,
+          Date.now()
+        ).catch(() => []),
+        db.all(
+          `SELECT recruiter_id, calculated_min_req, recruits7d, activity_rate, verify_rate, retention
+           FROM weekly_calculations
+           WHERE week_start = ? AND recruiter_id IN (${placeholders})`,
+          weekStart,
+          ...recruiterIds
+        ).catch(() => []),
+        db.all(
+          `SELECT id, points FROM recruiters WHERE id IN (${placeholders})`,
+          ...recruiterIds
+        ).catch(() => [])
+      ]);
+
+      for (const row of absences || []) absencesMap.set(row.recruiter_id, row);
+      for (const row of warnings || []) warningsMap.set(row.recruiter_id, Number(row.c || 0));
+      for (const row of weekCalcs || []) weekCalcMap.set(row.recruiter_id, row);
+      for (const row of points || []) pointsMap.set(row.id, Number(row.points || 0));
+    }
 
     const results = [];
 
     for (const id of recruiterIds) {
-      const member = await interaction.guild.members.fetch(id).catch(() => null);
+      const member = interaction.guild.members && interaction.guild.members.cache
+        ? interaction.guild.members.cache.get(id)
+        : null;
 
-      const stats7d = await calculate7DayStats(db, id, interaction.guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+      const weekCalc = weekCalcMap.get(id) || null;
+      let stats7d = null;
+      if (weekCalc && Number.isFinite(Number(weekCalc.recruits7d))) {
+        stats7d = {
+          recruits7d: Number(weekCalc.recruits7d || 0),
+          activityRate: Number(weekCalc.activity_rate || 0),
+          verifyRate: Number(weekCalc.verify_rate || 0),
+          retention: Number(weekCalc.retention || 0)
+        };
+      } else {
+        stats7d = await calculate7DayStats(db, id, interaction.guild, statsWindow)
+          .catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+      }
       const avgRecruitsWeek = await getAverageWeeklyRecruits(db, id).catch(() => 0);
 
-      const absence = await db.get(
-        'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
-        id
-      ).catch(() => null);
+      const absence = absencesMap.get(id) || null;
 
-      const warningsRow = await db.get(
-        'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-        id,
-        Date.now()
-      ).catch(() => null);
-      const activeWarnings = warningsRow ? warningsRow.c : 0;
+      const activeWarnings = warningsMap.get(id) || 0;
 
       let newStaffCheck = await isNewStaff(db, id).catch(() => false);
 
       const roleBase = getBaseRequirement(member);
       const isTrialRecruiter = !!member && !!member.roles && !!member.roles.cache && member.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !member.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
-
-      const weekCalc = await db.get(
-        'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? AND week_start = ? LIMIT 1',
-        id,
-        weekStart
-      ).catch(() => null);
 
       let minReq = weekCalc && weekCalc.calculated_min_req != null ? Number(weekCalc.calculated_min_req) : null;
       let previousMinReq = null;
@@ -253,8 +310,7 @@ module.exports = {
         warnings: activeWarnings
       });
 
-      const recruiterRow = await db.get('SELECT points FROM recruiters WHERE id = ?', id).catch(() => null);
-      const points = recruiterRow ? (recruiterRow.points || 0) : 0;
+      const points = pointsMap.has(id) ? pointsMap.get(id) : 0;
 
       results.push({
         id,
@@ -330,10 +386,10 @@ module.exports = {
       });
     }
 
-    const teamLabel = team === 'ALL' ? 'All Teams' : `${TEAM_INFO[team === 'Fire' ? 'EU' : team === 'Water' ? 'NA' : 'AS']?.emoji || ''} ${team}`;
+    const teamLabel = team === 'ALL' ? 'All Teams' : getTeamLabel(team);
 
     const embed = new EmbedBuilder()
-      .setTitle(`📊 Recruitment Report - ${teamLabel}`)
+      .setTitle(clampText(`📊 Recruitment Report - ${teamLabel}`, 256))
       .setColor(0x00AAFF)
       .setDescription('Performance score: recruits (40%), verify rate (25%), retention (20%), warnings penalty (15%). Buckets are relative percentiles (warnings/absence override).')
       .setTimestamp();

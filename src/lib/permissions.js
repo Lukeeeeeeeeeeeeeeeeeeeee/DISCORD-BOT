@@ -8,6 +8,23 @@ function hasAdministrator(member) {
   return member.permissions.has(PermissionsBitField.Flags.Administrator) || member.permissions.has('Administrator');
 }
 
+function getStaffRoleIds() {
+  const configured = ROLE_IDS && Array.isArray(ROLE_IDS.STAFF) ? ROLE_IDS.STAFF.filter(Boolean) : [];
+  if (configured.length) return configured;
+  return [
+    ROLE_IDS.HELPER,
+    ROLE_IDS.HELPER_PLUS,
+    ROLE_IDS.HIGH_STAFF,
+    ROLE_IDS.MOD,
+    ROLE_IDS.CHIEF,
+    ROLE_IDS.CHIEF_OF_WAR,
+    ROLE_IDS.CHIEF_OF_COMMUNITY,
+    ROLE_IDS.CHIEF_OF_RECRUITMENT,
+    ROLE_IDS.CO_LEADER,
+    ROLE_IDS.LEADER
+  ].filter(Boolean);
+}
+
 /**
  * Check if a user has recruiter or staff permissions
  * @param {GuildMember} member - Discord guild member
@@ -20,19 +37,21 @@ function hasRecruiterOrStaffPermissions(member) {
   // Check Discord admin permission
   if (hasAdministrator(member)) return true;
 
+  const perms = member.permissions;
+  if (perms && typeof perms.has === 'function') {
+    const elevated = [
+      PermissionsBitField.Flags.ManageGuild,
+      PermissionsBitField.Flags.ModerateMembers,
+      PermissionsBitField.Flags.BanMembers,
+      PermissionsBitField.Flags.KickMembers,
+      PermissionsBitField.Flags.ManageRoles,
+      PermissionsBitField.Flags.ManageChannels
+    ];
+    if (elevated.some(flag => perms.has(flag))) return true;
+  }
+
   // Check staff roles
-  const staffRoles = [
-    ROLE_IDS.HELPER,
-    ROLE_IDS.HELPER_PLUS,
-    ROLE_IDS.HIGH_STAFF,
-    ROLE_IDS.MOD,
-    ROLE_IDS.CHIEF,
-    ROLE_IDS.CHIEF_OF_WAR,
-    ROLE_IDS.CHIEF_OF_COMMUNITY,
-    ROLE_IDS.CHIEF_OF_RECRUITMENT,
-    ROLE_IDS.CO_LEADER,
-    ROLE_IDS.LEADER
-  ];
+  const staffRoles = getStaffRoleIds();
 
   // Check recruiter roles
   const recruiterRoles = [
@@ -59,19 +78,21 @@ function hasAdminOrStaffPermissions(member) {
   // Check Discord admin permission
   if (hasAdministrator(member)) return true;
 
+  const perms = member.permissions;
+  if (perms && typeof perms.has === 'function') {
+    const elevated = [
+      PermissionsBitField.Flags.ManageGuild,
+      PermissionsBitField.Flags.ModerateMembers,
+      PermissionsBitField.Flags.BanMembers,
+      PermissionsBitField.Flags.KickMembers,
+      PermissionsBitField.Flags.ManageRoles,
+      PermissionsBitField.Flags.ManageChannels
+    ];
+    if (elevated.some(flag => perms.has(flag))) return true;
+  }
+
   // Check staff roles
-  const staffRoles = [
-    ROLE_IDS.HELPER,
-    ROLE_IDS.HELPER_PLUS,
-    ROLE_IDS.HIGH_STAFF,
-    ROLE_IDS.MOD,
-    ROLE_IDS.CHIEF,
-    ROLE_IDS.CHIEF_OF_WAR,
-    ROLE_IDS.CHIEF_OF_COMMUNITY,
-    ROLE_IDS.CHIEF_OF_RECRUITMENT,
-    ROLE_IDS.CO_LEADER,
-    ROLE_IDS.LEADER
-  ];
+  const staffRoles = getStaffRoleIds();
 
   if (!hasRoleCache) return false;
   return staffRoles.some(roleId => member.roles.cache.has(roleId));

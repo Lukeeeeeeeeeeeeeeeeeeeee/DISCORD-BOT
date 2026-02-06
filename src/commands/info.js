@@ -1,6 +1,8 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { getLinkedPoints, formatPoints } = require('../lib/rookie-points');
+const { clampText } = require('../lib/text');
+const { replyError } = require('../lib/embeds');
 
 function toUnixSeconds(ms) {
   return Math.floor(ms / 1000);
@@ -45,11 +47,21 @@ module.exports = {
   data: { name: 'info' },
   async execute(interaction) {
     const member = interaction.options.getUser('member');
-    if (!interaction.guild) return interaction.reply({ content: 'This command can only be used in a server.' });
-    if (!member) return interaction.reply({ content: 'Missing member option.' });
+    if (!interaction.guild) return replyError(interaction, 'This command can only be used in a server.');
+    if (!member) return replyError(interaction, 'Missing member option.');
+
+    if (typeof interaction.deferReply === 'function') {
+      await interaction.deferReply();
+    }
+    const respond = (payload) => {
+      if ((interaction.deferred || interaction.replied) && typeof interaction.editReply === 'function') {
+        return interaction.editReply(payload);
+      }
+      return interaction.reply(payload);
+    };
 
     const rows = await db.all('SELECT * FROM recruits WHERE recruited_id = ? ORDER BY created_at DESC', member.id);
-    if (!rows || rows.length === 0) return interaction.reply({ content: 'No recruit record for that member.' });
+    if (!rows || rows.length === 0) return respond({ content: 'No recruit record for that member.' });
     const recruit = rows[0];
 
     const verification = await db.get(
@@ -76,7 +88,7 @@ module.exports = {
     }
 
     const embed = new EmbedBuilder()
-      .setTitle(`Info: ${member.tag}`)
+      .setTitle(clampText(`Info: ${member.tag}`, 256))
       .setColor(recruit.valid ? 0x00CC66 : 0xFF4444)
       .setTimestamp();
 
@@ -161,6 +173,6 @@ module.exports = {
       inline: false
     });
 
-    return interaction.reply({ embeds: [embed] });
+    return respond({ embeds: [embed] });
   }
 };

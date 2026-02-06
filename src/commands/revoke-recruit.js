@@ -1,6 +1,7 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { hasAdminOrStaffPermissions } = require('../lib/permissions');
+const { replyError } = require('../lib/embeds');
 
 module.exports = {
   data: {
@@ -10,8 +11,18 @@ module.exports = {
   async execute(interaction) {
     // Admin/staff only
     if (!hasAdminOrStaffPermissions(interaction.member)) {
-      return interaction.reply({ content: 'Admin/Staff only.' });
+      return replyError(interaction, 'Admin/Staff only.');
     }
+
+    if (typeof interaction.deferReply === 'function') {
+      await interaction.deferReply({ flags: 64 });
+    }
+    const respond = (payload) => {
+      if ((interaction.deferred || interaction.replied) && typeof interaction.editReply === 'function') {
+        return interaction.editReply(payload);
+      }
+      return interaction.reply(payload);
+    };
 
     const member = interaction.options.getUser('member');
     const reason = interaction.options.getString('reason') || 'Recruit revoked by staff';
@@ -19,18 +30,35 @@ module.exports = {
     // Validate member exists
     const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
     if (!targetMember) {
-      return interaction.reply({ content: 'Member not found in this guild.' });
+      return replyError(interaction, 'Member not found in this guild.');
     }
 
     try {
       // Get the recruit record to find region and recruiter info
       const recruit = await db.get('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1', member.id);
       if (!recruit) {
-        return interaction.reply({ content: 'No valid recruit record found for this member.' });
+        return replyError(interaction, 'No valid recruit record found for this member.');
       }
 
-      // Mark recruit as invalid in database
-      await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', recruit.id);
+      const recruitPoints = recruit.points || 0;
+
+      // Mark recruit as invalid in database and adjust recruiter points
+      await db.run('BEGIN TRANSACTION');
+      try {
+        await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', recruit.id);
+        await db.run(
+          'INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)',
+          recruit.recruiter_id
+        );
+        const recRow = await db.get('SELECT points FROM recruiters WHERE id = ?', recruit.recruiter_id);
+        const currentPoints = recRow ? recRow.points || 0 : 0;
+        const newPoints = Math.max(0, currentPoints - recruitPoints);
+        await db.run('UPDATE recruiters SET points = ? WHERE id = ?', newPoints, recruit.recruiter_id);
+        await db.run('COMMIT');
+      } catch (err) {
+        await db.run('ROLLBACK');
+        throw err;
+      }
 
       // Remove roles from the member
       const { ROLE_IDS } = require('../constants');
@@ -53,7 +81,11 @@ module.exports = {
         }
 
         // Reset nickname
-        await targetMember.setNickname(null).catch(() => { });
+        if (targetMember.manageable) {
+          await targetMember.setNickname(null).catch(err => {
+            console.error('Failed to clear recruit nickname:', err);
+          });
+        }
       } catch (roleError) {
         console.error('Failed to remove roles:', roleError);
       }
@@ -83,7 +115,9 @@ module.exports = {
 
       const logChannel = interaction.guild.channels.cache.get(CHANNELS.ECONOMY_NOTIFICATIONS);
       if (logChannel) {
-        await logChannel.send({ embeds: [embed] }).catch(() => { });
+        await logChannel.send({ embeds: [embed] }).catch(err => {
+          console.error('Failed to log recruit revocation:', err);
+        });
       }
 
       // DM the revoked member
@@ -97,7 +131,9 @@ module.exports = {
           )
           .setColor(0xFF4444)
           .setTimestamp();
-        await targetMember.send({ embeds: [dmEmbed] }).catch(() => { });
+        await targetMember.send({ embeds: [dmEmbed] }).catch(err => {
+          console.error('Failed to DM recruit revocation:', err);
+        });
       } catch (dmError) {
         console.error('Failed to DM revoked member:', dmError);
       }
@@ -110,11 +146,11 @@ module.exports = {
         reason
       });
 
-      return interaction.reply({ content: `Successfully revoked recruit status for ${member.tag}. ✅` });
+      return respond({ content: `Successfully revoked recruit status for ${member.tag}. ✅` });
 
     } catch (error) {
       console.error('Failed to revoke recruit:', error);
-      return interaction.reply({ content: 'Failed to revoke recruit. Please try again later.' });
+      return replyError(interaction, 'Failed to revoke recruit. Please try again later.');
     }
   }
 };

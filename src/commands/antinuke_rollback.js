@@ -1,5 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const AntiNukeRollback = require('../lib/antinuke-rollback');
+const runtime = require('../lib/runtime');
+const { replyError, buildErrorEmbed } = require('../lib/embeds');
 
 module.exports = {
   data: {
@@ -7,15 +9,22 @@ module.exports = {
     description: 'Rollback all anti-nuke actions (Owner only)'
   },
   async execute(interaction, client) {
-    // Check if user is the owner
-    if (interaction.user.id !== '1381692847018868778') {
-      return interaction.reply({ 
-        content: '❌ This command can only be used by the server owner.'
-      });
+    const antiNuke = runtime.getAntiNuke();
+    if (antiNuke && typeof antiNuke.isOwner === 'function') {
+      if (!antiNuke.isOwner(interaction.user.id)) {
+        return replyError(interaction, 'This command can only be used by the bot owner.');
+      }
     }
 
-    const rollback = new AntiNukeRollback();
-    await rollback.init();
+    let rollback = runtime.getAntiNukeRollback();
+    if (!rollback) {
+      rollback = new AntiNukeRollback();
+      await rollback.init();
+    }
+
+    if ((!antiNuke || typeof antiNuke.isOwner !== 'function') && !rollback.isOwner(interaction.user.id)) {
+      return replyError(interaction, 'This command can only be used by the bot owner.');
+    }
 
     const guild = interaction.guild;
     const status = rollback.getRollbackStatus(guild.id);
@@ -139,9 +148,9 @@ module.exports = {
 
         } catch (error) {
           console.error('Rollback error:', error);
-          await i.editReply({ 
-            content: `❌ Rollback failed: ${error.message}`,
-            embeds: [],
+          const errorEmbed = buildErrorEmbed(`Rollback failed: ${error.message}`, 'Rollback Failed');
+          await i.editReply({
+            embeds: [errorEmbed],
             components: []
           });
         }
@@ -161,7 +170,9 @@ module.exports = {
           content: '⏰ Rollback confirmation timed out.',
           embeds: [],
           components: []
-        }).catch(() => {});
+        }).catch(err => {
+          console.error('Failed to update rollback timeout reply:', err);
+        });
       }
     });
   }

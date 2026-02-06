@@ -10,25 +10,47 @@ const { dispatchCommand } = require('./lib/command-dispatcher');
 const { trackRookieChatMessage } = require('./lib/rookie-chat');
 const { handleRookieWarLogMessage } = require('./lib/rookie-war');
 const analytics = require('./lib/analytics');
+const runtime = require('./lib/runtime');
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildModeration,
-    GatewayIntentBits.GuildWebhooks,
-    GatewayIntentBits.GuildInvites
-  ]
-});
+const enableMessageContent = (process.env.ENABLE_MESSAGE_CONTENT || '').toLowerCase() === 'true';
+const intents = [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMembers,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.GuildVoiceStates,
+  GatewayIntentBits.GuildModeration,
+  GatewayIntentBits.GuildWebhooks,
+  GatewayIntentBits.GuildInvites
+];
+if (enableMessageContent) intents.push(GatewayIntentBits.MessageContent);
+
+const client = new Client({ intents });
 client.commands = new Collection();
+runtime.setClient(client);
+runtime.setDb(db);
 
 // Create anti-nuke system instance
 const antiNukeSystem = new AntiNukeSystem();
 const inviteSnapshots = new Map();
+const inviteTrackLocks = new Map();
+const invitePendingAttributions = new Map();
 const voiceSessions = new Map();
+
+const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
+  console.log('🛡️ Complete anti-nuke system with rollback ready!');
+}).catch(err => {
+  console.error('❌ Failed to initialize anti-nuke:', err);
+});
+
+const inviteInitPromise = (async () => {
+  const { createInviteTables } = require('./lib/create-invite-tables');
+  const inviteCommand = require('./commands/invite');
+  await createInviteTables();
+  await inviteCommand.init();
+  console.log('🔗 Invite system ready!');
+})().catch(err => {
+  console.error('❌ Failed to initialize invite system:', err);
+});
 
 const commandsPath = path.join(__dirname, 'commands');
 const commandFiles = fs.readdirSync(commandsPath)
@@ -36,40 +58,31 @@ const commandFiles = fs.readdirSync(commandsPath)
   .filter(f => f !== 'verify.js');
 for (const file of commandFiles) {
   const cmd = require(path.join(commandsPath, file));
+  if (!cmd || !cmd.data || !cmd.data.name || typeof cmd.execute !== 'function') {
+    console.warn(`Skipping invalid command module: ${file}`);
+    continue;
+  }
   client.commands.set(cmd.data.name, cmd);
 }
 
 let _readyCalled = false;
-function onReady() {
+async function onReady() {
   if (_readyCalled) return;
   _readyCalled = true;
   console.log(`Logged in as ${client.user.tag}`);
+  await antiNukeInitPromise;
   scheduler.start(client, db);
 
-  // Initialize anti-nuke system
-  antiNukeSystem.init(client).then(() => {
-    console.log('🛡️ Complete anti-nuke system with rollback ready!');
-  }).catch(err => {
-    console.error('❌ Failed to initialize anti-nuke:', err);
-  });
-
-  // Initialize invite system
-  const { createInviteTables } = require('./lib/create-invite-tables');
-  const inviteCommand = require('./commands/invite');
-
-  createInviteTables().then(() => {
-    return inviteCommand.init();
-  }).then(() => {
-    console.log('🔗 Invite system ready!');
-    const guildId = GUILD_ID;
-    const guild = guildId ? client.guilds.cache.get(guildId) : null;
-    if (guild) cacheGuildInvites(guild).catch(() => { });
-  }).catch(err => {
-    console.error('❌ Failed to initialize invite system:', err);
-  });
+  await inviteInitPromise;
+  const guildId = GUILD_ID;
+  const guild = guildId ? client.guilds.cache.get(guildId) : null;
+  if (guild) {
+    cacheGuildInvites(guild).catch(err => {
+      console.error('Failed to cache guild invites on startup:', err);
+    });
+  }
 
   // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
-  const guildId = GUILD_ID;
   if (guildId) {
     try {
       const { registerCommands } = require('./register-commands');
@@ -86,33 +99,41 @@ function onReady() {
 // Use the ready event to start schedulers and subsystems once the client is online.
 client.once('ready', onReady);
 
+async function flushShutdown(signal) {
+  try {
+    if (analytics && typeof analytics.flushAll === 'function') {
+      await analytics.flushAll();
+    }
+    const antiNuke = runtime.getAntiNuke();
+    if (antiNuke && typeof antiNuke.saveData === 'function') {
+      await antiNuke.saveData();
+    }
+    const antiNukeRollback = runtime.getAntiNukeRollback();
+    if (antiNukeRollback && typeof antiNukeRollback.saveRollbackData === 'function') {
+      await antiNukeRollback.saveRollbackData();
+    }
+  } catch (e) {
+    console.error('Failed to flush anti-nuke data on shutdown:', e);
+  } finally {
+    if (signal) process.exit(0);
+  }
+}
+
+process.on('SIGINT', () => void flushShutdown('SIGINT'));
+process.on('SIGTERM', () => void flushShutdown('SIGTERM'));
+process.on('uncaughtException', async (err) => {
+  console.error('Uncaught exception:', err);
+  await flushShutdown('uncaughtException');
+});
+process.on('unhandledRejection', async (reason) => {
+  console.error('Unhandled rejection:', reason);
+  await flushShutdown('unhandledRejection');
+});
+
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
   const cmd = client.commands.get(interaction.commandName);
   if (!cmd) return;
-  const shouldSanitize = interaction.commandName !== 'invite';
-  const sanitizePayload = (payload) => {
-    if (!payload) return payload;
-    const cleaned = typeof payload === 'string' ? { content: payload } : { ...payload };
-
-    if (typeof cleaned.content === 'string' && cleaned.content.length > 2000) {
-      cleaned.content = cleaned.content.slice(0, 1997) + '...';
-    }
-
-    if (!shouldSanitize) return cleaned;
-    if (cleaned.flags !== undefined) delete cleaned.flags;
-    if (cleaned.ephemeral !== undefined) delete cleaned.ephemeral;
-    return cleaned;
-  };
-  const wrapInteractionMethod = (methodName) => {
-    if (typeof interaction[methodName] !== 'function') return;
-    const original = interaction[methodName].bind(interaction);
-    interaction[methodName] = (payload, ...rest) => original(sanitizePayload(payload), ...rest);
-  };
-  wrapInteractionMethod('reply');
-  wrapInteractionMethod('editReply');
-  wrapInteractionMethod('deferReply');
-  wrapInteractionMethod('followUp');
   try {
     if (interaction.guild) {
       await analytics.recordCommand({ guildId: interaction.guild.id, commandName: interaction.commandName });
@@ -124,10 +145,12 @@ client.on('interactionCreate', async interaction => {
     console.error('Command handler failed', err);
     // Safely notify the user (use editReply if deferred/replied)
     try {
+      const { buildErrorEmbed } = require('./lib/embeds');
+      const embed = buildErrorEmbed('Command failed.');
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ content: 'Command failed.' });
+        await interaction.editReply({ embeds: [embed] });
       } else {
-        await interaction.reply({ content: 'Command failed.' });
+        await interaction.reply({ embeds: [embed], flags: 64 });
       }
     } catch (err2) {
       // If the interaction is expired, Discord returns code 10062 — ignore silently
@@ -144,18 +167,20 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
     if (!newMember.user || newMember.user.bot) return;
     if (!oldMember.roles || !oldMember.roles.cache || !newMember.roles || !newMember.roles.cache) return;
 
-    const staffRoles = [
-      ROLE_IDS.HELPER,
-      ROLE_IDS.HELPER_PLUS,
-      ROLE_IDS.HIGH_STAFF,
-      ROLE_IDS.MOD,
-      ROLE_IDS.CHIEF,
-      ROLE_IDS.CHIEF_OF_WAR,
-      ROLE_IDS.CHIEF_OF_COMMUNITY,
-      ROLE_IDS.CHIEF_OF_RECRUITMENT,
-      ROLE_IDS.CO_LEADER,
-      ROLE_IDS.LEADER
-    ].filter(Boolean);
+    const staffRoles = Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
+      ? ROLE_IDS.STAFF.filter(Boolean)
+      : [
+        ROLE_IDS.HELPER,
+        ROLE_IDS.HELPER_PLUS,
+        ROLE_IDS.HIGH_STAFF,
+        ROLE_IDS.MOD,
+        ROLE_IDS.CHIEF,
+        ROLE_IDS.CHIEF_OF_WAR,
+        ROLE_IDS.CHIEF_OF_COMMUNITY,
+        ROLE_IDS.CHIEF_OF_RECRUITMENT,
+        ROLE_IDS.CO_LEADER,
+        ROLE_IDS.LEADER
+      ].filter(Boolean);
 
     const recruiterRoles = [
       ROLE_IDS.RECRUITER,
@@ -219,10 +244,12 @@ client.on('messageCreate', async message => {
     console.error('Failed to track rookie chat message:', e);
   }
 
-  try {
-    await handleRookieWarLogMessage({ db, message, member, guild: message.guild, client });
-  } catch (e) {
-    console.error('Failed to track rookie war log:', e);
+  if (enableMessageContent) {
+    try {
+      await handleRookieWarLogMessage({ db, message, member, guild: message.guild, client });
+    } catch (e) {
+      console.error('Failed to track rookie war log:', e);
+    }
   }
 });
 
@@ -241,21 +268,16 @@ client.on('guildMemberAdd', async (member) => {
 
     if (!inviteSystem) return;
 
-    console.log(`👋 Member ${member.user.tag} joined the server`);
-    await trackInviteUsage(member.guild, inviteSystem, member.id).catch(() => { });
+    console.log(` Member ${member.user.tag} joined the server`);
+    await trackInviteUsage(member.guild, inviteSystem, member.id).catch(err => {
+      console.error('Invite usage tracking failed:', err);
+    });
 
   } catch (error) {
     console.error('Error tracking invite usage:', error);
   }
 });
 
-// Prevent uncaught rejections / exceptions from crashing the process
-process.on('unhandledRejection', (reason, p) => {
-  console.error('Unhandled Rejection at:', p, 'reason:', reason);
-});
-process.on('uncaughtException', err => {
-  console.error('Uncaught Exception:', err);
-});
 client.on('error', err => {
   console.error('Discord client error:', err);
 });
@@ -267,6 +289,13 @@ client.on('guildMemberRemove', async member => {
   } catch (e) {
     console.error('Failed to record leave analytics:', e);
   }
+
+  try {
+    voiceSessions.delete(`${member.guild.id}:${member.id}`);
+  } catch (e) {
+    void e;
+  }
+
   try {
     const { handleMemberLeave } = require('./lib/memberLeave');
     await handleMemberLeave(db, member.guild, member);
@@ -314,31 +343,131 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
 async function cacheGuildInvites(guild) {
   if (!guild || typeof guild.invites?.fetch !== 'function') return;
-  const invites = await guild.invites.fetch().catch(() => null);
+  const invites = await guild.invites.fetch().catch(err => {
+    console.error('Failed to fetch guild invites:', err);
+    return null;
+  });
   if (!invites) return;
   const map = new Map();
   invites.forEach(inv => map.set(inv.code, inv.uses || 0));
   inviteSnapshots.set(guild.id, map);
+  return map;
 }
 
 async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
   if (!guild || typeof guild.invites?.fetch !== 'function') return;
-  const previous = inviteSnapshots.get(guild.id) || new Map();
-  const invites = await guild.invites.fetch().catch(() => null);
-  if (!invites) return;
-  let usedCode = null;
-  invites.forEach(inv => {
-    const prevUses = previous.get(inv.code) || 0;
-    const newUses = inv.uses || 0;
-    if (newUses > prevUses) usedCode = inv.code;
-  });
-  const updated = new Map();
-  invites.forEach(inv => updated.set(inv.code, inv.uses || 0));
-  inviteSnapshots.set(guild.id, updated);
+  const lock = inviteTrackLocks.get(guild.id) || Promise.resolve();
+  const run = lock.then(async () => {
+    let previous = inviteSnapshots.get(guild.id);
+    let coldStart = !previous || previous.size === 0;
+    if (coldStart) {
+      previous = await cacheGuildInvites(guild).catch(err => {
+        console.error('Failed to refresh invite snapshot:', err);
+        return null;
+      });
+    }
 
-  if (usedCode && inviteSystem && typeof inviteSystem.markInviteUsed === 'function') {
-    await inviteSystem.markInviteUsed(usedCode, joinedUserId);
-    await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
+    const invites = await guild.invites.fetch().catch(err => {
+      console.error('Failed to fetch invites for attribution:', err);
+      return null;
+    });
+    if (!invites) return;
+
+    const updated = new Map();
+    invites.forEach(inv => updated.set(inv.code, inv.uses || 0));
+    inviteSnapshots.set(guild.id, updated);
+    const pendingMap = invitePendingAttributions.get(guild.id) || new Map();
+
+    if (coldStart) {
+      // With no pre-join snapshot, avoid guessing from total uses. Use tracked invite hints only.
+      try {
+        if (inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
+          const candidates = await inviteSystem.getActiveInviteCodeCandidates();
+          if (candidates && candidates.length === 1) {
+            await inviteSystem.markInviteUsed(candidates[0], joinedUserId);
+            await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
+          }
+        }
+      } catch (e) {
+        console.error('Invite attribution fallback failed:', e);
+      }
+      return;
+    }
+
+    const changed = [];
+    let best = { code: null, delta: 0 };
+    invites.forEach(inv => {
+      const prevUses = (previous && previous.get(inv.code)) || 0;
+      const newUses = inv.uses || 0;
+      const delta = newUses - prevUses;
+      if (delta > 0) {
+        changed.push({ code: inv.code, delta });
+        pendingMap.set(inv.code, (pendingMap.get(inv.code) || 0) + delta);
+      }
+      if (delta > best.delta) {
+        best = { code: inv.code, delta };
+      }
+    });
+
+    let usedCode = null;
+    let bestPending = 0;
+    for (const [code, count] of pendingMap.entries()) {
+      if (count > bestPending) {
+        bestPending = count;
+        usedCode = code;
+      }
+    }
+
+    if (!usedCode) {
+      usedCode = changed.length === 1 ? changed[0].code : null;
+      if (!usedCode && best.code && best.delta > 0) usedCode = best.code;
+    }
+
+    if (usedCode && pendingMap.has(usedCode)) {
+      const remaining = (pendingMap.get(usedCode) || 0) - 1;
+      if (remaining > 0) {
+        pendingMap.set(usedCode, remaining);
+      } else {
+        pendingMap.delete(usedCode);
+      }
+    }
+
+    if (pendingMap.size) {
+      invitePendingAttributions.set(guild.id, pendingMap);
+    } else {
+      invitePendingAttributions.delete(guild.id);
+    }
+
+    // If this invite code belongs to our tracked recruiter_invites, mark it used
+    if (usedCode && inviteSystem && typeof inviteSystem.markInviteUsed === 'function') {
+      await inviteSystem.markInviteUsed(usedCode, joinedUserId);
+      await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
+      return;
+    }
+
+    // Fallback: if we couldn't determine usedCode but there is exactly one active tracked invite code, attribute to it.
+    try {
+      if (inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
+        const candidates = await inviteSystem.getActiveInviteCodeCandidates();
+        if (candidates && candidates.length === 1) {
+          await inviteSystem.markInviteUsed(candidates[0], joinedUserId);
+          await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
+        }
+      }
+    } catch (e) {
+      console.error('Invite attribution fallback failed:', e);
+    }
+  });
+
+  inviteTrackLocks.set(guild.id, run);
+  try {
+    await run;
+  } catch (e) {
+    console.error('Invite tracking failed:', e);
+  } finally {
+    if (inviteTrackLocks.get(guild.id) === run) {
+      inviteTrackLocks.delete(guild.id);
+    }
   }
 }
 
@@ -356,6 +485,8 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
   }
 
   try {
+    await antiNukeInitPromise;
+    await inviteInitPromise;
     await client.login(token);
   } catch (err) {
     if (err && err.code === 'TokenInvalid') {

@@ -19,6 +19,7 @@ const ECONOMY_CONFIG = {
     'm2.0_7d': { value: 2.0, cost: 25, days: 7 }
   },
   STRENGTH_ALPHA: 0.18,
+  STRENGTH_MIN: 1.0,
   STRENGTH_MAX: 1.8,
   QUALITY_FACTOR: 0.12,
   WARNING_WEIGHT: 0.10,
@@ -46,7 +47,7 @@ function calculateMinRecruitsRequired({
   const Wk = Math.max(1, Math.min(4, Math.floor(distinctWeeks) || 1));
   const activityRate = T / Wk;
   let S = 1 + ECONOMY_CONFIG.STRENGTH_ALPHA * Math.log(1 + activityRate);
-  S = Math.min(S, ECONOMY_CONFIG.STRENGTH_MAX);
+  S = Math.max(ECONOMY_CONFIG.STRENGTH_MIN, Math.min(S, ECONOMY_CONFIG.STRENGTH_MAX));
   const Q = 1 + ECONOMY_CONFIG.QUALITY_FACTOR * Math.max(0, Math.min(1, retention));
   const W = 1 + ECONOMY_CONFIG.WARNING_WEIGHT * Math.max(0, activeWarnings);
 
@@ -78,7 +79,11 @@ function formatPointsValue(value) {
 async function getActiveMultiplier(db, recruiterId) {
   try {
     const now = Date.now();
-    await db.run('DELETE FROM multipliers WHERE recruiter_id = ? AND expires_at <= ?', recruiterId, now).catch(() => { });
+    try {
+      await db.run('DELETE FROM multipliers WHERE recruiter_id = ? AND expires_at <= ?', recruiterId, now);
+    } catch (e) {
+      console.error('Failed to purge expired multipliers', { recruiterId, error: e });
+    }
     const row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1', recruiterId, now);
     return row ? { value: row.value, expiresAt: row.expires_at, type: row.type } : { value: 1.0, expiresAt: 0, type: null };
   } catch (e) {
@@ -96,7 +101,15 @@ async function applyMultiplier(db, recruiterId, multiplierKey) {
 } 
 
 async function resetMultipliers(db, recruiterId) {
-  await db.run('DELETE FROM multipliers WHERE recruiter_id = ?', recruiterId);
+  if (!db) return;
+  await db.run('BEGIN TRANSACTION');
+  try {
+    await db.run('DELETE FROM multipliers WHERE recruiter_id = ?', recruiterId);
+    await db.run('COMMIT');
+  } catch (e) {
+    await db.run('ROLLBACK');
+    throw e;
+  }
 }
 
 /**
@@ -145,8 +158,8 @@ const counts = Object.create(null);
   if (hadPermissionError) {
     // graceful fallback: if caller requested a heuristic fallback via opts.fallbackToHeuristic, return 0.5 by default
     if (opts && opts.fallbackToHeuristic) return 0.5;
-    // otherwise indicate we couldn't compute retention via messages by returning -1
-    return -1;
+    // otherwise indicate we couldn't compute retention via messages
+    return null;
   }
 
   return activeSet.size / recruitedIds.length;

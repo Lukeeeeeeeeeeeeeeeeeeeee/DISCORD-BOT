@@ -29,7 +29,12 @@ async function trackRookieChatMessage({ db, member, guild, client }) {
 
   try {
     await db.run(
-      'INSERT OR REPLACE INTO rookie_chat_activity (member_id, week_start, message_count, awarded_chunks, updated_at) VALUES (?, ?, ?, ?, ?)',
+      `INSERT INTO rookie_chat_activity (member_id, week_start, message_count, awarded_chunks, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(member_id, week_start) DO UPDATE SET
+         message_count = excluded.message_count,
+         awarded_chunks = MAX(awarded_chunks, excluded.awarded_chunks),
+         updated_at = excluded.updated_at`,
       member.id,
       weekStart,
       messageCount,
@@ -54,7 +59,9 @@ async function trackRookieChatMessage({ db, member, guild, client }) {
     if (logChannel && logChannel.send) {
       const totalPoints = Number.isFinite(result.points) ? formatPoints(result.points) : '0';
       const msg = `💬 <@${member.id}> earned **${formatPoints(pointsToAdd)}** chat points (${messageCount} msgs this week). Total: **${totalPoints}/10**.`;
-      logChannel.send(msg).catch(() => { });
+      logChannel.send(msg).catch(err => {
+        console.error('Failed to post rookie chat log:', err);
+      });
     }
   }
 }

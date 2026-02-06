@@ -1,5 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
+const runtime = require('../lib/runtime');
+const { replyError } = require('../lib/embeds');
 
 module.exports = {
   data: {
@@ -28,9 +30,7 @@ module.exports = {
   async execute(interaction) {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ 
-        content: '❌ Administrator permission required.'
-      });
+      return replyError(interaction, 'Administrator permission required.', { flags: 64 });
     }
 
     const botMember = interaction.guild && interaction.guild.members && interaction.guild.members.me
@@ -40,15 +40,13 @@ module.exports = {
       const userTop = interaction.member.roles.highest;
       const botTop = botMember.roles.highest;
       if (userTop && botTop && userTop.comparePositionTo(botTop) <= 0) {
-        return interaction.reply({ content: '❌ You must be above the bot in role hierarchy to use whitelist actions.' });
+        return replyError(interaction, 'You must be above the bot in role hierarchy to use whitelist actions.', { flags: 64 });
       }
     }
 
-    const antiNuke = global.antiNuke;
+    const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
-      return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.'
-      });
+      return replyError(interaction, 'Anti-nuke system not initialized.', { flags: 64 });
     }
 
     const action = interaction.options.getString('action');
@@ -58,9 +56,7 @@ module.exports = {
       switch (action) {
         case 'add': {
           if (!targetUser) {
-            return interaction.reply({ 
-              content: '❌ User parameter is required for add action.'
-            });
+            return replyError(interaction, 'User parameter is required for add action.', { flags: 64 });
           }
 
           const botMember = interaction.guild && interaction.guild.members && interaction.guild.members.me
@@ -68,21 +64,21 @@ module.exports = {
             : null;
           const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
           if (!targetMember) {
-            return interaction.reply({ content: '❌ That user is not in this server.' });
+            return replyError(interaction, 'That user is not in this server.', { flags: 64 });
           }
 
           const hasAdminPerm = targetMember.permissions && targetMember.permissions.has
             ? targetMember.permissions.has('Administrator')
             : false;
           if (!hasAdminPerm) {
-            return interaction.reply({ content: '❌ User must have Administrator permissions to be whitelisted.' });
+            return replyError(interaction, 'User must have Administrator permissions to be whitelisted.', { flags: 64 });
           }
 
           if (botMember && targetMember.roles && botMember.roles) {
             const targetTop = targetMember.roles.highest;
             const botTop = botMember.roles.highest;
             if (targetTop && botTop && targetTop.comparePositionTo(botTop) <= 0) {
-              return interaction.reply({ content: '❌ User must be above the bot in role hierarchy to be whitelisted.' });
+              return replyError(interaction, 'User must be above the bot in role hierarchy to be whitelisted.', { flags: 64 });
             }
           }
 
@@ -92,7 +88,7 @@ module.exports = {
               .setTitle('⚠️ User Already Whitelisted')
               .setDescription(`${targetUser.tag} is already in the whitelist.`)
               .setTimestamp();
-            return interaction.reply({ embeds: [embed] });
+            return interaction.reply({ embeds: [embed], flags: 64 });
           }
 
           const result = antiNuke.requestWhitelistAdd(interaction.guild.id, targetUser.id, interaction.user.id);
@@ -103,11 +99,11 @@ module.exports = {
               .setTitle('⚠️ User Already Whitelisted')
               .setDescription(`${targetUser.tag} is already in the whitelist.`)
               .setTimestamp();
-            return interaction.reply({ embeds: [embed] });
+            return interaction.reply({ embeds: [embed], flags: 64 });
           }
 
           if (result.status === 'invalid') {
-            return interaction.reply({ content: '❌ Invalid whitelist request.' });
+            return replyError(interaction, 'Invalid whitelist request.', { flags: 64 });
           }
 
           if (result.status === 'approved') {
@@ -130,7 +126,7 @@ module.exports = {
               required: result.required
             });
 
-            return interaction.reply({ embeds: [addEmbed] });
+            return interaction.reply({ embeds: [addEmbed], flags: 64 });
           }
 
           const pendingEmbed = new EmbedBuilder()
@@ -153,14 +149,12 @@ module.exports = {
             required: result.required
           });
 
-          return interaction.reply({ embeds: [pendingEmbed] });
+          return interaction.reply({ embeds: [pendingEmbed], flags: 64 });
         }
 
         case 'remove': {
           if (!targetUser) {
-            return interaction.reply({ 
-              content: '❌ User parameter is required for remove action.'
-            });
+            return replyError(interaction, 'User parameter is required for remove action.', { flags: 64 });
           }
 
           if (!antiNuke.isWhitelisted(targetUser.id)) {
@@ -173,7 +167,7 @@ module.exports = {
                 .setTitle('⚠️ User Not Whitelisted')
                 .setDescription(`${targetUser.tag} is not in the whitelist or pending approval.`)
                 .setTimestamp();
-              return interaction.reply({ embeds: [embed] });
+              return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
             const pendingEmbed = new EmbedBuilder()
@@ -192,7 +186,7 @@ module.exports = {
               targetUserId: targetUser.id
             });
 
-            return interaction.reply({ embeds: [pendingEmbed] });
+            return interaction.reply({ embeds: [pendingEmbed], flags: 64 });
           }
 
           antiNuke.removeFromWhitelist(targetUser.id);
@@ -213,7 +207,7 @@ module.exports = {
             targetUserId: targetUser.id
           });
 
-          return interaction.reply({ embeds: [removeEmbed] });
+          return interaction.reply({ embeds: [removeEmbed], flags: 64 });
         }
 
         case 'list': {
@@ -267,26 +261,17 @@ module.exports = {
             .setFooter({ text: 'Whitelisted users are immune to automatic anti-nuke actions' })
             .setTimestamp();
 
-          return interaction.reply({ embeds: [listEmbed] });
+          return interaction.reply({ embeds: [listEmbed], flags: 64 });
 
         }
 
         default:
-          return interaction.reply({ 
-            content: '❌ Invalid action specified.'
-          });
+          return replyError(interaction, 'Invalid action specified.', { flags: 64 });
       }
 
     } catch (error) {
       console.error('Whitelist command error:', error);
-      
-      const embed = new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('❌ Whitelist Command Failed')
-        .setDescription(`Error: ${error.message}`)
-        .setTimestamp();
-
-      return interaction.reply({ embeds: [embed] });
+      return replyError(interaction, `Whitelist command failed: ${error.message}`, { flags: 64, title: 'Whitelist Command Failed' });
     }
   }
 };

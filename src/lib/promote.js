@@ -1,4 +1,23 @@
-const { ROLE_IDS, REGION_INFO } = require('../constants');
+const { ROLE_IDS } = require('../constants');
+const { getRegionInfo } = require('./regions');
+
+async function retrySetNickname(member, nickname, delaysMs = [0, 1000, 2000]) {
+    if (!member || !nickname) return false;
+    for (let i = 0; i < delaysMs.length; i++) {
+        const delay = delaysMs[i];
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+        try {
+            await member.setNickname(nickname);
+            return true;
+        } catch (e) {
+            if (i === delaysMs.length - 1) {
+                console.error('Failed to update nickname after promotion', { memberId: member.id, error: e });
+                return false;
+            }
+        }
+    }
+    return false;
+}
 
 function inferTeamFromOnboarding(member) {
     if (!member || !member.roles || !member.roles.cache) return null;
@@ -44,23 +63,27 @@ async function promoteMember({ member, db, guild, verifierId }) {
         ...(ROLE_IDS.ONBOARDING || [])
     ].filter(Boolean);
 
-    const uniqueRolesToRemove = [...new Set(rolesToRemove)];
+    const uniqueRolesToRemove = new Set(rolesToRemove);
+    const currentRoleIds = new Set(member.roles.cache.map(r => r.id));
     for (const roleId of uniqueRolesToRemove) {
-        if (member.roles.cache.has(roleId)) {
-            await member.roles.remove(roleId).catch(() => { });
-        }
+        currentRoleIds.delete(roleId);
     }
 
-    // Add Roles
-    if (ROLE_IDS.SOLACE) await member.roles.add(ROLE_IDS.SOLACE).catch(() => { });
-    if (teamRoleId) await member.roles.add(teamRoleId).catch(() => { });
+    if (ROLE_IDS.SOLACE) currentRoleIds.add(ROLE_IDS.SOLACE);
+    if (teamRoleId) currentRoleIds.add(teamRoleId);
+
+    const finalRoleIds = Array.from(currentRoleIds).filter(id => id !== member.guild.id);
+    await member.roles.set(finalRoleIds, 'Rookie promotion').catch(err => {
+      console.error('Failed to update roles during rookie promotion:', err);
+    });
 
     // Update Nickname
     const cleanedNickname = stripRookiePoints(member.nickname) || member.user.username;
-    const teamEmoji = team === 'EU' ? '🔥' : (team === 'NA' ? '💧' : (team === 'AS' ? '🌬️' : ''));
+    const teamInfo = getRegionInfo(team);
+    const teamEmoji = teamInfo.emoji || '';
     const newNick = `${cleanedNickname} ${teamEmoji}`.trim();
     if (newNick !== member.nickname) {
-        await member.setNickname(newNick).catch(() => { });
+        await retrySetNickname(member, newNick);
     }
 
     // Record verification
@@ -71,7 +94,7 @@ async function promoteMember({ member, db, guild, verifierId }) {
             member.id
         );
         recruiterId = recruitRow ? recruitRow.recruiter_id : null;
-    } catch (e) { }
+    } catch (e) { void e; }
 
     try {
         await db.run(
@@ -89,9 +112,9 @@ async function promoteMember({ member, db, guild, verifierId }) {
     try {
         const scheduler = require('../scheduler');
         await scheduler.recomputeLeaderboards(db, guild);
-    } catch (e) { }
+    } catch (e) { void e; }
 
-    const teamName = team && REGION_INFO && REGION_INFO[team] ? REGION_INFO[team].name : (team || 'Unknown');
+    const teamName = getRegionInfo(team).name || (team || 'Unknown');
     return { team, teamName, teamEmoji };
 }
 

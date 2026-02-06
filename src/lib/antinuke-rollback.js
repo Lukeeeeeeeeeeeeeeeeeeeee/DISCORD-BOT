@@ -5,7 +5,7 @@ class AntiNukeRollback {
   constructor() {
     this.rollbackData = new Map(); // guildId -> rollback data
     this.ROLLBACK_FILE = path.join(__dirname, '../data/antinuke_rollback.json');
-    this.OWNER_ID = '1381692847018868778';
+    this.OWNER_ID = process.env.OWNER_ID || null;
     this._saveQueue = Promise.resolve();
   }
 
@@ -331,6 +331,15 @@ class AntiNukeRollback {
     }
 
     try {
+      const existing = guild.channels.cache.find(ch =>
+        ch.name === preState.channel.name
+        && ch.type === preState.channel.type
+        && (ch.parentId || null) === (preState.channel.parentId || null)
+      );
+      if (existing) {
+        return { success: true, action: 'Restored channel', target: preState.channel.name };
+      }
+
       const channelData = {
         name: preState.channel.name,
         type: preState.channel.type,
@@ -371,6 +380,11 @@ class AntiNukeRollback {
     }
 
     try {
+      const existing = guild.roles.cache.find(r => r.name === preState.role.name);
+      if (existing) {
+        return { success: true, action: 'Restored role', target: preState.role.name };
+      }
+
       const roleData = {
         name: preState.role.name,
         color: preState.role.color,
@@ -402,13 +416,38 @@ class AntiNukeRollback {
 
     try {
       let restored = 0;
+      let failed = 0;
+      const tasks = [];
+      const positionUpdates = [];
+
       for (const roleData of preState.roles) {
         const role = guild.roles.cache.get(roleData.id);
-        if (role) {
-          await role.setPermissions(roleData.permissions);
-          await role.setPosition(roleData.position);
-          restored++;
+        if (!role) continue;
+        tasks.push(async () => {
+          try {
+            await role.setPermissions(roleData.permissions);
+            restored++;
+          } catch (e) {
+            failed++;
+          }
+        });
+        if (role.id !== guild.id && Number.isFinite(roleData.position)) {
+          positionUpdates.push({ role, position: roleData.position });
         }
+      }
+
+      const batchSize = 5;
+      for (let i = 0; i < tasks.length; i += batchSize) {
+        const batch = tasks.slice(i, i + batchSize);
+        await Promise.all(batch.map(fn => fn()));
+      }
+
+      if (positionUpdates.length && guild.roles && typeof guild.roles.setPositions === 'function') {
+        await guild.roles.setPositions(positionUpdates);
+      }
+
+      if (failed > 0) {
+        return { success: false, error: `Failed to restore ${failed} roles` };
       }
       return { success: true, action: 'Restored role permissions', target: `${restored} roles` };
     } catch (error) {
@@ -422,33 +461,48 @@ class AntiNukeRollback {
     }
 
     try {
-      // Restore role permissions
+      // Restore role permissions in batches
+      const tasks = [];
+      let failed = 0;
       for (const roleData of preState.roles) {
         const role = guild.roles.cache.get(roleData.id);
-        if (role) {
-          await role.setPermissions(roleData.permissions);
-        }
+        if (!role) continue;
+        tasks.push(async () => {
+          try {
+            await role.setPermissions(roleData.permissions);
+          } catch (e) {
+            failed++;
+          }
+        });
+      }
+
+      const batchSize = 5;
+      for (let i = 0; i < tasks.length; i += batchSize) {
+        const batch = tasks.slice(i, i + batchSize);
+        await Promise.all(batch.map(fn => fn()));
       }
 
       // Restore channel permission overwrites
       for (const channelData of preState.channels || []) {
         const channel = guild.channels.cache.get(channelData.id);
         if (channel) {
-          // Clear existing overwrites
-          for (const overwrite of channel.permissionOverwrites.cache.values()) {
-            await overwrite.delete();
-          }
-          
-          // Restore original overwrites
-          for (const overwrite of channelData.permissionOverwrites || []) {
-            await channel.permissionOverwrites.create(overwrite.id, {
-              allow: overwrite.allow,
-              deny: overwrite.deny
-            });
-          }
+          const overwritePayload = (channelData.permissionOverwrites || [])
+            .filter(ow => ow && ow.id)
+            .map(ow => ({
+              id: ow.id,
+              allow: ow.allow,
+              deny: ow.deny,
+              type: ow.type
+            }));
+
+          // Apply full overwrite set in a single request to avoid a mid-run "public channel" state.
+          await channel.permissionOverwrites.set(overwritePayload);
         }
       }
 
+      if (failed > 0) {
+        return { success: false, error: `Failed to restore ${failed} role permissions` };
+      }
       return { success: true, action: 'Restored emergency lockdown', target: 'All permissions' };
     } catch (error) {
       return { success: false, error: `Failed to restore emergency lockdown: ${error.message}` };
@@ -528,7 +582,9 @@ class AntiNukeRollback {
 
   // Check if user is owner
   isOwner(userId) {
-    return userId === this.OWNER_ID;
+    if (!userId) return false;
+    if (this.OWNER_ID) return userId === this.OWNER_ID;
+    return false;
   }
 }
 

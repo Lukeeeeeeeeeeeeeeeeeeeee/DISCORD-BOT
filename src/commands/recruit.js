@@ -1,4 +1,6 @@
-const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_ROLE_IDS, REGION_INFO } = require('../constants');
+const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_ROLE_IDS, REGION_INFO, CHANNELS } = require('../constants');
+const { getRegionInfo, getTeamLabel } = require('../lib/regions');
+const { replyError } = require('../lib/embeds');
 const db = require('../db_async');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../lib/economy');
 
@@ -38,13 +40,23 @@ function pickOnboardingRole(team) {
   return list[0];
 }
 
+function mentionRole(roleId, fallback) {
+  if (!roleId) return fallback || 'role';
+  return `<@&${roleId}>`;
+}
+
 function buildRookieWelcomeMessage(teamName) {
+  const logsChannel = CHANNELS && CHANNELS.ROOKIE_LOGS ? `<#${CHANNELS.ROOKIE_LOGS}>` : 'the rookie logs channel';
+  const rookieRole = mentionRole(ROLE_IDS.ROOKIE, 'rookie role');
+  const fullRole = mentionRole(ROLE_IDS.AUTO_PROMOTE_ROLE, 'full member role');
+  const recruiterRole = mentionRole(ROLE_IDS.RECRUITER, 'recruiter role');
+  const trialRole = mentionRole(ROLE_IDS.TRIAL_RECRUITER, 'trial recruiter role');
   return `Welcome to Solace! You have been recruited in ${teamName}.
 Make sure you read how to war, whats a war and see readme!
 
 # <:SOLACEONTOP:1460693669391765750> SOLACE ROOKIE INFO
 Hello there and welcome to Solace! 
-The first thought that crosses your mind might be the reason behind your being given the <@&1331020584473329726>—it's our basic role. You will have to earn <@&1331020565879984198> to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
+The first thought that crosses your mind might be the reason behind your being given the ${rookieRole}—it's our basic role. You will have to earn ${fullRole} to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
 
  Point Earning Methods
 
@@ -54,8 +66,8 @@ The first thought that crosses your mind might be the reason behind your being g
 > -# **Wars / Ganks happen randomly**
 
 2. Recruiting (Fast Track)
-> As <@&1459956798172827933>, get 3 people on board in 9 days
-> <:greenarrow:1459897308610039900> Direct promotion to <@&1331020565879984198> + <@&1331020553707847772>
+> As ${trialRole}, get 3 people on board in 9 days
+> <:greenarrow:1459897308610039900> Direct promotion to ${fullRole} + ${recruiterRole}
 *** If 3 recruits are not reached within the specified time, the process goes back to zero.***
 
 3. Activity (Chatting)
@@ -68,7 +80,7 @@ What Are Points?
 Points are shown beside your name (e.g., 0/10). With more wars, chat, and recruiting activities, the points go up.
 
 Logging Progress 
-Make sure to put down your achievements in <#1331020800551293030> always. This is a must to ensure the counting of your points and your elevation. **Why?**
+Make sure to put down your achievements in ${logsChannel} always. This is a must to ensure the counting of your points and your elevation. **Why?**
 <:greenarrow:1459897308610039900> Logging your progression insures that you get the points you worked for. It also is a chart of your progression if that helps you in terms of motivation.
 
 Wishing you good luck and once again welcoming you to Solace `;
@@ -77,7 +89,7 @@ Wishing you good luck and once again welcoming you to Solace `;
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
   try {
     const weekStart = getWeekStartUtcTs();
-    const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+    const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
     const currentStats = await calculate7DayStats(db, recruiterMember.id, guild || null, statsWindow);
 
     const warnings = await db.get(
@@ -231,10 +243,20 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
     recruiterRoleId = null;
   }
 
-  await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(() => { });
-  await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(() => { });
-  await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(() => { });
-  if (recruiterRoleId) await recruiterMember.roles.add(recruiterRoleId).catch(() => { });
+  await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(err => {
+    console.error('Failed to remove trial recruiter role:', err);
+  });
+  await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(err => {
+    console.error('Failed to add auto promote role:', err);
+  });
+  await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(err => {
+    console.error('Failed to add recruiter role:', err);
+  });
+  if (recruiterRoleId) {
+    await recruiterMember.roles.add(recruiterRoleId).catch(err => {
+      console.error('Failed to add region recruiter role:', err);
+    });
+  }
 
   try {
     await db.run('UPDATE recruiters SET promoted = 1 WHERE id = ?', recruiterMember.id);
@@ -244,7 +266,9 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
 
   await storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember);
 
-  await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(() => { });
+  await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(err => {
+    console.error('Failed to clear trial fast track row:', err);
+  });
   return { promoted: true };
 }
 
@@ -299,10 +323,13 @@ module.exports = {
         if (recruiterMemberForTeam && hasAdministrator(recruiterMemberForTeam)) {
           team = regionTag === 'NA' ? 'NA' : (regionTag === 'AS' ? 'AS' : 'EU');
         } else {
-          return respond({ content: 'You must have a team recruiter role (Fire/Water/Air) to use this command.' });
+          const regionCodes = Object.keys(REGION_INFO || {}).length ? Object.keys(REGION_INFO) : ['EU', 'NA', 'AS'];
+          const labelList = regionCodes.map(code => getTeamLabel(code)).join(', ');
+          return respond({ content: `You must have a team recruiter role (${labelList}) to use this command.` });
         }
       }
-      const teamName = (REGION_INFO && REGION_INFO[team] && REGION_INFO[team].name) ? REGION_INFO[team].name : team;
+      const teamInfo = getRegionInfo(team);
+      const teamName = teamInfo && teamInfo.name ? teamInfo.name : team;
 
       // checks
       if (recruitedGuildMember.user.bot) return respond({ content: 'Cannot recruit bots.' });
@@ -334,7 +361,11 @@ module.exports = {
         if (chosenRole) await recruitedGuildMember.roles.add(chosenRole);
 
         // set nickname
-        await recruitedGuildMember.setNickname(`${ign} | ${regionTag || team} 0/10`).catch(() => null);
+        if (recruitedGuildMember.manageable) {
+          await recruitedGuildMember.setNickname(`${ign} | ${regionTag || team} 0/10`).catch(err => {
+            console.error('Failed to set recruit nickname:', err);
+          });
+        }
 
         try {
           await db.run(
@@ -349,7 +380,9 @@ module.exports = {
 
         try {
           if (recruitedGuildMember) {
-            await recruitedGuildMember.send(buildRookieWelcomeMessage(teamName)).catch(() => { });
+            await recruitedGuildMember.send(buildRookieWelcomeMessage(teamName)).catch(err => {
+              console.error('Failed to DM rookie welcome message:', err);
+            });
           }
         } catch (e) {
           void e;
@@ -403,28 +436,23 @@ module.exports = {
 
         // Handle specific errors
         if (err && err.message && err.message.includes('UNIQUE constraint failed')) {
-          return respond({ content: 'That member has already been recruited before and cannot be recruited again.' });
+          return replyError(interaction, 'That member has already been recruited before and cannot be recruited again.');
         }
 
         if (err && err.message && err.message.includes('Missing Permissions')) {
-          return respond({ content: 'Missing permissions to assign roles. Please check bot permissions.' });
+          return replyError(interaction, 'Missing permissions to assign roles. Please check bot permissions.');
         }
 
         if (err && err.message && err.message.includes('Unknown User')) {
-          return respond({ content: 'Unable to find one of the users mentioned.' });
+          return replyError(interaction, 'Unable to find one of the users mentioned.');
         }
 
         // Generic error
-        return respond({ content: 'An error occurred while processing the recruit command. Please try again later.' });
+        return replyError(interaction, 'An error occurred while processing the recruit command. Please try again later.');
       }
     } catch (err) {
       console.error('Recruit command error:', err);
-      if (typeof interaction.reply === 'function') {
-        return interaction.reply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
-      }
-      if (typeof interaction.editReply === 'function') {
-        return interaction.editReply({ content: 'An error occurred while processing the recruit command. Please try again later.' });
-      }
+      return replyError(interaction, 'An error occurred while processing the recruit command. Please try again later.');
 
       return null;
     }

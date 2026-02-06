@@ -30,6 +30,6 @@ describe('computeRetentionFromGuild', () => {
     expect(ret).toBe(0.5);
 
     const ret2 = await econ.computeRetentionFromGuild(guild, ['u1','u2'], 7, 15, { maxChannels: 1, perChannelLimit: 100, fallbackToHeuristic: false });
-    expect(ret2).toBe(-1);
+    expect(ret2).toBeNull();
   });
 });

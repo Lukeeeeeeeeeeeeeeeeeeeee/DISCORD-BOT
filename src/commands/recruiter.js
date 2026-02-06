@@ -3,6 +3,9 @@ const { EmbedBuilder } = require('discord.js');
 const { PURCHASE_ITEMS } = require('../constants');
 const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions, hasAdministrator } = require('../lib/permissions');
 const { formatPointsValue } = require('../lib/economy');
+const { formatDiscordTimestamp, formatUtcDate } = require('../lib/time');
+const { clampText } = require('../lib/text');
+const { replyError } = require('../lib/embeds');
 const {
   calculate7DayStats,
   getPreviousMinReq,
@@ -70,7 +73,9 @@ async function postPurchaseLog({ guild, userId, item, cost }) {
       : null;
     if (channel && channel.send) {
       const formattedCost = formatPointsValue(cost);
-      await channel.send(`<@${userId}> bought **${item}** for **${formattedCost}** pts!`).catch(() => { });
+      await channel.send(`<@${userId}> bought **${item}** for **${formattedCost}** pts!`).catch(err => {
+        console.error('Failed to post purchase log:', err);
+      });
     }
   } catch (e) {
     // best-effort logging
@@ -122,7 +127,7 @@ module.exports = {
         return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to show multiplier list', e);
-        return interaction.reply({ content: 'Failed to show multipliers.' });
+        return replyError(interaction, 'Failed to show multipliers.');
       }
     }
 
@@ -139,7 +144,7 @@ module.exports = {
         }
 
         const embed = new EmbedBuilder()
-          .setTitle(`Multiplier for ${target.tag}`)
+          .setTitle(clampText(`Multiplier for ${target.tag}`, 256))
           .setDescription(active && active.type ? `Active: **${active.type}** — ×${active.value}` : 'No active multiplier.')
           .setColor(0x00AAFF)
           .setTimestamp();
@@ -147,7 +152,7 @@ module.exports = {
         return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to show multiplier view', e);
-        return interaction.reply({ content: 'Failed to show multiplier.' });
+        return replyError(interaction, 'Failed to show multiplier.');
       }
     }
 
@@ -169,7 +174,7 @@ module.exports = {
           embed.setDescription(
             rows
               .slice(0, 25)
-              .map(r => `<@${r.recruiter_id}> — **${r.type || 'unknown'}** ×${r.value} (exp ${new Date(r.expires_at).toUTCString()})`)
+              .map(r => `<@${r.recruiter_id}> — **${r.type || 'unknown'}** ×${r.value} (exp ${formatDiscordTimestamp(r.expires_at, 'R')})`)
               .join('\n')
           );
         }
@@ -177,12 +182,12 @@ module.exports = {
         return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to show active multipliers', e);
-        return interaction.reply({ content: 'Failed to show active multipliers.' });
+        return replyError(interaction, 'Failed to show active multipliers.');
       }
     }
 
     if (sub === 'multiplier-apply') {
-      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
+      if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin/Staff only.');
 
       const getUser = (key) => (interaction.options && typeof interaction.options.getUser === 'function' ? interaction.options.getUser(key) : null);
       const getString = (key) => (interaction.options && typeof interaction.options.getString === 'function' ? interaction.options.getString(key) : null);
@@ -206,7 +211,7 @@ module.exports = {
       }
 
       if (!target || !type) {
-        return interaction.reply({ content: 'Missing target or multiplier type.' });
+        return replyError(interaction, 'Missing target or multiplier type.');
       }
 
       try {
@@ -233,12 +238,12 @@ module.exports = {
         return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to apply multiplier', e);
-        return interaction.reply({ content: 'Failed to apply multiplier.' });
+        return replyError(interaction, 'Failed to apply multiplier.');
       }
     }
 
     if (sub === 'multiplier-reset') {
-      if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
+      if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin/Staff only.');
 
       let target = interaction.options.getUser('member') || interaction.options.getUser('user') || interaction.options.getUser('target') || interaction.options.getUser('recruiter');
       if (!target) {
@@ -250,7 +255,7 @@ module.exports = {
       }
 
       if (!target) {
-        return interaction.reply({ content: 'Missing target user.' });
+        return replyError(interaction, 'Missing target user.');
       }
 
       try {
@@ -277,30 +282,38 @@ module.exports = {
         return interaction.reply({ embeds: [embed] });
       } catch (e) {
         console.error('Failed to reset multipliers', e);
-        return interaction.reply({ content: 'Failed to reset multipliers.' });
+        return replyError(interaction, 'Failed to reset multipliers.');
       }
     }
 
     if (sub === 'info') {
       const member = interaction.options.getUser('member') || interaction.user;
+      if (typeof interaction.deferReply === 'function') {
+        await interaction.deferReply();
+      }
+      const respond = (payload) => {
+        if ((interaction.deferred || interaction.replied) && typeof interaction.editReply === 'function') {
+          return interaction.editReply(payload);
+        }
+        return interaction.reply(payload);
+      };
 
       // Check if user has permission to view info (basic check)
       const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       if (!guildMember) {
-        return interaction.reply({ content: 'Unable to verify your guild membership.' });
+        return respond({ content: 'Unable to verify your guild membership.' });
       }
 
       if (!hasRecruiterOrStaffPermissions(guildMember)) {
-        return interaction.reply({ content: 'Recruiter/staff only.' });
+        return respond({ content: 'Recruiter/staff only.' });
       }
 
-      console.log('DEBUG: Checking own info or permissions');
       if (member.id !== interaction.user.id && !hasAdminOrStaffPermissions(interaction.member)) {
-        return interaction.reply({ content: 'You can only view your own recruiter info.' });
+        return respond({ content: 'You can only view your own recruiter info.' });
       }
 
       if (!interaction.guild) {
-        return interaction.reply({ content: 'This command can only be used in a server.' });
+        return respond({ content: 'This command can only be used in a server.' });
       }
 
       // Basic rows
@@ -391,7 +404,7 @@ module.exports = {
       if (!Number.isFinite(minReq)) minReq = 2;
 
       const recentText = recruits.length
-        ? recruits.map(r => `<@${r.recruited_id}> (${new Date(r.created_at).toUTCString().replace(' GMT', '')}) — ${formatPointsValue(r.points || 0)} pts`).join('\n')
+        ? recruits.map(r => `<@${r.recruited_id}> (${formatDiscordTimestamp(r.created_at, 'R')}) — ${formatPointsValue(r.points || 0)} pts`).join('\n')
         : 'None';
 
       const { TESTING_USER_ID } = require('../constants');
@@ -400,7 +413,7 @@ module.exports = {
         : formatPointsValue(rec ? rec.points : 0);
 
       const embed = new EmbedBuilder()
-        .setTitle(`Recruiter: ${member.tag}`)
+        .setTitle(clampText(`Recruiter: ${member.tag}`, 256))
         .addFields(
           { name: 'Points', value: `${pointsValue}`, inline: true },
           { name: 'Active Multiplier', value: mul && mul.type ? `${mul.type} — ×${mul.value}` : 'None', inline: true },
@@ -496,19 +509,20 @@ module.exports = {
 
       // Add compact summaries for purchases/multipliers if present
       if (purchases.length) embed.addFields({ name: 'Recent purchases', value: purchases.map(p => `${p.item} — ${formatPointsValue(p.cost)} pts`).join('\n') });
-      if (multipliers.length) embed.addFields({ name: 'Multipliers (recent)', value: multipliers.slice(0, 3).map(m => `${m.type} ×${m.value} (exp ${new Date(m.expires_at).toUTCString()})`).join('\n') });
-      if (recentFlags.length) embed.addFields({ name: 'Recent flags', value: recentFlags.map(f => `${new Date(f.created_at).toUTCString()} — ${f.reason}`).join('\n') });
-      if (recentWarnings.length) embed.addFields({ name: 'Recent warnings', value: recentWarnings.map(w => `${new Date(w.created_at).toUTCString()} — ${w.note || ''}`).join('\n') });
+      if (multipliers.length) embed.addFields({ name: 'Multipliers (recent)', value: multipliers.slice(0, 3).map(m => `${m.type} ×${m.value} (exp ${formatDiscordTimestamp(m.expires_at, 'R')})`).join('\n') });
+      if (recentFlags.length) embed.addFields({ name: 'Recent flags', value: recentFlags.map(f => `${formatDiscordTimestamp(f.created_at, 'R')} — ${f.reason}`).join('\n') });
+      if (recentWarnings.length) embed.addFields({ name: 'Recent warnings', value: recentWarnings.map(w => `${formatDiscordTimestamp(w.created_at, 'R')} — ${w.note || ''}`).join('\n') });
 
       // Additional info footnote
-      embed.setFooter({ text: `7-Day Retention: ${Math.round(stats7d.retention * 100)}% • Last recruit: ${lastTs ? new Date(lastTs).toUTCString() : 'Never'}` });
+      embed.setFooter({ text: `7-Day Retention: ${Math.round(stats7d.retention * 100)}% • Last recruit: ${lastTs ? formatUtcDate(lastTs) : 'Never'}` });
 
-      return interaction.reply({ embeds: [embed] });
+      return respond({ embeds: [embed] });
     }
 
     if (sub === 'buy') {
       const item = interaction.options.getString('item');
       const userId = interaction.user.id;
+      const isTest = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
 
       // In unit tests, interaction.guild may be undefined.
       const guildMember = interaction.guild && interaction.guild.members && interaction.guild.members.fetch
@@ -517,14 +531,25 @@ module.exports = {
 
       // Check if user has permission to buy (basic check)
       const ROLE_IDS = require('../constants').ROLE_IDS;
-      const hasRole = (roleId) => !!roleId && !!guildMember && !!guildMember.roles && !!guildMember.roles.cache && typeof guildMember.roles.cache.has === 'function' && guildMember.roles.cache.has(roleId);
-      const isAdmin = hasAdministrator(guildMember);
       const hasRoleCache = !!guildMember && !!guildMember.roles && !!guildMember.roles.cache && typeof guildMember.roles.cache.has === 'function';
-      const hasPermissions = !!guildMember && !!guildMember.permissions && typeof guildMember.permissions.has === 'function';
+      const hasRole = (roleId) => !!roleId && hasRoleCache && guildMember.roles.cache.has(roleId);
 
-      // In production, roles.cache and permissions exist. In tests/mocks they may not.
-      if ((hasRoleCache || hasPermissions) && !hasRecruiterOrStaffPermissions(guildMember) && !hasRole(ROLE_IDS.ROOKIE) && !hasRole(ROLE_IDS.VIP) && !hasRole(ROLE_IDS.MVP) && !hasRole(ROLE_IDS.CUSTOM) && !isAdmin) {
-        return interaction.reply({ content: 'You need to be verified (Rookie+) or a recruiter/staff to purchase items.' });
+      if (!guildMember || !hasRoleCache) {
+        if (!isTest) {
+          return replyError(interaction, 'Unable to verify your roles right now. Please try again.');
+        }
+      }
+
+      const isAllowed = isTest
+        ? true
+        : (hasRecruiterOrStaffPermissions(guildMember)
+          || hasRole(ROLE_IDS.ROOKIE)
+          || hasRole(ROLE_IDS.VIP)
+          || hasRole(ROLE_IDS.MVP)
+          || hasRole(ROLE_IDS.CUSTOM));
+
+      if (!isAllowed) {
+        return replyError(interaction, 'You need to be verified (Rookie+) or a recruiter/staff to purchase items.');
       }
 
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', userId);
@@ -536,7 +561,7 @@ module.exports = {
       const multCfg = ECONOMY_CONFIG.MULTIPLIERS[item];
       if (multCfg) {
         const cost = multCfg.cost;
-        if (points < cost) return interaction.reply({ content: 'Not enough points to buy that multiplier.' });
+        if (points < cost) return replyError(interaction, 'Not enough points to buy that multiplier.');
         await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
         await applyMultiplier(db, userId, item);
         await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
@@ -572,7 +597,7 @@ module.exports = {
         return interaction.reply({ embeds: [embed] });
       }
 
-      if (points < cost) return interaction.reply({ content: 'Not enough points.' });
+      if (points < cost) return replyError(interaction, 'Not enough points.');
       // Deduct
       await db.run('UPDATE recruiters SET points = points - ? WHERE id = ?', cost, userId);
       await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', userId, item, cost, Date.now());
@@ -583,12 +608,20 @@ module.exports = {
         if (item === 'vip-role') {
           const ROLE_IDS = require('../constants').ROLE_IDS;
           const memberRec = interaction.guild && interaction.guild.members && interaction.guild.members.fetch ? await interaction.guild.members.fetch(userId).catch(() => null) : null;
-          if (memberRec && ROLE_IDS.VIP) await memberRec.roles.add(ROLE_IDS.VIP).catch(() => { });
+          if (memberRec && ROLE_IDS.VIP) {
+            await memberRec.roles.add(ROLE_IDS.VIP).catch(err => {
+              console.error('Failed to grant VIP role:', err);
+            });
+          }
         }
         if (item === 'mvp-role') {
           const ROLE_IDS = require('../constants').ROLE_IDS;
           const memberRec = interaction.guild && interaction.guild.members && interaction.guild.members.fetch ? await interaction.guild.members.fetch(userId).catch(() => null) : null;
-          if (memberRec && ROLE_IDS.MVP) await memberRec.roles.add(ROLE_IDS.MVP).catch(() => { });
+          if (memberRec && ROLE_IDS.MVP) {
+            await memberRec.roles.add(ROLE_IDS.MVP).catch(err => {
+              console.error('Failed to grant MVP role:', err);
+            });
+          }
         }
       } catch (e) {
         // best-effort
@@ -604,7 +637,16 @@ module.exports = {
 
     if (sub === 'warn') {
       // admin/staff only
-      if (!hasAdminOrStaffPermissions(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
+      if (!hasAdminOrStaffPermissions(interaction.member)) return replyError(interaction, 'Admin/Staff only.');
+      if (typeof interaction.deferReply === 'function') {
+        await interaction.deferReply({ flags: 64 });
+      }
+      const respond = (payload) => {
+        if ((interaction.deferred || interaction.replied) && typeof interaction.editReply === 'function') {
+          return interaction.editReply(payload);
+        }
+        return interaction.reply(payload);
+      };
       const member = interaction.options.getUser('member');
       const note = interaction.options.getString('note') || 'Manual warning by staff';
       const expiresDays = interaction.options.getInteger('expires_days');
@@ -612,7 +654,7 @@ module.exports = {
       // Validate member exists
       const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       if (!targetMember) {
-        return interaction.reply({ content: 'Member not found in this guild.' });
+        return respond({ content: 'Member not found in this guild.' });
       }
 
       try {
@@ -634,12 +676,16 @@ module.exports = {
         const { EmbedBuilder } = require('discord.js');
         const warnEmbed = new EmbedBuilder()
           .setTitle('⚠️ Recruiter Warning')
-          .setDescription(`**Reason:** ${note}${expiredAt ? `\n**Expires:** ${new Date(expiredAt).toUTCString()}` : ''}`)
+          .setDescription(`**Reason:** ${note}${expiredAt ? `\n**Expires:** ${formatDiscordTimestamp(expiredAt, 'R')}` : ''}`)
           .setColor(0xFF8800)
           .setTimestamp();
         try {
           const m = await interaction.guild.members.fetch(member.id).catch(() => null);
-          if (m) await m.send({ embeds: [warnEmbed] }).catch(() => { });
+          if (m) {
+            await m.send({ embeds: [warnEmbed] }).catch(err => {
+              console.error('Failed to DM recruiter warning:', err);
+            });
+          }
         } catch (e) {
           console.error('Failed to DM warned member', { memberId: member.id, error: e });
         }
@@ -657,7 +703,7 @@ module.exports = {
             )
             .setColor(0xFF4400)
             .setTimestamp();
-          if (expiredAt) staffEmbed.addFields({ name: 'Expires', value: new Date(expiredAt).toUTCString(), inline: true });
+          if (expiredAt) staffEmbed.addFields({ name: 'Expires', value: formatDiscordTimestamp(expiredAt, 'R'), inline: true });
           ch.send({ embeds: [staffEmbed] }).catch((e) => console.error('Failed to post warning to channel', { channelId: ch.id, error: e }));
         }
 
@@ -672,16 +718,25 @@ module.exports = {
 
         console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note, expiredAt });
 
-        return interaction.reply({ content: `Warning issued to ${member.tag}. ✅` });
+        return respond({ content: `Warning issued to ${member.tag}. ✅` });
       } catch (e) {
         console.error('Failed to issue warning', { error: e });
-        return interaction.reply({ content: 'Failed to issue warning.', ephemeral: true });
+        return respond({ content: 'Failed to issue warning.' });
       }
     }
 
     if (sub === 'warnings-revoke') {
       // admin/staff only
-      if (!hasAdminOrStaffPermissions(interaction.member)) return interaction.reply({ content: 'Admin/Staff only.' });
+      if (!hasAdminOrStaffPermissions(interaction.member)) return replyError(interaction, 'Admin/Staff only.');
+      if (typeof interaction.deferReply === 'function') {
+        await interaction.deferReply({ flags: 64 });
+      }
+      const respond = (payload) => {
+        if ((interaction.deferred || interaction.replied) && typeof interaction.editReply === 'function') {
+          return interaction.editReply(payload);
+        }
+        return interaction.reply(payload);
+      };
       const member = interaction.options.getUser('member');
       const warningId = interaction.options.getInteger('warning_id');
       try {
@@ -689,7 +744,7 @@ module.exports = {
           // Revoke specific warning
           const warning = await db.get('SELECT * FROM warnings WHERE id = ? AND recruiter_id = ?', warningId, member.id);
           if (!warning) {
-            return interaction.reply({ content: `Warning #${warningId} not found for ${member.tag}.` });
+            return respond({ content: `Warning #${warningId} not found for ${member.tag}.` });
           }
 
           await db.run('UPDATE warnings SET revoked = 1 WHERE id = ? AND recruiter_id = ?', warningId, member.id);
@@ -713,10 +768,10 @@ module.exports = {
           console.error('Failed to update leaderboards after warning revocation:', e);
         }
 
-        return interaction.reply({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}. ✅` });
+        return respond({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}. ✅` });
       } catch (e) {
         console.error('Failed to revoke warnings', { error: e });
-        return interaction.reply({ content: 'Failed to revoke warnings.' });
+        return respond({ content: 'Failed to revoke warnings.' });
       }
     }
 

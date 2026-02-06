@@ -1,5 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
+const { replyError } = require('../lib/embeds');
+const runtime = require('../lib/runtime');
 
 module.exports = {
   data: {
@@ -9,20 +11,16 @@ module.exports = {
   async execute(interaction) {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ 
-        content: '❌ Administrator permission required.'
-      });
+      return replyError(interaction, 'Administrator permission required.', { flags: 64 });
     }
 
-    const antiNuke = global.antiNuke;
+    const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
-      return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.'
-      });
+      return replyError(interaction, 'Anti-nuke system not initialized.', { flags: 64 });
     }
 
     try {
-      await interaction.deferReply();
+      await interaction.deferReply({ flags: 64 });
 
       // Create backup
       const backup = await antiNuke.createBackup(interaction.guild, {
@@ -71,7 +69,7 @@ module.exports = {
       if (interaction.replied || interaction.deferred) {
         await interaction.editReply({ embeds: [embed] });
       } else {
-        await interaction.reply({ embeds: [embed] });
+        await interaction.reply({ embeds: [embed], flags: 64 });
       }
     }
   }

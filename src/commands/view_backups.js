@@ -1,5 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
+const { buildErrorEmbed } = require('../lib/embeds');
+const runtime = require('../lib/runtime');
 
 module.exports = {
   data: {
@@ -9,17 +11,25 @@ module.exports = {
   async execute(interaction) {
     // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ 
-        content: '❌ Administrator permission required.'
-      });
+      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
     }
 
-    const antiNuke = global.antiNuke;
+    const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
-      return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.'
-      });
+      return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
+
+    if (typeof interaction.deferReply === 'function') {
+      await interaction.deferReply({ flags: 64 });
+    }
+
+    const respond = (payload) => {
+      if (interaction.deferred || interaction.replied) {
+        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
+        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
+      }
+      return interaction.reply(payload);
+    };
 
     try {
       const status = antiNuke.getStatus(interaction.guild.id);
@@ -44,7 +54,7 @@ module.exports = {
             }
           )
           .setTimestamp();
-        return interaction.reply({ embeds: [embed] });
+        return respond({ embeds: [embed] });
       }
 
       const backupAge = status.backupTimestamp
@@ -100,18 +110,13 @@ module.exports = {
         )
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed] });
+      return respond({ embeds: [embed] });
 
     } catch (error) {
       console.error('View backups error:', error);
       
-      const embed = new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('❌ Failed to View Backups')
-        .setDescription(`Error: ${error.message}`)
-        .setTimestamp();
-
-      return interaction.reply({ embeds: [embed] });
+      const embed = buildErrorEmbed(`Error: ${error.message}`, 'Failed to View Backups');
+      return respond({ embeds: [embed] });
     }
   }
 };

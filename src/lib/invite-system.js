@@ -1,4 +1,5 @@
 const db = require('../db_async');
+const { formatUtcDate } = require('./time');
 
 class InviteSystem {
   constructor() {
@@ -40,9 +41,9 @@ class InviteSystem {
   }
 
   // Check if user is a recruiter (trial, regular, or any type)
-  async isRecruiter(userId, guild) {
+  async isRecruiter(userId, guild, memberOverride = null) {
     try {
-      const member = await guild.members.fetch(userId).catch(() => null);
+      const member = memberOverride || await guild.members.fetch(userId).catch(() => null);
       if (!member) return false;
 
       const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
@@ -79,7 +80,7 @@ class InviteSystem {
             invite: {
               code: activeInvite.code,
               url: activeInvite.url,
-              expiresAt: new Date(activeInvite.expiresAt).toLocaleString(),
+              expiresAt: formatUtcDate(activeInvite.expiresAt),
               expiresIn: `${minutesLeft} minutes`
             },
             reused: true
@@ -153,7 +154,7 @@ class InviteSystem {
         invite: {
           code: invite.code,
           url: invite.url,
-          expiresAt: new Date(expiresAt).toLocaleString(),
+          expiresAt: formatUtcDate(expiresAt),
           expiresIn: '1 hour 30 minutes'
         }
       };
@@ -209,7 +210,7 @@ class InviteSystem {
         hasActive: true,
         code: activeInvite.code,
         url: activeInvite.url,
-        expiresAt: new Date(activeInvite.expiresAt).toLocaleString(),
+        expiresAt: formatUtcDate(activeInvite.expiresAt),
         timeLeft: `${minutesLeft} minutes`,
         isExpired: false
       };
@@ -293,11 +294,16 @@ class InviteSystem {
   async cleanupExpiredInvites() {
     try {
       const now = Date.now();
+      const yieldEvery = 100;
+      let iterations = 0;
 
       // Remove from memory
       for (const [recruiterId, invite] of this.activeInvites.entries()) {
         if (invite.expiresAt <= now) {
           this.activeInvites.delete(recruiterId);
+        }
+        if (++iterations % yieldEvery === 0) {
+          await new Promise(resolve => setImmediate(resolve));
         }
       }
 
@@ -305,6 +311,9 @@ class InviteSystem {
       for (const [userId, timestamp] of this.inviteCooldowns.entries()) {
         if (timestamp + (90 * 60 * 1000) <= now) {
           this.inviteCooldowns.delete(userId);
+        }
+        if (++iterations % yieldEvery === 0) {
+          await new Promise(resolve => setImmediate(resolve));
         }
       }
 
@@ -340,6 +349,18 @@ class InviteSystem {
     } catch (error) {
       console.error('Error getting invite stats:', error);
       return { totalInvites: 0, usedInvites: 0, activeInvites: 0, memoryActive: 0 };
+    }
+  }
+
+  async getActiveInviteCodeCandidates() {
+    try {
+      const rows = await db.all(
+        'SELECT invite_code FROM recruiter_invites WHERE used = 0 AND expires_at > ? ORDER BY created_at DESC LIMIT 10',
+        Date.now()
+      );
+      return (rows || []).map(r => r.invite_code).filter(Boolean);
+    } catch (e) {
+      return [];
     }
   }
 }

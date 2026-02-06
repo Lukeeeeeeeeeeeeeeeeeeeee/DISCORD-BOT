@@ -3,11 +3,16 @@ const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 
-const econ = require('./lib/economy');
-const { PURCHASE_ITEMS } = require('./constants');
-const BUY_CHOICES = Object.entries(econ.ECONOMY_CONFIG.MULTIPLIERS)
-  .map(([k, v]) => ({ name: `${k} ×${v.value} (${v.days}d)`, value: k }))
-  .concat(Object.entries(PURCHASE_ITEMS).map(([k, c]) => ({ name: `${k} — ${econ.formatPointsValue(c)} pts`, value: k })));
+const { REGIONS, REGION_INFO } = require('./constants');
+const TEAM_CHOICES = [
+  { name: 'All Teams', value: 'ALL' },
+  ...(REGIONS || []).map(code => {
+    const info = REGION_INFO && REGION_INFO[code] ? REGION_INFO[code] : null;
+    const label = info && info.name ? info.name : code;
+    const name = info && info.emoji ? `${info.emoji} ${label}` : label;
+    return { name, value: code };
+  })
+];
 
 const commands = [
   new SlashCommandBuilder().setName('recruit').setDescription('Register a recruit')
@@ -16,11 +21,16 @@ const commands = [
 
   new SlashCommandBuilder().setName('recruiter').setDescription('Recruiter info and actions')
     .addSubcommand(s => s.setName('info').setDescription('Show recruiter info').addUserOption(o => o.setName('member').setDescription('Recruiter to query')))
-    .addSubcommand(s => s.setName('buy').setDescription('Buy recruiter items').addStringOption(o => {
-      const opt = o.setName('item').setDescription('Item to purchase').setRequired(true);
-      // Add choices dynamically
-      return opt.addChoices(...BUY_CHOICES.map(c => ({ name: c.name, value: c.value })));
-    }))
+    .addSubcommand(s => s.setName('buy').setDescription('Buy recruiter items')
+      .addStringOption(o => o.setName('item').setDescription('Item to purchase').setRequired(true)))
+    .addSubcommand(s => s.setName('multiplier-list').setDescription('List available multipliers'))
+    .addSubcommand(s => s.setName('multiplier-view').setDescription('View active multiplier').addUserOption(o => o.setName('member').setDescription('Recruiter to query')))
+    .addSubcommand(s => s.setName('multiplier-active').setDescription('Show active multipliers'))
+    .addSubcommand(s => s.setName('multiplier-apply').setDescription('Admin: apply a multiplier')
+      .addUserOption(o => o.setName('member').setDescription('Recruiter to apply').setRequired(true))
+      .addStringOption(o => o.setName('item').setDescription('Multiplier key').setRequired(true)))
+    .addSubcommand(s => s.setName('multiplier-reset').setDescription('Admin: reset a multiplier')
+      .addUserOption(o => o.setName('member').setDescription('Recruiter to reset').setRequired(true)))
     .addSubcommand(s => s.setName('warn').setDescription('Admin: issue a warning to a recruiter').addUserOption(o => o.setName('member').setDescription('Recruiter to warn').setRequired(true)).addStringOption(o => o.setName('note').setDescription('Warning note (optional)')).addIntegerOption(o => o.setName('expires_days').setDescription('Expire after N days (optional, admin only)').setRequired(false)))
     .addSubcommand(s => s.setName('warnings-revoke').setDescription('Admin: revoke warnings for a recruiter').addUserOption(o => o.setName('member').setDescription('Recruiter to revoke warnings for').setRequired(true)).addIntegerOption(o => o.setName('warning_id').setDescription('Specific warning id to revoke (optional)'))),
   new SlashCommandBuilder().setName('revoke-recruit').setDescription('Revoke a recruit and update invite channels (admin only)')
@@ -49,16 +59,20 @@ const commands = [
     .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (caps apply)').setRequired(false).setMinValue(1).setMaxValue(1000))
     .addBooleanOption(opt => opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
   new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
-  new SlashCommandBuilder().setName('recruitment_report').setDescription('Admin: show recruiting performance by team (Fire/Water/Air)')
+  new SlashCommandBuilder().setName('recruitment_report').setDescription('Admin: show recruiting performance by team')
     .addStringOption(opt => opt.setName('team').setDescription('Team filter (default ALL)').setRequired(false)
-      .addChoices(
-        { name: 'All Teams', value: 'ALL' },
-        { name: '🔥 Fire', value: 'Fire' },
-        { name: '💧 Water', value: 'Water' },
-        { name: '🌬️ Air', value: 'Air' }
-      )),
+      .addChoices(...TEAM_CHOICES)),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
-    .addSubcommand(s => s.setName('show').setDescription('Show leaderboard').addStringOption(opt => opt.setName('region').setDescription('Region or all').setRequired(false)))
+    .addSubcommand(s => s.setName('show').setDescription('Show leaderboard').addStringOption(opt => opt.setName('region').setDescription('Region or all').setRequired(false)
+      .addChoices(
+        { name: 'Global', value: 'GLOBAL' },
+        ...(REGIONS || []).map(code => {
+          const info = REGION_INFO && REGION_INFO[code] ? REGION_INFO[code] : null;
+          const label = info && info.name ? info.name : code;
+          const name = info && info.emoji ? `${info.emoji} ${label}` : label;
+          return { name, value: code };
+        })
+      )))
     .addSubcommand(s => s.setName('init').setDescription('Initialize leaderboard messages (admin only)')),
   new SlashCommandBuilder().setName('antinuke_rollback').setDescription('Rollback all anti-nuke actions (Owner only)'),
 
@@ -107,7 +121,14 @@ const commands = [
   new SlashCommandBuilder().setName('toggle_aggressive_ban').setDescription('Enable or disable aggressive anti-nuke bans (Admin only)')
     .addBooleanOption(opt => opt.setName('enabled').setDescription('Enable aggressive bans').setRequired(true)),
   new SlashCommandBuilder().setName('export_logs').setDescription('Export recent anti-nuke logs (Admin only)')
-    .addIntegerOption(opt => opt.setName('limit').setDescription('Number of log entries to export (max 200)').setRequired(false)),
+    .addIntegerOption(opt => opt.setName('limit').setDescription('Number of log entries to export (max 200)').setRequired(false))
+    .addStringOption(opt => opt.setName('format').setDescription('Export format').setRequired(false)
+      .addChoices(
+        { name: 'json', value: 'json' },
+        { name: 'csv', value: 'csv' },
+        { name: 'txt', value: 'txt' }
+      ))
+    .addIntegerOption(opt => opt.setName('chunk_size').setDescription('Split export into chunks (1-200)').setRequired(false).setMinValue(1).setMaxValue(200)),
 ];
 
 async function registerCommands({ guildId = null, global = false } = {}) {

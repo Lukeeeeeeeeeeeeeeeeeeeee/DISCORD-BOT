@@ -157,6 +157,8 @@ function normalizeRoleIds(rawRoleIds) {
     chief_of_recruitment: 'CHIEF_OF_RECRUITMENT',
     co_leader: 'CO_LEADER',
     leader: 'LEADER',
+    staff: 'STAFF',
+    staff_roles: 'STAFF',
     vip: 'VIP',
     mvp: 'MVP',
     custom: 'CUSTOM',
@@ -256,6 +258,22 @@ function applyDerivedRoleIds(config) {
     if (roleIds.ONBOARDING[2]) roleIds.ONBOARDING_AIR = roleIds.ONBOARDING[2];
   }
   if (roleIds.AUTO_PROMOTE_ROLE) roleIds.SOLACE = roleIds.AUTO_PROMOTE_ROLE;
+  if (!Array.isArray(roleIds.STAFF) || roleIds.STAFF.length === 0) {
+    roleIds.STAFF = [
+      roleIds.HELPER,
+      roleIds.HELPER_PLUS,
+      roleIds.HIGH_STAFF,
+      roleIds.MOD,
+      roleIds.CHIEF,
+      roleIds.CHIEF_OF_WAR,
+      roleIds.CHIEF_OF_COMMUNITY,
+      roleIds.CHIEF_OF_RECRUITMENT,
+      roleIds.CO_LEADER,
+      roleIds.LEADER
+    ].filter(Boolean);
+  } else {
+    roleIds.STAFF = roleIds.STAFF.filter(Boolean);
+  }
   return { ...config, ROLE_IDS: roleIds };
 }
 
@@ -267,6 +285,7 @@ const baseGuildId = envGuildId || (rawConfig && (rawConfig.guildId || rawConfig.
 let selectedRaw = rawConfig;
 if (rawConfig && rawConfig.guilds && baseGuildId && rawConfig.guilds[baseGuildId]) {
   const { guilds, ...rootConfig } = rawConfig;
+  void guilds;
   selectedRaw = deepMerge(rootConfig, rawConfig.guilds[baseGuildId]);
 }
 

@@ -1,27 +1,39 @@
-const fs = require('fs');
+const fs = require('fs/promises');
 const path = require('path');
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
+const { buildErrorEmbed } = require('../lib/embeds');
 
 module.exports = {
   data: { name: 'status' },
   async execute(interaction) {
-    if (!hasAdministrator(interaction.member)) return interaction.reply({ content: 'Administrator permission required.' });
+    if (!hasAdministrator(interaction.member)) {
+      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
+    }
 
-    const DB_PATH = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'recruiter.db');
+    if (typeof interaction.deferReply === 'function') {
+      await interaction.deferReply({ flags: 64 });
+    }
+
+    const { DB_PATH } = require('../db_async');
     let dbSize = 'N/A';
     try {
-      const s = fs.statSync(DB_PATH);
+      const s = await fs.stat(DB_PATH);
       dbSize = `${Math.round(s.size / 1024)} KB`;
     } catch (e) { void e; }
 
     const backupsDir = path.join(path.dirname(DB_PATH), 'backups');
     let lastBackup = 'None';
     try {
-      const files = fs.readdirSync(backupsDir).filter(f => f.endsWith('.db')).map(f => ({ f, t: fs.statSync(path.join(backupsDir, f)).mtime.getTime() }));
-      if (files.length) {
-        files.sort((a, b) => b.t - a.t);
-        lastBackup = files[0].f;
+      const dbExt = path.extname(DB_PATH) || '.db';
+      const files = await fs.readdir(backupsDir);
+      const candidates = files.filter(f => f.endsWith(dbExt));
+      if (candidates.length) {
+        const stats = await Promise.all(
+          candidates.map(async f => ({ f, t: (await fs.stat(path.join(backupsDir, f))).mtime.getTime() }))
+        );
+        stats.sort((a, b) => b.t - a.t);
+        lastBackup = stats[0].f;
       }
     } catch (e) { void e; }
 
@@ -45,6 +57,11 @@ module.exports = {
       )
       .setTimestamp();
 
-    return interaction.reply({ embeds: [embed] });
+    if (interaction.deferred || interaction.replied) {
+      if (typeof interaction.editReply === 'function') {
+        return interaction.editReply({ embeds: [embed] });
+      }
+    }
+    return interaction.reply({ embeds: [embed], flags: 64 });
   }
 };

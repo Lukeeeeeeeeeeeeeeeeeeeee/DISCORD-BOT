@@ -11,12 +11,27 @@ async function init() {
 
   const db = await open({ filename: DB_PATH, driver: sqlite3.Database });
   // Reduce "database is locked" errors under concurrent access.
-  try { await db.exec('PRAGMA journal_mode = WAL'); } catch (e) { void e; }
+  try { await db.exec('PRAGMA foreign_keys = ON'); } catch (e) { void e; }
+  const disableWal = (process.env.SQLITE_DISABLE_WAL || '').toLowerCase() === 'true';
+  const journalModeRaw = (process.env.SQLITE_JOURNAL_MODE || 'WAL').toUpperCase();
+  const allowedModes = new Set(['WAL', 'DELETE', 'TRUNCATE', 'PERSIST', 'MEMORY', 'OFF']);
+  if (!disableWal) {
+    if (allowedModes.has(journalModeRaw)) {
+      try { await db.exec(`PRAGMA journal_mode = ${journalModeRaw}`); } catch (e) { void e; }
+    } else {
+      console.warn(`Invalid SQLITE_JOURNAL_MODE "${journalModeRaw}" - skipping journal_mode PRAGMA.`);
+    }
+  }
   try { await db.exec('PRAGMA synchronous = NORMAL'); } catch (e) { void e; }
   try { await db.exec('PRAGMA busy_timeout = 5000'); } catch (e) { void e; }
 
   // Create schema if not exists
   await db.exec(`
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+    id TEXT PRIMARY KEY,
+    applied_at INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS recruits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     recruiter_id TEXT NOT NULL,
@@ -156,6 +171,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS analytics_daily_channels (
     day TEXT NOT NULL,
+    day_ts INTEGER,
     guild_id TEXT NOT NULL,
     channel_id TEXT NOT NULL,
     message_count INTEGER DEFAULT 0,
@@ -166,6 +182,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS analytics_daily_channel_speakers (
     day TEXT NOT NULL,
+    day_ts INTEGER,
     guild_id TEXT NOT NULL,
     channel_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -174,6 +191,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS analytics_daily_guild (
     day TEXT NOT NULL,
+    day_ts INTEGER,
     guild_id TEXT NOT NULL,
     message_count INTEGER DEFAULT 0,
     unique_speakers INTEGER DEFAULT 0,
@@ -186,6 +204,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS analytics_daily_guild_speakers (
     day TEXT NOT NULL,
+    day_ts INTEGER,
     guild_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     PRIMARY KEY (day, guild_id, user_id)
@@ -208,6 +227,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS analytics_voice_daily (
     day TEXT NOT NULL,
+    day_ts INTEGER,
     guild_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     minutes INTEGER DEFAULT 0,
@@ -216,6 +236,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS analytics_user_daily_messages (
     day TEXT NOT NULL,
+    day_ts INTEGER,
     guild_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     message_count INTEGER DEFAULT 0,
@@ -224,6 +245,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS analytics_command_usage (
     day TEXT NOT NULL,
+    day_ts INTEGER,
     guild_id TEXT NOT NULL,
     command_name TEXT NOT NULL,
     count INTEGER DEFAULT 0,
@@ -258,6 +280,219 @@ async function init() {
     void e;
   }
 
+  const applyMigration = async (id, fn) => {
+    try {
+      const existing = await db.get('SELECT id FROM schema_migrations WHERE id = ?', id);
+      if (existing) return;
+      await db.exec('BEGIN');
+      try {
+        await fn();
+        await db.run('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)', id, Date.now());
+        await db.exec('COMMIT');
+      } catch (err) {
+        await db.exec('ROLLBACK');
+        throw err;
+      }
+    } catch (err) {
+      console.error('Schema migration failed', { id, error: err });
+    }
+  };
+
+  await applyMigration('2026-02-06-recruiter-triggers', async () => {
+    await db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_recruits_recruiter_row
+      AFTER INSERT ON recruits
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_warnings_recruiter_row
+      AFTER INSERT ON warnings
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_flags_recruiter_row
+      AFTER INSERT ON flags
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_multipliers_recruiter_row
+      AFTER INSERT ON multipliers
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_purchases_recruiter_row
+      AFTER INSERT ON purchases
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_absences_recruiter_row
+      AFTER INSERT ON absences
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_weekly_calc_recruiter_row
+      AFTER INSERT ON weekly_calculations
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_trial_fast_track_recruiter_row
+      AFTER INSERT ON trial_fast_track
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_verifications_recruiter_row
+      AFTER INSERT ON verifications
+      WHEN NEW.recruiter_id IS NOT NULL
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
+        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+    `);
+  });
+
+  await applyMigration('2026-02-06-analytics-speaker-triggers', async () => {
+    await db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_analytics_channel_speaker_insert
+      AFTER INSERT ON analytics_daily_channel_speakers
+      BEGIN
+        UPDATE analytics_daily_channels
+        SET unique_speakers = unique_speakers + 1
+        WHERE day = NEW.day AND guild_id = NEW.guild_id AND channel_id = NEW.channel_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_analytics_guild_speaker_insert
+      AFTER INSERT ON analytics_daily_guild_speakers
+      BEGIN
+        UPDATE analytics_daily_guild
+        SET unique_speakers = unique_speakers + 1
+        WHERE day = NEW.day AND guild_id = NEW.guild_id;
+      END;
+    `);
+  });
+
+  await applyMigration('2026-02-06-analytics-day-ts', async () => {
+    const alter = async (sql) => {
+      try {
+        await db.exec(sql);
+      } catch (e) {
+        void e;
+      }
+    };
+
+    await alter('ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER');
+    await alter('ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER');
+    await alter('ALTER TABLE analytics_daily_guild ADD COLUMN day_ts INTEGER');
+    await alter('ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER');
+    await alter('ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER');
+    await alter('ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER');
+    await alter('ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER');
+
+    try {
+      await db.exec(`
+        UPDATE analytics_daily_channels
+        SET day_ts = CAST(strftime('%s', day || 'T00:00:00Z') AS INTEGER) * 1000
+        WHERE day_ts IS NULL;
+        UPDATE analytics_daily_channel_speakers
+        SET day_ts = CAST(strftime('%s', day || 'T00:00:00Z') AS INTEGER) * 1000
+        WHERE day_ts IS NULL;
+        UPDATE analytics_daily_guild
+        SET day_ts = CAST(strftime('%s', day || 'T00:00:00Z') AS INTEGER) * 1000
+        WHERE day_ts IS NULL;
+        UPDATE analytics_daily_guild_speakers
+        SET day_ts = CAST(strftime('%s', day || 'T00:00:00Z') AS INTEGER) * 1000
+        WHERE day_ts IS NULL;
+        UPDATE analytics_voice_daily
+        SET day_ts = CAST(strftime('%s', day || 'T00:00:00Z') AS INTEGER) * 1000
+        WHERE day_ts IS NULL;
+        UPDATE analytics_user_daily_messages
+        SET day_ts = CAST(strftime('%s', day || 'T00:00:00Z') AS INTEGER) * 1000
+        WHERE day_ts IS NULL;
+        UPDATE analytics_command_usage
+        SET day_ts = CAST(strftime('%s', day || 'T00:00:00Z') AS INTEGER) * 1000
+        WHERE day_ts IS NULL;
+      `);
+    } catch (e) {
+      console.error('Failed to backfill analytics day_ts values', e);
+    }
+  });
+
+  await applyMigration('2026-02-06-normalized-views', async () => {
+    await db.exec(`
+      CREATE VIEW IF NOT EXISTS recruits_normalized AS
+      SELECT
+        id,
+        recruiter_id,
+        recruited_id AS member_id,
+        recruited_id AS user_id,
+        region,
+        ign,
+        created_at,
+        valid,
+        points
+      FROM recruits;
+
+      CREATE VIEW IF NOT EXISTS verifications_normalized AS
+      SELECT
+        id,
+        recruited_id AS member_id,
+        recruited_id AS user_id,
+        recruiter_id,
+        verified_at,
+        verified_by
+      FROM verifications;
+
+      CREATE VIEW IF NOT EXISTS rookie_points_normalized AS
+      SELECT
+        member_id AS user_id,
+        points,
+        updated_at
+      FROM rookie_points;
+
+      CREATE VIEW IF NOT EXISTS rookie_chat_activity_normalized AS
+      SELECT
+        member_id AS user_id,
+        week_start,
+        message_count,
+        awarded_chunks,
+        updated_at
+      FROM rookie_chat_activity;
+
+      CREATE VIEW IF NOT EXISTS rookie_war_logs_normalized AS
+      SELECT
+        member_id AS user_id,
+        message_id,
+        created_at,
+        type
+      FROM rookie_war_logs;
+    `);
+  });
+
+  await applyMigration('2026-02-06-antinuke-state', async () => {
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS antinuke_state (
+        key TEXT PRIMARY KEY,
+        payload TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+  });
+
   // Add columns if missing (best-effort)
   try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) { void e; }
@@ -270,6 +505,13 @@ async function init() {
   try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(recruiter_id, week_start)'); } catch (e) { void e; }
   try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE analytics_daily_guild ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
 
   return db;
 }
@@ -277,6 +519,7 @@ async function init() {
 let dbPromise = init();
 
 module.exports = {
+  DB_PATH,
   get: async (sql, ...params) => (await dbPromise).get(sql, ...params),
   all: async (sql, ...params) => (await dbPromise).all(sql, ...params),
   run: async (sql, ...params) => (await dbPromise).run(sql, ...params),

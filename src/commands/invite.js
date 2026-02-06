@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const InviteSystem = require('../lib/invite-system');
 const { hasAdministrator } = require('../lib/permissions');
 const analytics = require('../lib/analytics');
+const { replyError } = require('../lib/embeds');
 
 // Global invite system instance
 let inviteSystem = null;
@@ -22,14 +23,11 @@ module.exports = {
     try {
       const isAdmin = hasAdministrator(interaction.member);
       const isRecruiter = interaction.guild
-        ? await inviteSystem.isRecruiter(interaction.user.id, interaction.guild)
+        ? await inviteSystem.isRecruiter(interaction.user.id, interaction.guild, interaction.member)
         : false;
 
       if (!isAdmin && !isRecruiter) {
-        return interaction.reply({
-          content: '❌ This command is only available to recruiters (Trial/Team included).',
-          flags: 64
-        });
+        return replyError(interaction, 'This command is only available to recruiters (Trial/Team included).', { flags: 64 });
       }
 
       // Get current invite status
@@ -130,7 +128,9 @@ module.exports = {
         await interaction.editReply({ embeds: [embed] });
 
         if (!result.reused) {
-          await analytics.recordInviteCreated({ guildId: interaction.guild.id, timestamp: Date.now() }).catch(() => { });
+          await analytics.recordInviteCreated({ guildId: interaction.guild.id, timestamp: Date.now() }).catch(err => {
+            console.error('Failed to record invite creation analytics:', err);
+          });
         }
 
         // Log the invite creation

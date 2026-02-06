@@ -45,6 +45,12 @@ const BASE_MAX_DELTA_UP = 2;
 const BASE_MAX_DELTA_DOWN = 1;
 const NEW_RECRUITER_GRACE_DAYS = 14;
 
+void PIVOT_RECRUITS_PER_WEEK;
+void VERIFY_MAX_STEP;
+void PROGRESSION_TARGET;
+void PROGRESSION_RATE;
+void PROGRESSION_MAX;
+
 /**
  * Get role hierarchy level for a user
  * @param {GuildMember} member - Discord guild member
@@ -146,7 +152,7 @@ function calculateMinRecruitsFixed({
   member,
   recruits7d,
   activityRate: _activityRate,
-  verifyRate,
+  verifyRate: _verifyRate,
   retention,
   warnings,
   previousMinReq,
@@ -216,7 +222,7 @@ function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, ab
   }
 
   if ((recruits7d || 0) < (minReq || 0)) {
-    return { bucket: 'PASSING', label: `✅ Passing (${recruits7d}/${minReq})`, color: 0x51CF66 };
+    return { bucket: 'FAILING', label: `⚠️ Below Minimum (${recruits7d}/${minReq})`, color: 0xFFAA00 };
   }
 
   return { bucket: 'GOOD', label: `🔥 Good (${recruits7d}/${minReq})`, color: 0x00CC66 };
@@ -239,13 +245,15 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
     : (retentionEnd - (7 * 24 * 60 * 60 * 1000));
 
   try {
-    // Get recruits from last 7 days
-    const recentRecruits = await db.all(
-      'SELECT * FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC',
-      recruiterId, windowStart, windowEnd
+    // Count recruits from last 7 days without loading full rows
+    const recruitsRow = await db.get(
+      'SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1',
+      recruiterId,
+      windowStart,
+      windowEnd
     );
 
-    const recruits7d = recentRecruits.length;
+    const recruits7d = recruitsRow ? Number(recruitsRow.c || 0) : 0;
     const activityRate = recruits7d; // 7-day activity rate
 
     let verifyRate = 0;

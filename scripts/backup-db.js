@@ -10,6 +10,7 @@ if (!fs.existsSync(DB_PATH)) {
 if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
 const now = new Date();
 const ts = now.toISOString().replace(/[:.]/g, '-');
-const dest = path.join(backupsDir, `recruiter-${ts}.db`);
+const ext = path.extname(DB_PATH) || '.db';
+const dest = path.join(backupsDir, `recruiter-${ts}${ext}`);
 fs.copyFileSync(DB_PATH, dest);
 console.log('Backup created at', dest);

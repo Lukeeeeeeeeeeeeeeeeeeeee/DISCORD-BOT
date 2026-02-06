@@ -3,17 +3,49 @@ const { promoteMember } = require('./promote');
 
 function parseRookieNickname(rawName) {
   if (!rawName) return { base: null, points: null };
-  const match = String(rawName).match(/^(.*?)(?:\s+(\d+(?:\.\d+)?)\s*\/\s*10)?$/i);
-  if (!match) return { base: rawName, points: null };
-  const base = (match[1] || '').trim();
-  const points = match[2] != null ? Number(match[2]) : null;
-  return { base: base || rawName, points: Number.isFinite(points) ? points : null };
+  const s = String(rawName);
+  const trimmed = s.length > 128 ? s.slice(0, 128) : s;
+  const idx = trimmed.lastIndexOf('/');
+  if (idx === -1) return { base: trimmed.trim() || trimmed, points: null };
+
+  const right = trimmed.slice(idx + 1).trim();
+  if (right !== '10') return { base: trimmed.trim() || trimmed, points: null };
+
+  const left = trimmed.slice(0, idx).trim();
+  const parts = left.split(/\s+/);
+  if (!parts.length) return { base: trimmed.trim() || trimmed, points: null };
+  const maybePoints = parts[parts.length - 1];
+  const points = Number(maybePoints);
+  if (!Number.isFinite(points)) return { base: trimmed.trim() || trimmed, points: null };
+  const base = parts.slice(0, -1).join(' ').trim();
+  return { base: base || trimmed.trim() || trimmed, points: points };
 }
 
 function formatPoints(value) {
   const rounded = Math.round(value * 10) / 10;
   if (Number.isInteger(rounded)) return String(rounded);
   return String(rounded).replace(/\.0$/, '');
+}
+
+async function retrySetNickname(member, nickname, opts = {}) {
+  if (!member || !nickname) return false;
+  const delays = Array.isArray(opts.delaysMs) ? opts.delaysMs : [0, 1000, 2000];
+  for (let i = 0; i < delays.length; i++) {
+    const delay = delays[i];
+    if (delay > 0) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    try {
+      await member.setNickname(nickname);
+      return true;
+    } catch (e) {
+      if (i === delays.length - 1) {
+        console.error('Failed to update rookie nickname', { memberId: member.id, error: e });
+        return false;
+      }
+    }
+  }
+  return false;
 }
 
 async function getLinkedPoints({ db, member }) {
@@ -23,14 +55,6 @@ async function getLinkedPoints({ db, member }) {
     if (row && Number.isFinite(Number(row.points))) {
       const points = Number(row.points);
       const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-
-      if (member.roles && member.roles.cache && member.roles.cache.has(ROLE_IDS.ROOKIE)) {
-        const desiredNickname = `${baseName} ${formatPoints(points)}/10`;
-        const currentNickname = member.nickname || member.user.username;
-        if (currentNickname !== desiredNickname && typeof member.setNickname === 'function') {
-          await member.setNickname(desiredNickname).catch(() => { });
-        }
-      }
 
       return {
         points,
@@ -48,7 +72,11 @@ async function getLinkedPoints({ db, member }) {
     const now = Date.now();
     try {
       await db.run(
-        'INSERT OR REPLACE INTO rookie_points (member_id, points, updated_at) VALUES (?, ?, ?)',
+        `INSERT INTO rookie_points (member_id, points, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(member_id) DO UPDATE SET
+           points = excluded.points,
+           updated_at = excluded.updated_at`,
         member.id,
         parsed.points,
         now
@@ -73,7 +101,11 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
 
   try {
     await db.run(
-      'INSERT OR REPLACE INTO rookie_points (member_id, points, updated_at) VALUES (?, ?, ?)',
+      `INSERT INTO rookie_points (member_id, points, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(member_id) DO UPDATE SET
+         points = excluded.points,
+         updated_at = excluded.updated_at`,
       member.id,
       clamped,
       now
@@ -87,11 +119,15 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
     return { points: clamped, promoted: true, teamName: promotion.teamName };
   }
 
+  if (!member.manageable) {
+    return { points: clamped, promoted: false, nicknameUpdated: false, skippedNickname: true };
+  }
+
   const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
   const nickname = `${baseName} ${formatPoints(clamped)}/10`;
-  await member.setNickname(nickname).catch(() => { });
+  const nicknameUpdated = await retrySetNickname(member, nickname);
 
-  return { points: clamped, promoted: false };
+  return { points: clamped, promoted: false, nicknameUpdated };
 }
 
 async function addRookiePoints({ db, member, delta, guild, verifierId }) {

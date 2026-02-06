@@ -5,6 +5,8 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:shard": "node src/shard.js",
+    "build": "npm run lint",
     "register-commands": "node src/register-commands.js",
     "backup": "node scripts/backup-db.js",
     "lint": "eslint . --ext .js",

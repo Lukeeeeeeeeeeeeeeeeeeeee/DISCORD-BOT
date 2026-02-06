@@ -1,5 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
+const { buildErrorEmbed } = require('../lib/embeds');
+const runtime = require('../lib/runtime');
 
 module.exports = {
   data: {
@@ -16,13 +18,25 @@ module.exports = {
   },
   async execute(interaction) {
     if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ content: '❌ Administrator permission required.' });
+      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
     }
 
-    const antiNuke = global.antiNuke;
+    const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
-      return interaction.reply({ content: '❌ Anti-nuke system not initialized.' });
+      return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
+
+    if (typeof interaction.deferReply === 'function') {
+      await interaction.deferReply({ flags: 64 });
+    }
+
+    const respond = (payload) => {
+      if (interaction.deferred || interaction.replied) {
+        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
+        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
+      }
+      return interaction.reply(payload);
+    };
 
     const enabled = interaction.options.getBoolean('enabled');
     const config = antiNuke.setAggressiveBan(interaction.guild.id, enabled);
@@ -43,6 +57,6 @@ module.exports = {
       )
       .setTimestamp();
 
-    return interaction.reply({ embeds: [embed] });
+    return respond({ embeds: [embed] });
   }
 };

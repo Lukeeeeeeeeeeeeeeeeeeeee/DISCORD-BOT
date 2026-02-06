@@ -1,5 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
+const { buildErrorEmbed } = require('../lib/embeds');
+const runtime = require('../lib/runtime');
 
 const ACTION_MAP = {
   ban: 'ban',
@@ -47,12 +49,12 @@ module.exports = {
   },
   async execute(interaction) {
     if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ content: '❌ Administrator permission required.' });
+      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
     }
 
-    const antiNuke = global.antiNuke;
+    const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
-      return interaction.reply({ content: '❌ Anti-nuke system not initialized.' });
+      return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
 
     const type = interaction.options.getString('type');
@@ -61,8 +63,20 @@ module.exports = {
     const mappedType = ACTION_MAP[type];
 
     if (!mappedType || count <= 0 || windowSeconds <= 0) {
-      return interaction.reply({ content: '❌ Invalid simulation parameters.' });
+      return interaction.reply({ embeds: [buildErrorEmbed('Invalid simulation parameters.')], flags: 64 });
     }
+
+    if (typeof interaction.deferReply === 'function') {
+      await interaction.deferReply({ flags: 64 });
+    }
+
+    const respond = (payload) => {
+      if (interaction.deferred || interaction.replied) {
+        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
+        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
+      }
+      return interaction.reply(payload);
+    };
 
     const now = Date.now();
     const spacing = Math.max(1, Math.floor((windowSeconds * 1000) / count));
@@ -110,6 +124,6 @@ module.exports = {
       )
       .setTimestamp();
 
-    return interaction.reply({ embeds: [embed] });
+    return respond({ embeds: [embed] });
   }
 };

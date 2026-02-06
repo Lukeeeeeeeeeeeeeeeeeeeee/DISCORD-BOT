@@ -1,10 +1,10 @@
 const { EmbedBuilder } = require('discord.js');
 const { formatPointsValue } = require('./economy');
+const { getRegionInfo } = require('./regions');
 
 function makeRecruitEmbed(recruiter, recruited, region, ign, lang = 'en', meta = {}) {
-  const { REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
-  const info = REGION_INFO[region] || { emoji: '', color: 0x00AAFF, name: region };
+  const info = getRegionInfo(region);
   const title = `${info.emoji} ${t('recruit.title', lang)}`;
   const embed = new EmbedBuilder()
     .setTitle(title)
@@ -83,21 +83,14 @@ function formatLeaderboardLine(row, index) {
 }
 
 function makeLeaderboardText(rows, regionLabel, lang = 'en') {
-  const { REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
 
   // Map region codes to team names
   let info;
   if (regionLabel === 'GLOBAL') {
     info = { emoji: '🌍', name: 'Global' };
-  } else if (regionLabel === 'EU') {
-    info = { emoji: '🔥', name: 'Fire' };
-  } else if (regionLabel === 'NA') {
-    info = { emoji: '💧', name: 'Water' };
-  } else if (regionLabel === 'AS') {
-    info = { emoji: '🌬️', name: 'Air' };
   } else {
-    info = REGION_INFO[regionLabel] || { emoji: '', name: regionLabel };
+    info = getRegionInfo(regionLabel);
   }
 
   // Use big text header format
@@ -188,14 +181,13 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
 }
 
 function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
-  const { REGION_INFO } = require('../constants');
   const { t } = require('./i18n');
 
   let info;
   if (regionLabel === 'GLOBAL') {
     info = { emoji: '🌍', color: 0xFFD700, name: 'Global' };
   } else {
-    info = REGION_INFO[regionLabel] || { emoji: '', color: 0xFFD700, name: regionLabel };
+    info = getRegionInfo(regionLabel);
   }
 
   const title = `${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`;

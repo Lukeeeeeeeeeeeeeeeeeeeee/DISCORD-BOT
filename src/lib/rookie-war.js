@@ -59,7 +59,9 @@ async function handleRookieWarLogMessage({ db, message, member, guild, client })
     : `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints}/10.`;
 
   if (message.channel && message.channel.send) {
-    message.channel.send(response).catch(() => { });
+    message.channel.send(response).catch(err => {
+      console.error('Failed to post rookie war response:', err);
+    });
   }
 }
 

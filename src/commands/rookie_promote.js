@@ -1,6 +1,7 @@
 const db = require('../db_async');
 const { ROLE_IDS } = require('../constants');
 const { hasModPlusPermissions } = require('../lib/recruiting-system');
+const { replyError } = require('../lib/embeds');
 
 module.exports = {
     data: {
@@ -9,26 +10,30 @@ module.exports = {
     },
     async execute(interaction) {
         if (!interaction.guild) {
-            return interaction.reply({ content: 'This command can only be used in a server.' });
+            return replyError(interaction, 'This command can only be used in a server.');
         }
 
         // MOD+ only
         if (!hasModPlusPermissions(interaction.member)) {
-            return interaction.reply({ content: 'MOD+ only.' });
+            return replyError(interaction, 'MOD+ only.');
+        }
+
+        if (typeof interaction.deferReply === 'function') {
+            await interaction.deferReply({ flags: 64 });
         }
 
         const targetUser = interaction.options.getUser('member');
         if (!targetUser) {
-            return interaction.reply({ content: 'Please specify a member to promote.' });
+            return replyError(interaction, 'Please specify a member to promote.');
         }
 
         const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
         if (!targetMember) {
-            return interaction.reply({ content: 'That member is not in this server.' });
+            return replyError(interaction, 'That member is not in this server.');
         }
 
         if (!targetMember.roles.cache.has(ROLE_IDS.ROOKIE)) {
-            return interaction.reply({ content: 'That member is not a rookie.' });
+            return replyError(interaction, 'That member is not a rookie.');
         }
 
         const { promoteMember } = require('../lib/promote');
@@ -40,8 +45,9 @@ module.exports = {
         });
 
         const teamLabel = result.teamEmoji ? `${result.teamEmoji} ${result.teamName}` : result.teamName;
-        return interaction.reply({
-            content: `✅ Verified ${targetUser.tag}.\nAdded ${teamLabel} member role.`
-        });
+        if (interaction.editReply) {
+            return interaction.editReply({ content: `✅ Verified ${targetUser.tag}.\nAdded ${teamLabel} member role.` });
+        }
+        return interaction.reply({ content: `✅ Verified ${targetUser.tag}.\nAdded ${teamLabel} member role.` });
     }
 };
