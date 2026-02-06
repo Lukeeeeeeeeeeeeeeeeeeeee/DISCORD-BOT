@@ -7,6 +7,35 @@ const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require
 const { fetchMembersByIds } = require('../lib/member-fetch');
 const { replyError } = require('../lib/embeds');
 
+const FULL_FETCH_MAX = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_MAX || '5000', 10);
+const FULL_FETCH_COOLDOWN_MS = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_COOLDOWN_MS || '600000', 10);
+const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
+let lastFullFetchAt = 0;
+
+async function warmMemberCacheIfNeeded(guild, totalRoleMembers, reason, options = {}) {
+  if (!guild || !guild.members || typeof guild.members.fetch !== 'function') return false;
+  const force = options && options.force === true;
+  if (totalRoleMembers > 0 && !force) return false;
+  const allowEnv = (process.env.LEADERBOARD_ALLOW_FULL_FETCH || process.env.ALLOW_FULL_MEMBER_FETCH || '').toLowerCase() === 'true';
+  const memberCount = Number(guild.memberCount || 0);
+  const canAutoFetch = Number.isFinite(memberCount) && memberCount > 0 && memberCount <= FULL_FETCH_MAX;
+  if (force && !FORCE_FULL_FETCH_ON_EMPTY) return false;
+  if (!force && !allowEnv && !canAutoFetch) return false;
+  const now = Date.now();
+  if (now - lastFullFetchAt < FULL_FETCH_COOLDOWN_MS) return false;
+  lastFullFetchAt = now;
+  try {
+    await guild.members.fetch();
+    return true;
+  } catch (e) {
+    const hint = e && (e.code === 50001 || e.code === 50013)
+      ? ' Check Server Members intent and bot permissions.'
+      : '';
+    console.error('Failed to warm member cache for leaderboard', { reason, error: e, hint });
+    return false;
+  }
+}
+
 module.exports = {
   data: { name: 'leaderboard' },
   async execute(interaction) {
@@ -20,18 +49,31 @@ module.exports = {
         const respond = (payload) => interaction.editReply(payload);
 
         // Prefer role membership, but fill missing cache entries from DB-backed IDs.
+        let dbIds = [];
+        try {
+          const dbRows = await db.all('SELECT id FROM recruiters');
+          dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
+        } catch (e) {
+          console.error('Failed to load recruiter IDs for leaderboard', e);
+        }
+
         const recruiterRoleId = RECRUITER_ROLE_IDS[region];
         const recruiterRole = recruiterRoleId ? interaction.guild.roles.cache.get(recruiterRoleId) : null;
-
         const allRecruiterIds = new Set();
-        if (recruiterRole && recruiterRole.members) {
-          recruiterRole.members.forEach(member => allRecruiterIds.add(member.id));
+        const roleMembers = recruiterRole && recruiterRole.members ? recruiterRole.members : null;
+        const totalRoleMembers = roleMembers ? roleMembers.size : 0;
+        if (totalRoleMembers === 0) {
+          await warmMemberCacheIfNeeded(interaction.guild, totalRoleMembers, `region:${region}`, {
+            force: dbIds.length === 0
+          });
+        }
+        const refreshedMembers = recruiterRole && recruiterRole.members ? recruiterRole.members : null;
+        if (refreshedMembers) {
+          refreshedMembers.forEach(member => allRecruiterIds.add(member.id));
         }
 
         let memberMap = new Map();
         try {
-          const dbRows = await db.all('SELECT id FROM recruiters');
-          const dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
           const fallbackToDb = allRecruiterIds.size === 0;
           memberMap = await fetchMembersByIds(interaction.guild, dbIds);
           if (recruiterRoleId) {
@@ -136,17 +178,35 @@ module.exports = {
         .map(rg => RECRUITER_ROLE_IDS[rg])
         .filter(Boolean);
 
+      let totalRoleMembers = 0;
       for (const roleId of recruiterRoleIds) {
         const recruiterRole = interaction.guild.roles.cache.get(roleId);
         if (recruiterRole && recruiterRole.members) {
+          totalRoleMembers += recruiterRole.members.size;
           recruiterRole.members.forEach(member => allRecruiterIds.add(member.id));
         }
       }
-
       let memberMap = new Map();
+      let dbIds = [];
       try {
         const dbRows = await db.all('SELECT id FROM recruiters');
-        const dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
+        dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
+      } catch (e) {
+        console.error('Failed to load recruiter IDs for leaderboard', e);
+      }
+      if (totalRoleMembers === 0 && recruiterRoleIds.length) {
+        await warmMemberCacheIfNeeded(interaction.guild, totalRoleMembers, 'global', {
+          force: dbIds.length === 0
+        });
+        for (const roleId of recruiterRoleIds) {
+          const recruiterRole = interaction.guild.roles.cache.get(roleId);
+          if (recruiterRole && recruiterRole.members) {
+            recruiterRole.members.forEach(member => allRecruiterIds.add(member.id));
+          }
+        }
+      }
+
+      try {
         const fallbackToDb = allRecruiterIds.size === 0;
         memberMap = await fetchMembersByIds(interaction.guild, dbIds);
         for (const member of memberMap.values()) {

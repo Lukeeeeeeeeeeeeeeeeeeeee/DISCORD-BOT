@@ -14,6 +14,10 @@ const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, g
 
 const DEBUG_SCHEDULER = process.env.DEBUG_SCHEDULER === '1';
 const ALLOW_FULL_MEMBER_FETCH = (process.env.SCHEDULER_ALLOW_FULL_FETCH || process.env.ALLOW_FULL_MEMBER_FETCH || '').toLowerCase() === 'true';
+const FORCE_FULL_FETCH_ON_EMPTY = (process.env.SCHEDULER_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
+const FULL_FETCH_MAX = Number.parseInt(process.env.SCHEDULER_FULL_FETCH_MAX || '5000', 10);
+const MEMBER_CACHE_WARM_COOLDOWN_MS = Number.parseInt(process.env.MEMBER_CACHE_WARM_COOLDOWN_MS || '600000', 10);
+let lastMemberCacheWarmAt = 0;
 
 function debugLog(...args) {
   if (DEBUG_SCHEDULER) console.log(...args);
@@ -102,6 +106,20 @@ async function ensureRecruitsTable(db) {
   }
 }
 
+async function seedRecruiters(db, ids, contextLabel) {
+  if (!db || !ids || !ids.length) return;
+  try {
+    for (const id of ids) {
+      await db.run(
+        'INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)',
+        id
+      );
+    }
+  } catch (e) {
+    console.error('Failed to seed recruiters', { context: contextLabel, error: e });
+  }
+}
+
 function resolveGuildId() {
   return process.env.GUILD_ID || GUILD_ID;
 }
@@ -118,14 +136,24 @@ function ownsGuild(client, guildId) {
   }
 }
 
-async function primeMemberCache(guild, contextLabel) {
+async function primeMemberCache(guild, contextLabel, options = {}) {
   if (!guild || !guild.members || typeof guild.members.fetch !== 'function') return false;
-  if (!ALLOW_FULL_MEMBER_FETCH) return false;
+  const force = options && options.force === true;
+  if (force && !FORCE_FULL_FETCH_ON_EMPTY) return false;
+  const memberCount = Number(guild.memberCount || 0);
+  const allowAuto = Number.isFinite(memberCount) && memberCount > 0 && memberCount <= FULL_FETCH_MAX;
+  if (!force && !ALLOW_FULL_MEMBER_FETCH && !allowAuto) return false;
+  const now = Date.now();
+  if (now - lastMemberCacheWarmAt < MEMBER_CACHE_WARM_COOLDOWN_MS) return false;
+  lastMemberCacheWarmAt = now;
   try {
     await guild.members.fetch();
     return true;
   } catch (e) {
-    console.error(`Failed to prime member cache${contextLabel ? ` (${contextLabel})` : ''}:`, e);
+    const hint = e && (e.code === 50001 || e.code === 50013)
+      ? ' Check Server Members intent and bot permissions.'
+      : '';
+    console.error(`Failed to prime member cache${contextLabel ? ` (${contextLabel})` : ''}:${hint}`, e);
     return false;
   }
 }
@@ -143,7 +171,6 @@ async function resolveGuild(client) {
 
 async function resolveAllRecruiterIds(guild, db) {
   if (!guild) return [];
-  await primeMemberCache(guild, 'resolveAllRecruiterIds');
   const staffRoleIds = Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
     ? ROLE_IDS.STAFF.filter(Boolean)
     : [
@@ -167,28 +194,50 @@ async function resolveAllRecruiterIds(guild, db) {
 
   const ids = new Set();
   const allRoleIds = [...staffRoleIds, ...recruiterRoleIds];
+  let roleMemberCount = 0;
+  let dbRecruiterRows = [];
+  if (db) {
+    try {
+      dbRecruiterRows = await db.all('SELECT id FROM recruiters');
+    } catch (e) {
+      console.error('Failed to load recruiter IDs from DB', e);
+    }
+  }
+  const hasDbRecruiters = dbRecruiterRows.length > 0;
 
-  for (const roleId of allRoleIds) {
-    const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(roleId) : null;
-    if (role && role.members) {
-      role.members.forEach(m => ids.add(m.id));
+  const collectRoleMembers = () => {
+    for (const roleId of allRoleIds) {
+      const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(roleId) : null;
+      if (role && role.members) {
+        roleMemberCount += role.members.size;
+        role.members.forEach(m => ids.add(m.id));
+      }
+    }
+  };
+
+  collectRoleMembers();
+  if (roleMemberCount === 0 && allRoleIds.length) {
+    const warmed = await primeMemberCache(guild, 'resolveAllRecruiterIds', {
+      force: FORCE_FULL_FETCH_ON_EMPTY && !hasDbRecruiters
+    });
+    if (warmed) {
+      roleMemberCount = 0;
+      ids.clear();
+      collectRoleMembers();
     }
   }
 
-  if (db) {
+  (dbRecruiterRows || []).forEach(r => {
+    if (r && r.id) ids.add(r.id);
+  });
+  if (ids.size === 0 && db) {
     try {
-      const rows = await db.all('SELECT id FROM recruiters');
-      (rows || []).forEach(r => {
-        if (r && r.id) ids.add(r.id);
+      const recRows = await db.all('SELECT DISTINCT recruiter_id FROM recruits');
+      (recRows || []).forEach(r => {
+        if (r && r.recruiter_id) ids.add(r.recruiter_id);
       });
-      if (ids.size === 0) {
-        const recRows = await db.all('SELECT DISTINCT recruiter_id FROM recruits');
-        (recRows || []).forEach(r => {
-          if (r && r.recruiter_id) ids.add(r.recruiter_id);
-        });
-      }
     } catch (e) {
-      console.error('Failed to load recruiter IDs from DB', e);
+      console.error('Failed to load recruiter IDs from recruits', e);
     }
   }
 
@@ -315,14 +364,40 @@ async function recomputeLeaderboardsInternal(db, guild) {
   const weekStart = getWeekStartUtcTs();
   const { upsertLeaderboardMessage, makeLeaderboardText } = require('./lib/messages');
   let memberMap = new Map();
+  let dbRecruiterIds = [];
+  let hasDbRecruiters = false;
   try {
     const dbRecruiterRows = await db.all('SELECT id FROM recruiters');
-    const dbRecruiterIds = (dbRecruiterRows || []).map(r => r.id).filter(Boolean);
-    if (dbRecruiterIds.length) {
-      memberMap = await fetchMembersByIds(guild, dbRecruiterIds);
-    }
+    dbRecruiterIds = (dbRecruiterRows || []).map(r => r.id).filter(Boolean);
+    hasDbRecruiters = dbRecruiterIds.length > 0;
   } catch (e) {
     console.error('Failed to hydrate recruiter members for leaderboards', e);
+  }
+
+  const recruiterRolesForCache = [
+    ROLE_IDS.RECRUITER,
+    ROLE_IDS.TRIAL_RECRUITER,
+    ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
+  ].filter(Boolean);
+  let cachedRecruiterCount = 0;
+  if (guild && guild.roles && guild.roles.cache) {
+    for (const roleId of recruiterRolesForCache) {
+      const role = guild.roles.cache.get(roleId);
+      if (role && role.members) cachedRecruiterCount += role.members.size;
+    }
+  }
+  if (cachedRecruiterCount === 0 && recruiterRolesForCache.length) {
+    await primeMemberCache(guild, 'recomputeLeaderboards', {
+      force: FORCE_FULL_FETCH_ON_EMPTY && !hasDbRecruiters
+    });
+  }
+
+  if (dbRecruiterIds.length) {
+    try {
+      memberMap = await fetchMembersByIds(guild, dbRecruiterIds);
+    } catch (e) {
+      console.error('Failed to hydrate recruiter members for leaderboards', e);
+    }
   }
 
   for (const rg of regions) {
@@ -371,14 +446,16 @@ async function recomputeLeaderboardsInternal(db, guild) {
     const lang = process.env.DEFAULT_LANG || 'en';
     let leaderboardText;
 
-    if (allRecruiterIds.size === 0) {
+    const recruiterMembers = Array.from(allRecruiterIds);
+    await seedRecruiters(db, recruiterMembers, `leaderboard:${rg.key}`);
+
+    if (recruiterMembers.length === 0) {
       debugLog(`No recruiters found for region ${rg.key}`);
       leaderboardText = makeLeaderboardText([], rg.key, lang);
     }
 
     let rows = [];
     if (!leaderboardText) {
-      const recruiterMembers = Array.from(allRecruiterIds);
       const meta = await loadRecruiterMeta(db, recruiterMembers);
       const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: weekStart });
       const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
