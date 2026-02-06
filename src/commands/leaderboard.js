@@ -32,6 +32,7 @@ module.exports = {
         try {
           const dbRows = await db.all('SELECT id FROM recruiters');
           const dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
+          const fallbackToDb = allRecruiterIds.size === 0;
           memberMap = await fetchMembersByIds(interaction.guild, dbIds);
           if (recruiterRoleId) {
             for (const member of memberMap.values()) {
@@ -39,6 +40,9 @@ module.exports = {
                 allRecruiterIds.add(member.id);
               }
             }
+          }
+          if (fallbackToDb && dbIds.length) {
+            dbIds.forEach(id => allRecruiterIds.add(id));
           }
         } catch (e) {
           console.error('Failed to resolve recruiter members for leaderboard', e);
@@ -143,6 +147,7 @@ module.exports = {
       try {
         const dbRows = await db.all('SELECT id FROM recruiters');
         const dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
+        const fallbackToDb = allRecruiterIds.size === 0;
         memberMap = await fetchMembersByIds(interaction.guild, dbIds);
         for (const member of memberMap.values()) {
           if (!member.roles || !member.roles.cache) continue;
@@ -152,6 +157,9 @@ module.exports = {
               break;
             }
           }
+        }
+        if (fallbackToDb && dbIds.length) {
+          dbIds.forEach(id => allRecruiterIds.add(id));
         }
       } catch (e) {
         console.error('Failed to resolve recruiter members for global leaderboard', e);
