@@ -1,7 +1,7 @@
 # Mega Audit Tracker: Recruiting & Security Bot
 
 Status: Tracking only (do not implement fixes here).
-Last updated: 2026-02-05
+Last updated: 2026-02-07
 
 ## Purpose
 This document consolidates all audit findings, risks, and follow-up tasks into a single in-repo tracker. It is a living list for prioritization and verification. The goal is to **track issues**, not implement fixes in this file.
@@ -13,19 +13,36 @@ This document consolidates all audit findings, risks, and follow-up tasks into a
 
 ## Current Priority Findings (User-Reported)
 
-### High
-- Whitelist bypass logic appears inverted: `isWhitelistBypassAllowed` returns false in strict/emergency, but `handleBeastModeTrigger`/`handleRapidAction` treat `whitelisted && bypassWhitelist` as the quarantine path. This quarantines whitelisted users in normal mode and allows full actioning in strict mode (opposite of typical whitelist semantics). Files: `src/lib/antinuke.js` (refs: ~868, ~1325, ~1557).
+All user-reported priority items below have been resolved. See Recent Fixes for the applied changes.
 
-### Medium
-- `/revoke-recruit` invalidates a recruit but never reverses the recruiter's points, while `memberLeave` does deduct points for invalidation. Files: `src/commands/revoke-recruit.js` (~33), `src/lib/memberLeave.js` (~12).
-- `getRecruiterStatus` labels below-minimum performance as "Passing" unless attention is explicitly set, which misleads status displays. File: `src/lib/recruiting-system.js` (~219).
-- `/recruiter buy` permission gating is skipped when `guildMember` isn't fetched or role cache isn't available, allowing purchases without verification on fetch failures or atypical contexts. File: `src/commands/recruiter.js` (~526).
-- Interaction sanitization strips ephemeral/flags for all commands except invite, overriding commands that expect private responses (e.g., `/dm`, warning failures), which can leak admin actions publicly. Files: `src/index.js` (~93), `src/commands/dm.js` (~45), `src/commands/recruiter.js` (~678).
-- `guild.members.fetch({ role: ... })` is not a supported discord.js option, so role caches may remain incomplete and leaderboards/weekly enforcement can undercount recruiters. Files: `src/scheduler.js` (~122), `src/commands/leaderboard.js` (~20, ~189).
+### Recent Fixes (2026-02-07)
+- getRecruiterStatus now labels below-minimum performance correctly (no "Passing" for under-minimum).
+- /recruiter buy permission gating now requires a verifiable role cache and blocks when roles cannot be verified (non-test).
+- Interaction reply flags/ephemeral behavior are no longer sanitized globally; commands control privacy.
+- Removed unsupported guild.members.fetch({ role: ... }) usage; role membership is derived from role caches/bulk fetch.
+- Weekly recalculation/snapshot now uses a weekStart window with a 24h catch-up sanity window.
+- Whitelist bypass logic now only bypasses in strict/emergency modes; whitelisted users are exempt otherwise.
+- /revoke-recruit now deducts recruiter points when a recruit is invalidated.
+- Invite attribution now persists invite snapshots to the DB with a TTL to avoid cold-start misattribution.
 
-### Low
-- Weekly recalculation uses the default rolling 7-day window but stores results under `weekStart`; if the cron runs late or is triggered manually, the stored week can include the wrong days compared with the snapshot logic. Files: `src/lib/weekly-recalculations.js` (~67), `src/scheduler.js` (~613).
-- Invite attribution depends on cached snapshots; after restart or without initial caching, the "used code" selection can be wrong when multiple invites already have uses. File: `src/index.js` (~324).
+### Recent Fixes (2026-02-06)
+- /recruiter buy now uses Discord choices that list each item with its price (including multipliers).
+- Recruiter info status no longer shows "New Recruiter" for users without recruiter roles; status now respects recruiter role age.
+- Recruitment report now groups new recruiters (role-age grace window) separately and excludes them from percentile scoring.
+
+### High (Resolved)
+- Whitelist bypass logic appeared inverted; now only bypasses in strict/emergency and preserves whitelist immunity in normal mode. Files: `src/lib/antinuke.js`. Resolved 2026-02-07.
+
+### Medium (Resolved)
+- `/revoke-recruit` now reverses recruiter points when a recruit is invalidated. Files: `src/commands/revoke-recruit.js`, `src/lib/memberLeave.js`. Resolved 2026-02-07.
+- `getRecruiterStatus` now labels below-minimum performance accurately. File: `src/lib/recruiting-system.js`. Resolved 2026-02-07.
+- `/recruiter buy` permission gating now blocks purchases when roles cannot be verified. File: `src/commands/recruiter.js`. Resolved 2026-02-07.
+- Interaction reply flags are no longer sanitized globally; private/admin commands retain ephemeral responses. File: `src/index.js`. Resolved 2026-02-07.
+- Removed unsupported `guild.members.fetch({ role: ... })` usage; role membership resolved via role caches/bulk fetch. Files: `src/scheduler.js`, `src/commands/leaderboard.js`. Resolved 2026-02-07.
+
+### Low (Resolved)
+- Weekly recalculation/snapshot now uses a weekStart window with a 24h catch-up sanity window. Files: `src/lib/weekly-recalculations.js`, `src/scheduler.js`. Resolved 2026-02-07.
+- Invite attribution now persists snapshots to the DB and avoids cold-start guessing. File: `src/index.js`. Resolved 2026-02-07.
 
 ---
 
@@ -222,17 +239,17 @@ Developer Note: Stability & Security (Groups A and B) are priority #1. Architect
 - [x] Document all 150 findings in implementation_plan.md (external)
 - [x] Final major strategic audit (architecture, patterns, long-term risks)
 - [x] Present final report to dev team
-- [ ] Fix getRecruiterStatus labels
-- [ ] Fix /recruiter buy permission gating
-- [ ] Fix interaction sanitization
-- [ ] Fix guild.members.fetch calls
-- [ ] Fix weekly recalculation window
-- [ ] Fix whitelist bypass logic
-- [ ] Fix /revoke-recruit points
-- [ ] Fix invite attribution logic
-- [ ] Verification
-  - [ ] Test fixes manually or via scripts
-  - [ ] Create walkthrough
+- [x] Fix getRecruiterStatus labels
+- [x] Fix /recruiter buy permission gating
+- [x] Fix interaction sanitization
+- [x] Fix guild.members.fetch calls
+- [x] Fix weekly recalculation window
+- [x] Fix whitelist bypass logic
+- [x] Fix /revoke-recruit points
+- [x] Fix invite attribution logic
+- [x] Verification
+  - [x] Test fixes manually or via scripts
+  - [x] Create walkthrough
 
 ---
 

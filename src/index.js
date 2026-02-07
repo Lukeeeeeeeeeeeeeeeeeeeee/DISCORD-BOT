@@ -35,6 +35,7 @@ const inviteSnapshots = new Map();
 const inviteTrackLocks = new Map();
 const invitePendingAttributions = new Map();
 const voiceSessions = new Map();
+const INVITE_SNAPSHOT_TTL_MS = Number.parseInt(process.env.INVITE_SNAPSHOT_TTL_MS || '900000', 10);
 
 const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
   console.log('🛡️ Complete anti-nuke system with rollback ready!');
@@ -341,6 +342,65 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   }
 });
 
+async function loadInviteSnapshotFromDb(guildId) {
+  if (!guildId) return null;
+  try {
+    const rows = await db.all(
+      'SELECT invite_code, uses, updated_at FROM invite_snapshots WHERE guild_id = ?',
+      guildId
+    );
+    if (!rows || rows.length === 0) return null;
+    const freshest = rows.reduce((max, row) => Math.max(max, Number(row.updated_at || 0)), 0);
+    if (INVITE_SNAPSHOT_TTL_MS > 0 && freshest && (Date.now() - freshest) > INVITE_SNAPSHOT_TTL_MS) {
+      return null;
+    }
+    const map = new Map();
+    for (const row of rows) {
+      if (!row || !row.invite_code) continue;
+      map.set(row.invite_code, Number(row.uses || 0));
+    }
+    return map.size ? map : null;
+  } catch (e) {
+    console.error('Failed to load invite snapshot from DB:', e);
+    return null;
+  }
+}
+
+async function persistInviteSnapshot(guildId, snapshot) {
+  if (!guildId || !snapshot) return;
+  const codes = Array.from(snapshot.keys());
+  try {
+    await db.exec('BEGIN');
+    const now = Date.now();
+    for (const code of codes) {
+      const uses = Number(snapshot.get(code) || 0);
+      await db.run(
+        `INSERT INTO invite_snapshots (guild_id, invite_code, uses, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(guild_id, invite_code) DO UPDATE SET uses = excluded.uses, updated_at = excluded.updated_at`,
+        guildId,
+        code,
+        uses,
+        now
+      );
+    }
+    if (codes.length) {
+      const placeholders = codes.map(() => '?').join(', ');
+      await db.run(
+        `DELETE FROM invite_snapshots WHERE guild_id = ? AND invite_code NOT IN (${placeholders})`,
+        guildId,
+        ...codes
+      );
+    } else {
+      await db.run('DELETE FROM invite_snapshots WHERE guild_id = ?', guildId);
+    }
+    await db.exec('COMMIT');
+  } catch (e) {
+    try { await db.exec('ROLLBACK'); } catch (err) { void err; }
+    console.error('Failed to persist invite snapshot:', e);
+  }
+}
+
 async function cacheGuildInvites(guild) {
   if (!guild || typeof guild.invites?.fetch !== 'function') return;
   const invites = await guild.invites.fetch().catch(err => {
@@ -351,6 +411,7 @@ async function cacheGuildInvites(guild) {
   const map = new Map();
   invites.forEach(inv => map.set(inv.code, inv.uses || 0));
   inviteSnapshots.set(guild.id, map);
+  await persistInviteSnapshot(guild.id, map);
   return map;
 }
 
@@ -360,6 +421,14 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
   const run = lock.then(async () => {
     let previous = inviteSnapshots.get(guild.id);
     let coldStart = !previous || previous.size === 0;
+    if (coldStart) {
+      const dbSnapshot = await loadInviteSnapshotFromDb(guild.id);
+      if (dbSnapshot && dbSnapshot.size) {
+        previous = dbSnapshot;
+        inviteSnapshots.set(guild.id, previous);
+        coldStart = false;
+      }
+    }
     if (coldStart) {
       previous = await cacheGuildInvites(guild).catch(err => {
         console.error('Failed to refresh invite snapshot:', err);
@@ -376,14 +445,16 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     const updated = new Map();
     invites.forEach(inv => updated.set(inv.code, inv.uses || 0));
     inviteSnapshots.set(guild.id, updated);
+    await persistInviteSnapshot(guild.id, updated);
     const pendingMap = invitePendingAttributions.get(guild.id) || new Map();
 
     if (coldStart) {
-      // With no pre-join snapshot, avoid guessing from total uses. Use tracked invite hints only.
+      // With no pre-join snapshot, avoid guessing from total uses.
       try {
-        if (inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
+        const canFallback = invites && invites.size === 1;
+        if (canFallback && inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
           const candidates = await inviteSystem.getActiveInviteCodeCandidates();
-          if (candidates && candidates.length === 1) {
+          if (candidates && candidates.length === 1 && invites.has(candidates[0])) {
             await inviteSystem.markInviteUsed(candidates[0], joinedUserId);
             await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
           }
@@ -445,11 +516,12 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
       return;
     }
 
-    // Fallback: if we couldn't determine usedCode but there is exactly one active tracked invite code, attribute to it.
+    // Fallback: only attribute when there is exactly one invite and it matches the tracked code.
     try {
-      if (inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
+      const canFallback = invites && invites.size === 1;
+      if (!usedCode && canFallback && inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
         const candidates = await inviteSystem.getActiveInviteCodeCandidates();
-        if (candidates && candidates.length === 1) {
+        if (candidates && candidates.length === 1 && invites.has(candidates[0])) {
           await inviteSystem.markInviteUsed(candidates[0], joinedUserId);
           await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
         }

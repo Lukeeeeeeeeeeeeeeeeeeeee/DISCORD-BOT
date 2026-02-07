@@ -324,11 +324,12 @@ module.exports = {
         score,
         category: null,
         points,
-        absent: !!absence
+        absent: !!absence,
+        isNewRecruiter: !!newStaffCheck
       });
     }
 
-    const scores = results.filter(r => !r.absent).map(r => r.score).sort((a, b) => a - b);
+    const scores = results.filter(r => !r.absent && !r.isNewRecruiter).map(r => r.score).sort((a, b) => a - b);
     const percentileFor = (score) => {
       if (!scores.length) return 0.5;
       let below = 0;
@@ -346,13 +347,29 @@ module.exports = {
     };
 
     for (const r of results) {
-      const percentile = r.absent ? null : percentileFor(r.score);
+      if (r.absent) {
+        r.category = getPerformanceCategory({
+          percentile: null,
+          warnings: r.activeWarnings,
+          recruits7d: r.recruits7d,
+          minReq: r.minReq,
+          absent: true
+        });
+        r.percentile = null;
+        continue;
+      }
+      if (r.isNewRecruiter) {
+        r.category = { bucket: 'NEW', label: 'New Recruiter', color: 0x00AAFF };
+        r.percentile = null;
+        continue;
+      }
+      const percentile = percentileFor(r.score);
       r.category = getPerformanceCategory({
         percentile,
         warnings: r.activeWarnings,
         recruits7d: r.recruits7d,
         minReq: r.minReq,
-        absent: r.absent
+        absent: false
       });
       r.percentile = percentile;
     }
@@ -361,6 +378,7 @@ module.exports = {
     const buckets = [
       { key: 'FAILING', title: '❌ FAILING', color: 0xFF0000 },
       { key: 'ATTENTION', title: '⚠️ ATTENTION', color: 0xFFA500 },
+      { key: 'NEW', title: 'NEW RECRUITERS', color: 0x00AAFF },
       { key: 'PASSING', title: '✅ PASSING', color: 0x00AAFF },
       { key: 'SUCCEEDING', title: '🌟 SUCCEEDING', color: 0x00FF00 },
       { key: 'ABSENT', title: '🏖️ ABSENT', color: 0x808080 }
@@ -391,7 +409,7 @@ module.exports = {
     const embed = new EmbedBuilder()
       .setTitle(clampText(`📊 Recruitment Report - ${teamLabel}`, 256))
       .setColor(0x00AAFF)
-      .setDescription('Performance score: recruits (40%), verify rate (25%), retention (20%), warnings penalty (15%). Buckets are relative percentiles (warnings/absence override).')
+      .setDescription('Performance score: recruits (40%), verify rate (25%), retention (20%), warnings penalty (15%). New recruiters (role-age grace window) are grouped separately; buckets are relative percentiles (warnings/absence override).')
       .setTimestamp();
 
     let fieldCount = 0;
@@ -422,12 +440,13 @@ module.exports = {
     // Summary footer
     const failing = (grouped.get('FAILING') || []).length;
     const attention = (grouped.get('ATTENTION') || []).length;
+    const newly = (grouped.get('NEW') || []).length;
     const passing = (grouped.get('PASSING') || []).length;
     const succeeding = (grouped.get('SUCCEEDING') || []).length;
     const absent = (grouped.get('ABSENT') || []).length;
 
     embed.setFooter({
-      text: `Total: ${results.length} | ❌${failing} ⚠️${attention} ✅${passing} 🌟${succeeding} 🏖️${absent}`
+      text: `Total: ${results.length} | NEW${newly} | ❌${failing} ⚠️${attention} ✅${passing} 🌟${succeeding} 🏖️${absent}`
     });
 
     return interaction.editReply({ embeds: [embed] });

@@ -3,7 +3,8 @@ const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 
-const { REGIONS, REGION_INFO } = require('./constants');
+const { REGIONS, REGION_INFO, PURCHASE_ITEMS } = require('./constants');
+const { ECONOMY_CONFIG, formatPointsValue } = require('./lib/economy');
 const TEAM_CHOICES = [
   { name: 'All Teams', value: 'ALL' },
   ...(REGIONS || []).map(code => {
@@ -14,6 +15,19 @@ const TEAM_CHOICES = [
   })
 ];
 
+const BUY_ITEM_CHOICES = [
+  ...Object.entries(ECONOMY_CONFIG && ECONOMY_CONFIG.MULTIPLIERS ? ECONOMY_CONFIG.MULTIPLIERS : {})
+    .map(([key, cfg]) => ({
+      name: `${key} (x${cfg.value} ${cfg.days}d, ${formatPointsValue(cfg.cost)} pts)`,
+      value: key
+    })),
+  ...Object.entries(PURCHASE_ITEMS || {})
+    .map(([key, cost]) => ({
+      name: `${key} (${formatPointsValue(cost)} pts)`,
+      value: key
+    }))
+];
+
 const commands = [
   new SlashCommandBuilder().setName('recruit').setDescription('Register a recruit')
     .addUserOption(opt => opt.setName('member').setDescription('Member to recruit').setRequired(true))
@@ -22,7 +36,8 @@ const commands = [
   new SlashCommandBuilder().setName('recruiter').setDescription('Recruiter info and actions')
     .addSubcommand(s => s.setName('info').setDescription('Show recruiter info').addUserOption(o => o.setName('member').setDescription('Recruiter to query')))
     .addSubcommand(s => s.setName('buy').setDescription('Buy recruiter items')
-      .addStringOption(o => o.setName('item').setDescription('Item to purchase').setRequired(true)))
+      .addStringOption(o => o.setName('item').setDescription('Item to purchase').setRequired(true)
+        .addChoices(...BUY_ITEM_CHOICES)))
     .addSubcommand(s => s.setName('multiplier-list').setDescription('List available multipliers'))
     .addSubcommand(s => s.setName('multiplier-view').setDescription('View active multiplier').addUserOption(o => o.setName('member').setDescription('Recruiter to query')))
     .addSubcommand(s => s.setName('multiplier-active').setDescription('Show active multipliers'))
@@ -74,6 +89,7 @@ const commands = [
         })
       )))
     .addSubcommand(s => s.setName('init').setDescription('Initialize leaderboard messages (admin only)')),
+  new SlashCommandBuilder().setName('status').setDescription('Admin: show bot status'),
   new SlashCommandBuilder().setName('antinuke_rollback').setDescription('Rollback all anti-nuke actions (Owner only)'),
 
   // Anti-nuke commands

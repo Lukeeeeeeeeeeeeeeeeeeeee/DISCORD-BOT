@@ -1,23 +1,13 @@
 # Recruit Bot
 
-Discord bot implementing recruit/leaderboard/recruiter rules.
+Discord bot for recruiting, leaderboards, analytics, and anti-nuke protection.
 
-Quick start:
+## Quick start
 
-1. Copy `.env.example` to `.env` and fill in your token, client id, guild id and database path.
+1. Copy `.env.example` to `.env` and fill in your token, client id, guild id, and database path.
 2. Install Node.js (v16.9+). If you get "node not recognized", install Node from https://nodejs.org/ and reopen your terminal.
 3. Run `npm install` in the bot folder.
-
-4. Create your `.env` file:
-   - Copy `.env.example` to `.env` and fill the values (do **not** commit `.env`):
-     ```env
-     DISCORD_TOKEN=
-     CLIENT_ID=
-     GUILD_ID=
-     DATABASE_PATH=./data/recruiter.db
-     ```
-
-5. Register commands and start the bot:
+4. Register commands and start the bot:
    - `npm run register-commands`
    - `npm start`
 
@@ -28,28 +18,36 @@ Quick checks:
 - `node src/check.js` will show DB tables and a sample query.
 - If you make changes to commands, re-run `npm run register-commands` to update slash commands for the guild.
 
-Leaderboards:
-- Weekly leaderboards are shown in sections (PODIUM, PEOPLE WITH +3, OTHER) and require a minimum of 5 active weekly recruiters to display; otherwise they show a prompt saying not enough data.
+## Feature Overview
+- Recruiting workflow with invite attribution, regional roles, verification checks, and member-leave invalidation.
+- Recruiter economy: points, multipliers, purchases, and optional role grants (VIP/MVP/custom).
+- Requirements and status: weekly min-req calculations, warning tracking, absences, and new recruiter grace.
+- Leaderboards and reports: regional leaderboards, demotion watch, and recruitment report by team.
+- Rookie onboarding system: rookie points, chat activity tracking, war logs, and promotions.
+- Anti-nuke suite with rollback, quarantine controls, backups, log export, and admin controls.
+- Analytics and telemetry: messages, voice minutes, invite usage, role changes, and command usage.
 
-Notes:
-- The bot stores data in an sqlite DB (default `./data/recruiter.db`).
-- Weekly scheduler runs every Sunday 12:00 UTC and computes weekly flags/leaderboard (leaderboards are weekly), posting warnings where appropriate.
-- Monthly reset of recruiter points runs on the 1st of each month (00:00 UTC).
-- The code uses the IDs provided in the spec; update `src/config.example.json` or constants as needed.
+## Slash Commands
+- Recruiting: `/recruit`, `/info`, `/revoke-recruit`, `/invite`, `/recruiter info`.
+- Economy: `/recruiter buy`, `/recruiter multiplier-list`, `/recruiter multiplier-view`, `/recruiter multiplier-active`, `/recruiter multiplier-apply`, `/recruiter multiplier-reset`.
+- Moderation: `/recruiter warn`, `/recruiter warnings-revoke`, `/absent`, `/rookiepoints add/remove`, `/rookie_promote`.
+- Reporting: `/leaderboard show/init`, `/recruitment_report`, `/dm`.
+- Anti-nuke: `/antinuke_status`, `/antinuke_rollback`, `/simulate_attack`, `/toggle_strict_mode`, `/toggle_aggressive_ban`, `/set_quarantine_options`.
+- Ops/backups: `/force_backup`, `/view_backups`, `/emergency_recover`, `/export_logs`, `/set_log_channel`, `/whitelist`, `/check_score`, `/reset_scores`, `/status`.
 
-Commands implemented (slash commands):
-- `/recruit member region ign` — register a recruit (with checks)
-- `/info member` — show recruit info
-- `/recruiter info [member]` — show recruiter stats
-- `/recruiter buy item` — spend points on items
-- `/recruiter warn member note` — **ADMIN**: issue a warning to a recruiter
-- `/recruiter dismiss member reason` — **ADMIN**: dismiss flags for a recruiter
-- `/leaderboard [region]` — shows leaderboard
-- `/leaderboard init` — **ADMIN**: initialize persistent leaderboard messages in invite channels
-- `/status` — **ADMIN**: show bot status (DB size, uptime, last backup, counts)
-- `/dm` — **ADMIN**: DM broadcast with batching, retries, and audit logs
+## Scheduler & Maintenance
+- Monday 00:00 UTC: weekly recruiter recalculation; Monday 00:05 UTC: weekly snapshot and min-req storage.
+- Sunday 12:00 UTC: weekly recruit validity sweep and leaderboard refresh.
+- Daily cleanup: expire multipliers and recompute warning counts.
+- Hourly cleanup: expire tracked invites.
+- Monthly maintenance: optional point reset announcement (points preserved by default).
 
-See `TESTING.md` for a manual test checklist and `scripts/force_recompute.js` for forcing recompute during tests.
+## Configuration & Storage
+- SQLite storage at `./data/recruiter.db` by default (override with `DATABASE_PATH`).
+- Slash commands are registered via `src/register-commands.js`.
+- Role/channel IDs are in `src/constants.js` and overrideable via `config.json`/`config.local.json`.
+- See `docs/WALKTHROUGH.md` for manual verification steps.
+- Scripts in `scripts/`: `backup-db.js` (SQLite backup), `recalculate-points.js` (recompute recruit points), `require-walk.js` (module load check).
 
 ## Deployment (Pterodactyl)
 

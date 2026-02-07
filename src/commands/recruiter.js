@@ -1,6 +1,6 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
-const { PURCHASE_ITEMS } = require('../constants');
+const { PURCHASE_ITEMS, ROLE_IDS, RECRUITER_ROLE_IDS, TESTING_USER_ID } = require('../constants');
 const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions, hasAdministrator } = require('../lib/permissions');
 const { formatPointsValue } = require('../lib/economy');
 const { formatDiscordTimestamp, formatUtcDate } = require('../lib/time');
@@ -31,6 +31,16 @@ function safeDaysLeftFromEndDate(endDateStr) {
 function formatPct(x) {
   if (!Number.isFinite(x)) return '0%';
   return `${Math.round(Math.max(0, Math.min(1, x)) * 100)}%`;
+}
+
+function hasRecruiterRole(member) {
+  if (!member || !member.roles || !member.roles.cache) return false;
+  const recruiterRoleIds = [
+    ROLE_IDS.RECRUITER,
+    ROLE_IDS.TRIAL_RECRUITER,
+    ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
+  ].filter(Boolean);
+  return recruiterRoleIds.some(roleId => member.roles.cache.has(roleId));
 }
 
 async function getAverageWeeklyRecruits(db, recruiterId, weeks = 4) {
@@ -355,6 +365,7 @@ module.exports = {
 
       // Get role base requirement
       const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
+      const hasRecruiterRoleFlag = hasRecruiterRole(targetMember);
       const roleBase = getBaseRequirement(targetMember);
 
       // Check if new staff (first 2 recalcs) - consider when people begin recruiting
@@ -364,12 +375,7 @@ module.exports = {
       } catch (e) {
         newStaffCheck = false;
       }
-      // Also consider if they've never recruited anyone (brand new recruiter)
-      if (totalAll === 0) {
-        newStaffCheck = true;
-      }
-
-      const isTrialRecruiter = !!targetMember && targetMember.roles.cache.has(require('../constants').ROLE_IDS.TRIAL_RECRUITER) && !targetMember.roles.cache.has(require('../constants').ROLE_IDS.AUTO_PROMOTE_ROLE);
+      const isTrialRecruiter = !!targetMember && targetMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !targetMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
       const weekCalc = await db.get(
         'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? AND week_start = ? LIMIT 1',
@@ -407,10 +413,25 @@ module.exports = {
         ? recruits.map(r => `<@${r.recruited_id}> (${formatDiscordTimestamp(r.created_at, 'R')}) — ${formatPointsValue(r.points || 0)} pts`).join('\n')
         : 'None';
 
-      const { TESTING_USER_ID } = require('../constants');
       const pointsValue = (member.id === TESTING_USER_ID)
         ? '∞'
         : formatPointsValue(rec ? rec.points : 0);
+
+      const statusBase = getRecruiterStatus({
+        recruits7d: stats7d.recruits7d,
+        minReq,
+        activeWarnings: activeWarningsRow ? activeWarningsRow.c : 0,
+        absent: !!absence
+      });
+      let statusLabel = statusBase.label;
+      let statusColor = statusBase.color;
+      if (targetMember && !hasRecruiterRoleFlag) {
+        statusLabel = 'Not a recruiter';
+        statusColor = 0x808080;
+      } else if (hasRecruiterRoleFlag && newStaffCheck && !absence) {
+        statusLabel = 'New Recruiter';
+        statusColor = 0x00AAFF;
+      }
 
       const embed = new EmbedBuilder()
         .setTitle(clampText(`Recruiter: ${member.tag}`, 256))
@@ -427,9 +448,9 @@ module.exports = {
         )
         .addFields(
           { name: 'Recent recruits (last 5)', value: recentText || 'None' },
-          { name: 'Status', value: (totalAll === 0 && !absence) ? '🆕 New Recruiter' : getRecruiterStatus({ recruits7d: stats7d.recruits7d, minReq, activeWarnings: activeWarningsRow ? activeWarningsRow.c : 0, absent: !!absence }).label, inline: true }
+          { name: 'Status', value: statusLabel, inline: true }
         )
-        .setColor((totalAll === 0 && !absence) ? 0x00AAFF : getRecruiterStatus({ recruits7d: stats7d.recruits7d, minReq, activeWarnings: activeWarningsRow ? activeWarningsRow.c : 0, absent: !!absence }).color)
+        .setColor(statusColor)
         .setTimestamp();
 
       if (absence) {
@@ -528,13 +549,13 @@ module.exports = {
       const guildMember = interaction.guild && interaction.guild.members && interaction.guild.members.fetch
         ? await interaction.guild.members.fetch(userId).catch(() => null)
         : null;
+      const roleSource = guildMember || interaction.member || null;
 
       // Check if user has permission to buy (basic check)
-      const ROLE_IDS = require('../constants').ROLE_IDS;
-      const hasRoleCache = !!guildMember && !!guildMember.roles && !!guildMember.roles.cache && typeof guildMember.roles.cache.has === 'function';
-      const hasRole = (roleId) => !!roleId && hasRoleCache && guildMember.roles.cache.has(roleId);
+      const hasRoleCache = !!roleSource && !!roleSource.roles && !!roleSource.roles.cache && typeof roleSource.roles.cache.has === 'function';
+      const hasRole = (roleId) => !!roleId && hasRoleCache && roleSource.roles.cache.has(roleId);
 
-      if (!guildMember || !hasRoleCache) {
+      if (!roleSource || !hasRoleCache) {
         if (!isTest) {
           return replyError(interaction, 'Unable to verify your roles right now. Please try again.');
         }
@@ -542,7 +563,7 @@ module.exports = {
 
       const isAllowed = isTest
         ? true
-        : (hasRecruiterOrStaffPermissions(guildMember)
+        : (hasRecruiterOrStaffPermissions(roleSource)
           || hasRole(ROLE_IDS.ROOKIE)
           || hasRole(ROLE_IDS.VIP)
           || hasRole(ROLE_IDS.MVP)
@@ -553,7 +574,6 @@ module.exports = {
       }
 
       const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', userId);
-      const { TESTING_USER_ID } = require('../constants');
       const points = (userId === TESTING_USER_ID) ? 999999999 : (rec ? rec.points : 0);
 
       // Check if item is a multiplier type
@@ -606,7 +626,6 @@ module.exports = {
       // handle role grants for vip/mvp
       try {
         if (item === 'vip-role') {
-          const ROLE_IDS = require('../constants').ROLE_IDS;
           const memberRec = interaction.guild && interaction.guild.members && interaction.guild.members.fetch ? await interaction.guild.members.fetch(userId).catch(() => null) : null;
           if (memberRec && ROLE_IDS.VIP) {
             await memberRec.roles.add(ROLE_IDS.VIP).catch(err => {
@@ -615,7 +634,6 @@ module.exports = {
           }
         }
         if (item === 'mvp-role') {
-          const ROLE_IDS = require('../constants').ROLE_IDS;
           const memberRec = interaction.guild && interaction.guild.members && interaction.guild.members.fetch ? await interaction.guild.members.fetch(userId).catch(() => null) : null;
           if (memberRec && ROLE_IDS.MVP) {
             await memberRec.roles.add(ROLE_IDS.MVP).catch(err => {

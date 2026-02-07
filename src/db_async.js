@@ -169,6 +169,14 @@ async function init() {
     timestamp INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS invite_snapshots (
+    guild_id TEXT NOT NULL,
+    invite_code TEXT NOT NULL,
+    uses INTEGER DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, invite_code)
+  );
+
   CREATE TABLE IF NOT EXISTS analytics_daily_channels (
     day TEXT NOT NULL,
     day_ts INTEGER,
@@ -266,6 +274,11 @@ async function init() {
 
   try {
     await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_invite_snapshots_guild ON invite_snapshots(guild_id)');
   } catch (e) {
     void e;
   }
