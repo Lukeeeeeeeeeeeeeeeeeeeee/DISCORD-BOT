@@ -2,7 +2,7 @@ jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
-function makeInteraction(sub='multiplier-active'){
+function makeInteraction(sub = 'multiplier-active') {
   const reply = jest.fn();
   const options = { getSubcommand: () => sub, getUser: (_k) => null };
   const interaction = { options, reply, user: { id: 'R1', tag: 'Recruiter#0001' }, member: { permissions: { has: () => true } } };
@@ -18,10 +18,10 @@ describe('multiplier-active admin', () => {
     const { open } = require('sqlite');
     db = await open({ filename: dbPath, driver: sqlite3.Database });
     await db.exec(`
-      CREATE TABLE IF NOT EXISTS multipliers ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT, created_at INTEGER, expires_at INTEGER );
+      CREATE TABLE IF NOT EXISTS multipliers ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT, created_at INTEGER, expires_at INTEGER );
     `);
     // seed an active multiplier
-    await db.run('INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', 'A', 1.25, 'm1.25_14d', Date.now(), Date.now() + (14*24*60*60*1000));
+    await db.run('INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'A', 1.25, 'm1.25_14d', Date.now(), Date.now() + (14 * 24 * 60 * 60 * 1000));
   });
   afterEach(async () => {
     try { await db.close(); } catch (e) { void e; }
@@ -29,7 +29,7 @@ describe('multiplier-active admin', () => {
   });
   test('multiplier-active returns embed with list', async () => {
     const { interaction } = makeInteraction('multiplier-active');
-    const cmd = require('../src/commands/recruiter.js');
+    const cmd = require('../src/commands/recruiting/recruiter.js');
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalled();
     const arg = interaction.reply.mock.calls[0][0];

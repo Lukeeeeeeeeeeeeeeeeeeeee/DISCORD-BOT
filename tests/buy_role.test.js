@@ -2,15 +2,25 @@ jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
-function makeInteraction(){
+function makeInteraction() {
   const reply = jest.fn();
   const options = { getSubcommand: () => 'buy', getString: (_k) => 'vip-role' };
   const member = {
     id: 'RBUY',
     roles: { add: jest.fn().mockResolvedValue(true) }
   };
-  const guild = { members: { fetch: jest.fn(async (_id)=> member) } };
-  const interaction = { options, reply, user: { id: 'RBUY', tag: 'Buyer#0001' }, member: { permissions: { has: () => false } }, guild };
+  const guild = {
+    id: 'GLOBAL',
+    members: {
+      fetch: jest.fn(async (id) => {
+        if (id === 'BotId') return { permissions: { has: () => true }, roles: { highest: { position: 100 } } };
+        return member;
+      }),
+      me: { permissions: { has: () => true }, roles: { highest: { position: 100 } } }
+    },
+    roles: { cache: { get: jest.fn((id) => ({ id, position: 0 })) } }
+  };
+  const interaction = { options, reply, user: { id: 'RBUY', tag: 'Buyer#0001' }, member: { permissions: { has: () => false } }, guild, client: { user: { id: 'BotId' } } };
   return { interaction, member };
 }
 
@@ -23,10 +33,10 @@ describe('buy role items', () => {
     const { open } = require('sqlite');
     db = await open({ filename: dbPath, driver: sqlite3.Database });
     await db.exec(`
-      CREATE TABLE IF NOT EXISTS recruiters ( id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0, channel_base INTEGER DEFAULT 4 );
-      CREATE TABLE IF NOT EXISTS purchases ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, item TEXT NOT NULL, cost INTEGER NOT NULL, created_at INTEGER NOT NULL );
+      CREATE TABLE IF NOT EXISTS recruiters ( guild_id TEXT NOT NULL, id TEXT NOT NULL, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0, channel_base INTEGER DEFAULT 4, PRIMARY KEY (guild_id, id) );
+      CREATE TABLE IF NOT EXISTS purchases ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, item TEXT NOT NULL, cost INTEGER NOT NULL, created_at INTEGER NOT NULL );
     `);
-    await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?)', 'RBUY', 30, 0, 0, 4);
+    await db.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'RBUY', 30, 0, 0, 4);
   });
   afterEach(async () => {
     try { await db.close(); } catch (e) { void e; }
@@ -35,7 +45,7 @@ describe('buy role items', () => {
 
   test('buy vip-role deducts points and assigns role', async () => {
     const { interaction, member } = makeInteraction();
-    const cmd = require('../src/commands/recruiter.js');
+    const cmd = require('../src/commands/recruiting/recruiter.js');
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalled();
     const rec = await require('../src/db_async').get('SELECT * FROM recruiters WHERE id = ?', 'RBUY');

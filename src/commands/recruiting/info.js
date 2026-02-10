@@ -1,8 +1,9 @@
-const db = require('../db_async');
+const db = require('../../db_async');
 const { EmbedBuilder } = require('discord.js');
-const { getLinkedPoints, formatPoints } = require('../lib/rookie-points');
-const { clampText } = require('../lib/text');
-const { replyError } = require('../lib/embeds');
+const { getLinkedPoints, formatPoints } = require('../../lib/rookie-points');
+const { clampText } = require('../../lib/text');
+const { resolveGuildId } = require('../../lib/guild');
+const { replyError } = require('../../lib/embeds');
 
 function toUnixSeconds(ms) {
   return Math.floor(ms / 1000);
@@ -19,7 +20,7 @@ function safeDaysLeftFromEndDate(endDateStr) {
 function getPrimaryMemberRoleLabel(guildMember) {
 
   if (!guildMember || !guildMember.roles || !guildMember.roles.cache) return 'Member';
-  const { ROLE_IDS } = require('../constants');
+  const { ROLE_IDS } = require('../../constants');
   const picks = [
     { id: ROLE_IDS.LEADER, label: 'Leader' },
     { id: ROLE_IDS.CO_LEADER, label: 'Co-Leader' },
@@ -60,26 +61,33 @@ module.exports = {
       return interaction.reply(payload);
     };
 
-    const rows = await db.all('SELECT * FROM recruits WHERE recruited_id = ? ORDER BY created_at DESC', member.id);
-    if (!rows || rows.length === 0) return respond({ content: 'No recruit record for that member.' });
+    const guildId = resolveGuildId(interaction.guild);
+    const rows = await db.all(
+      'SELECT * FROM recruits WHERE guild_id = ? AND recruited_id = ? ORDER BY created_at DESC',
+      guildId,
+      member.id
+    );
+    if (!rows || rows.length === 0) return replyError(interaction, 'No recruit record for that member.');
     const recruit = rows[0];
 
     const verification = await db.get(
-      'SELECT * FROM verifications WHERE recruited_id = ? ORDER BY verified_at DESC LIMIT 1',
+      'SELECT * FROM verifications WHERE guild_id = ? AND recruited_id = ? ORDER BY verified_at DESC LIMIT 1',
+      guildId,
       member.id
     );
     const recruitMember = await interaction.guild.members.fetch(member.id).catch(() => null);
     const recruiterMember = await interaction.guild.members.fetch(recruit.recruiter_id).catch(() => null);
     const primaryRole = getPrimaryMemberRoleLabel(recruitMember);
     const rookiePointsRow = await db.get(
-      'SELECT points, updated_at FROM rookie_points WHERE member_id = ?',
+      'SELECT points, updated_at FROM rookie_points WHERE guild_id = ? AND member_id = ?',
+      guildId,
       member.id
     );
     let points = null;
     let pointsUpdatedAt = null;
 
     if (recruitMember) {
-      const linked = await getLinkedPoints({ db, member: recruitMember });
+      const linked = await getLinkedPoints({ db, member: recruitMember, guild: interaction.guild });
       points = Number.isFinite(linked.points) ? linked.points : null;
       pointsUpdatedAt = linked.updatedAt || null;
     } else if (rookiePointsRow && Number.isFinite(Number(rookiePointsRow.points))) {
@@ -139,7 +147,8 @@ module.exports = {
     });
 
     const absence = await db.get(
-      'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now") ORDER BY created_at DESC LIMIT 1',
+      'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now") ORDER BY created_at DESC LIMIT 1',
+      guildId,
       recruit.recruiter_id
     );
     if (absence) {
@@ -152,7 +161,8 @@ module.exports = {
     }
 
     const recentByRecruiter = await db.all(
-      'SELECT recruited_id, created_at FROM recruits WHERE recruiter_id = ? AND valid = 1 ORDER BY created_at DESC LIMIT 5',
+      'SELECT recruited_id, created_at FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND valid = 1 ORDER BY created_at DESC LIMIT 5',
+      guildId,
       recruit.recruiter_id
     );
     if (recentByRecruiter && recentByRecruiter.length) {

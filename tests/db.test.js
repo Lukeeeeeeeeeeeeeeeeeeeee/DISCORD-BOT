@@ -7,8 +7,8 @@ test('db is created at DATABASE_PATH when required', () => {
   process.env.DATABASE_PATH = dbPath;
 
   // Clear cached module so it re-initializes with our env var
-  delete require.cache[require.resolve('../src/db.js')];
-  const db = require('../src/db.js');
+  delete require.cache[require.resolve('../src/db_async.js')];
+  const db = require('../src/db_async.js');
 
   expect(fs.existsSync(dbPath)).toBe(true);
 

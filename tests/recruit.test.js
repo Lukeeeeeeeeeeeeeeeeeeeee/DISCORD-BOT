@@ -28,6 +28,7 @@ function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member
   channelsCache.set(require('../src/constants').CHANNELS.CENTRAL_LEADERBOARD, { send: jest.fn().mockResolvedValue(true) });
 
   const guild = {
+    id: 'GLOBAL',
     members: {
       fetch: jest.fn(async (arg) => {
         if (typeof arg === 'string') {
@@ -106,7 +107,7 @@ describe('/recruit command', () => {
     process.env.DATABASE_PATH = dbPath;
     // clear require cache for db and recruit module to re-init with new DB
     delete require.cache[require.resolve('../src/db_async.js')];
-    delete require.cache[require.resolve('../src/commands/recruit.js')];
+    delete require.cache[require.resolve('../src/commands/recruiting/recruit.js')];
     const db = require('../src/db_async');
     // ensure initialized
     await db.exec('SELECT 1');
@@ -132,7 +133,7 @@ describe('/recruit command', () => {
     expect(guildMember.roles.cache.has(require('../src/constants').ROLE_IDS.ROOKIE)).toBe(false);
     expect(await db.get('SELECT * FROM recruits WHERE recruited_id = ?', 'M1')).toBeUndefined();
 
-    const cmd = require('../src/commands/recruit.js');
+    const cmd = require('../src/commands/recruiting/recruit.js');
 
     await cmd.execute(interaction);
 
@@ -167,49 +168,58 @@ describe('/recruit command', () => {
   test('rejects if joined more than 2 hours ago', async () => {
     const { interaction, guildMember } = makeInteraction();
     guildMember.joinedAt = new Date(Date.now() - (3 * 60 * 60 * 1000)); // 3 hours
-    const cmd = require('../src/commands/recruit.js');
+    const cmd = require('../src/commands/recruiting/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Cannot give roles to someone who joined more than 2 hours ago.' });
+    const replyArg = interaction.reply.mock.calls[0][0];
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toBe('Cannot give roles to someone who joined more than 2 hours ago.');
   });
 
   test('rejects if account too young', async () => {
     const youngMember = { id: 'M2', tag: 'Young#0001', createdAt: new Date(Date.now() - (10 * 24 * 60 * 60 * 1000)) }; // 10 days old
     const { interaction } = makeInteraction({ member: youngMember });
-    const cmd = require('../src/commands/recruit.js');
+    const cmd = require('../src/commands/recruiting/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Account must be at least 6 months old.' });
+    const replyArg = interaction.reply.mock.calls[0][0];
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toBe('Account must be at least 6 months old.');
   });
 
   test('rejects if member already verified', async () => {
     const { interaction, guildMember } = makeInteraction();
     guildMember.roles.cache.has = (id) => id === require('../src/constants').ROLE_IDS.ROOKIE;
-    const cmd = require('../src/commands/recruit.js');
+    const cmd = require('../src/commands/recruiting/recruit.js');
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'Member is already verified.' });
+    const replyArg = interaction.reply.mock.calls[0][0];
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toBe('Member is already verified.');
   });
 
   test('rejects if already recruited', async () => {
     const { interaction } = makeInteraction();
-    const cmd = require('../src/commands/recruit.js');
+    const cmd = require('../src/commands/recruiting/recruit.js');
 
     // first attempt should succeed
     await cmd.execute(interaction);
 
     // second attempt should be rejected
     await cmd.execute(interaction);
-    expect(interaction.reply).toHaveBeenCalledWith({ content: 'That member has already been recruited previously.' });
+    const replyArg = interaction.reply.mock.calls[1][0]; // second call
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toBe('That member has already been recruited previously.');
   });
 
   test('recruiter info shows extended fields', async () => {
     const db = require('../src/db_async');
 
     // seed recruiter and some activity
-    await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?)', 'R1', 120, 1, 0, 4);
+    // seed recruiter and some activity
+    await db.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'R1', 120, 1, 0, 4);
     const now = Date.now();
-    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1', 'u10', 'EU', 'p1', now - (2 * 24 * 60 * 60 * 1000), 25);
-    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1', 'u11', 'EU', 'p2', now - (10 * 24 * 60 * 60 * 1000), 25);
-    await db.run('INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', 'R1', 1.25, 'm1.25_14d', now - 1000, now + (14 * 24 * 60 * 60 * 1000));
-    await db.run('INSERT INTO purchases (recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?)', 'R1', 'custom-role', 50, now - 2000);
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, ?, 1, ?)', 'GLOBAL', 'R1', 'u10', 'EU', 'p1', now - (2 * 24 * 60 * 60 * 1000), 25);
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, ?, 1, ?)', 'GLOBAL', 'R1', 'u11', 'EU', 'p2', now - (10 * 24 * 60 * 60 * 1000), 25);
+    await db.run('INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'R1', 1.25, 'm1.25_14d', now - 1000, now + (14 * 24 * 60 * 60 * 1000));
+    await db.run('INSERT INTO purchases (guild_id, recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?, ?)', 'GLOBAL', 'R1', 'custom-role', 50, now - 2000);
 
     // Mock retention scan to return 0.75
     const econ = require('../src/lib/economy');
@@ -219,10 +229,11 @@ describe('/recruit command', () => {
     const options = { getSubcommand: () => 'info', getUser: (_k) => ({ id: 'R1', tag: 'Recruiter#0001' }) };
     const reply = jest.fn();
     const guild = {
+      id: 'GLOBAL',
       members: {
         fetch: jest.fn(async (arg) => {
           const RECRUITER_ROLE = require('../src/constants').ROLE_IDS.RECRUITER;
-          if (typeof arg === 'string') return { id: arg, roles: { cache: { has: (rid) => rid === RECRUITER_ROLE } } };
+          if (typeof arg === 'string') return { id: arg, roles: { cache: { has: (rid) => rid === RECRUITER_ROLE, keys: () => [RECRUITER_ROLE] } } };
           if (arg && arg.user) {
             const ids = Array.isArray(arg.user) ? arg.user : [arg.user];
             const collection = new Map();
@@ -237,7 +248,7 @@ describe('/recruit command', () => {
     };
     const interaction = { options, reply, user: { id: 'R1', tag: 'Recruiter#0001' }, member: { permissions: { has: () => true } }, guild };
 
-    const cmd = require('../src/commands/recruiter.js');
+    const cmd = require('../src/commands/recruiting/recruiter.js');
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalled();
     const arg = interaction.reply.mock.calls[0][0];

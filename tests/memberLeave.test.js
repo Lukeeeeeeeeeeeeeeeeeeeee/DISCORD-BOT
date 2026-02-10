@@ -12,8 +12,8 @@ async function makeDb(dbPath) {
   const { open } = require('sqlite');
   const db = await open({ filename: dbPath, driver: sqlite3.Database });
   await db.exec(`
-    CREATE TABLE IF NOT EXISTS recruiters ( id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0 );
-    CREATE TABLE IF NOT EXISTS recruits ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, recruited_id TEXT NOT NULL, region TEXT NOT NULL, ign TEXT, created_at INTEGER NOT NULL, valid INTEGER DEFAULT 1, points INTEGER DEFAULT 0 );
+    CREATE TABLE IF NOT EXISTS recruiters ( guild_id TEXT NOT NULL, id TEXT NOT NULL, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0, channel_base INTEGER DEFAULT 4, PRIMARY KEY (guild_id, id) );
+    CREATE TABLE IF NOT EXISTS recruits ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, recruited_id TEXT NOT NULL, region TEXT NOT NULL, ign TEXT, created_at INTEGER NOT NULL, valid INTEGER DEFAULT 1, points INTEGER DEFAULT 0 );
   `);
   return db;
 }
@@ -30,12 +30,12 @@ describe('member leave handling', () => {
 
   test('removes recruit and deducts points from recruiter', async () => {
     const db = await makeDb(dbPath);
-    await db.run('INSERT INTO recruiters (id, points) VALUES (?, ?)', 'R1', 100);
+    await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, 0, 0, 4)', 'GLOBAL', 'R1', 100);
     const now = Date.now();
-    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', 'R1', 'Mleave', 'EU', 'x', now, 25);
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, ?, 1, ?)', 'GLOBAL', 'R1', 'Mleave', 'EU', 'x', now, 25);
 
     const { handleMemberLeave } = require('../src/lib/memberLeave');
-    await handleMemberLeave(db, null, { id: 'Mleave' });
+    await handleMemberLeave(db, null, { id: 'Mleave', guild: { id: 'GLOBAL' } });
 
     const rec = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', 'Mleave');
     expect(rec.valid).toBe(0);

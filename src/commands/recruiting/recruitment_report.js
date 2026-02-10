@@ -1,20 +1,21 @@
-const db = require('../db_async');
+const db = require('../../db_async');
 const { EmbedBuilder } = require('discord.js');
-const { hasAdministrator } = require('../lib/permissions');
+const { hasAdministrator } = require('../../lib/permissions');
 const {
   calculate7DayStats,
   getPreviousMinReq,
   calculateMinRecruitsFixed,
   getBaseRequirement,
   isNewStaff
-} = require('../lib/recruiting-system');
-const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
-const { fetchMembersByIds } = require('../lib/member-fetch');
-const { formatPointsValue } = require('../lib/economy');
-const { getWeekStartUtcTs } = require('../lib/week');
-const { clampText } = require('../lib/text');
-const { getTeamLabel, normalizeRegionInput } = require('../lib/regions');
-const { replyError } = require('../lib/embeds');
+} = require('../../lib/recruiting-system');
+const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../../constants');
+const { fetchMembersByIds } = require('../../lib/member-fetch');
+const { formatPointsValue } = require('../../lib/economy');
+const { getWeekStartUtcTs } = require('../../lib/week');
+const { clampText } = require('../../lib/text');
+const { getTeamLabel, normalizeRegionInput } = require('../../lib/regions');
+const { replyError } = require('../../lib/embeds');
+const { resolveGuildId } = require('../../lib/guild');
 
 function chunkLines(lines, maxLen = 1024) {
   const chunks = [];

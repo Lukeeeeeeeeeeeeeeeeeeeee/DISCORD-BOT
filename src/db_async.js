@@ -2,13 +2,87 @@ const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const fs = require('fs');
 const path = require('path');
+const { GUILD_ID } = require('./constants');
 
 const DB_PATH = process.env.DATABASE_PATH || './data/recruiter.db';
+const DEFAULT_GUILD_ID = process.env.GUILD_ID || GUILD_ID || 'GLOBAL';
+
+function readPragmaValues(rows) {
+  if (!rows || !rows.length) return [];
+  const values = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const val = Object.values(row)[0];
+    values.push(val);
+  }
+  return values;
+}
+
+async function runIntegrityChecks(db, label = 'startup') {
+  if (!db || typeof db.all !== 'function') return { ok: true, skipped: true };
+  const enabled = (process.env.DB_INTEGRITY_CHECK || 'true').toLowerCase() === 'true';
+  if (!enabled) return { ok: true, skipped: true };
+  const mode = (process.env.DB_INTEGRITY_MODE || 'quick').toLowerCase();
+  if (mode === 'off' || mode === 'none' || mode === 'skip') {
+    return { ok: true, skipped: true };
+  }
+
+  let integrityValues = [];
+  try {
+    if (mode === 'full') {
+      integrityValues = readPragmaValues(await db.all('PRAGMA integrity_check'));
+    } else {
+      integrityValues = readPragmaValues(await db.all('PRAGMA quick_check'));
+    }
+  } catch (e) {
+    console.error('DB integrity check failed to run', { label, mode, error: e });
+    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') throw e;
+    return { ok: false, error: e };
+  }
+
+  const integrityOk = integrityValues.length === 0
+    ? true
+    : integrityValues.every(val => String(val).toLowerCase() === 'ok');
+
+  let fkRows = [];
+  try {
+    fkRows = await db.all('PRAGMA foreign_key_check');
+  } catch (e) {
+    console.error('DB foreign_key_check failed to run', { label, error: e });
+    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') throw e;
+    return { ok: false, error: e };
+  }
+
+  const fkOk = !fkRows || fkRows.length === 0;
+  const ok = integrityOk && fkOk;
+
+  if (!ok) {
+    console.error('DB integrity check failed', {
+      label,
+      mode,
+      integrity: integrityValues,
+      foreignKeyViolations: fkRows
+    });
+    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') {
+      throw new Error('Database integrity check failed');
+    }
+  } else if ((process.env.DB_INTEGRITY_LOG_OK || '').toLowerCase() === 'true') {
+    console.log('DB integrity check OK', { label, mode });
+  }
+
+  return { ok, integrityOk, fkOk, integrityValues, fkRows };
+}
+
+// Synchronously ensure DB path exists and touch file (compatibility for tests)
+const dir = path.dirname(DB_PATH);
+if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+try {
+  fs.closeSync(fs.openSync(DB_PATH, 'a'));
+} catch (e) {
+  // ignore
+}
 
 async function init() {
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
   const db = await open({ filename: DB_PATH, driver: sqlite3.Database });
   // Reduce "database is locked" errors under concurrent access.
   try { await db.exec('PRAGMA foreign_keys = ON'); } catch (e) { void e; }
@@ -34,6 +108,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS recruits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     recruiter_id TEXT NOT NULL,
     recruited_id TEXT NOT NULL,
     region TEXT NOT NULL,
@@ -43,18 +118,21 @@ async function init() {
     points INTEGER DEFAULT 0
   );
 
-  CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(recruited_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(guild_id, recruited_id);
 
   CREATE TABLE IF NOT EXISTS recruiters (
-    id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    id TEXT NOT NULL,
     points INTEGER DEFAULT 0,
     warnings INTEGER DEFAULT 0,
     promoted INTEGER DEFAULT 0,
-    channel_base INTEGER DEFAULT 4
+    channel_base INTEGER DEFAULT 4,
+    PRIMARY KEY (guild_id, id)
   );
 
   CREATE TABLE IF NOT EXISTS flags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     recruiter_id TEXT NOT NULL,
     reason TEXT NOT NULL,
     created_at INTEGER NOT NULL,
@@ -63,6 +141,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS warnings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     recruiter_id TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     expired_at INTEGER,
@@ -72,6 +151,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS multipliers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     recruiter_id TEXT NOT NULL,
     value REAL NOT NULL,
     type TEXT NOT NULL,
@@ -81,6 +161,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS purchases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     recruiter_id TEXT NOT NULL,
     item TEXT NOT NULL,
     cost INTEGER NOT NULL,
@@ -89,6 +170,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS leaderboard_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     channel_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
     region TEXT,
@@ -97,6 +179,7 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS weekly_calculations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     recruiter_id TEXT NOT NULL,
     timestamp INTEGER NOT NULL,
     week_start INTEGER,
@@ -113,31 +196,36 @@ async function init() {
 
   CREATE TABLE IF NOT EXISTS verifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     recruited_id TEXT NOT NULL,
     recruiter_id TEXT,
     verified_at INTEGER NOT NULL,
     verified_by TEXT NOT NULL
   );
 
-  CREATE UNIQUE INDEX IF NOT EXISTS uniq_verification_recruited ON verifications(recruited_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS uniq_verification_recruited ON verifications(guild_id, recruited_id);
 
   CREATE TABLE IF NOT EXISTS rookie_points (
-    member_id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
     points REAL NOT NULL,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, member_id)
   );
 
   CREATE TABLE IF NOT EXISTS rookie_chat_activity (
+    guild_id TEXT NOT NULL,
     member_id TEXT NOT NULL,
     week_start INTEGER NOT NULL,
     message_count INTEGER DEFAULT 0,
     awarded_chunks INTEGER DEFAULT 0,
     updated_at INTEGER NOT NULL,
-    PRIMARY KEY (member_id, week_start)
+    PRIMARY KEY (guild_id, member_id, week_start)
   );
 
   CREATE TABLE IF NOT EXISTS rookie_war_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     member_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
     created_at INTEGER NOT NULL,
@@ -145,17 +233,20 @@ async function init() {
   );
 
   CREATE TABLE IF NOT EXISTS trial_fast_track (
-    recruiter_id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    recruiter_id TEXT NOT NULL,
     started_at INTEGER NOT NULL,
     recruit1_id TEXT,
     recruit2_id TEXT,
     recruit3_id TEXT,
     count INTEGER DEFAULT 0,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, recruiter_id)
   );
 
   CREATE TABLE IF NOT EXISTS absences (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
     recruiter_id TEXT NOT NULL,
     start_date TEXT NOT NULL,
     end_date TEXT NOT NULL,
@@ -165,8 +256,10 @@ async function init() {
   );
 
   CREATE TABLE IF NOT EXISTS system_events (
-    key TEXT PRIMARY KEY,
-    timestamp INTEGER NOT NULL
+    guild_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, key)
   );
 
   CREATE TABLE IF NOT EXISTS invite_snapshots (
@@ -219,10 +312,12 @@ async function init() {
   );
 
   CREATE TABLE IF NOT EXISTS analytics_user_activity (
-    user_id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
     last_message_at INTEGER,
     last_voice_at INTEGER,
-    last_active_at INTEGER
+    last_active_at INTEGER,
+    PRIMARY KEY (guild_id, user_id)
   );
 
   CREATE TABLE IF NOT EXISTS analytics_members (
@@ -270,10 +365,17 @@ async function init() {
     created_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS invite_cooldowns (
+    guild_id TEXT NOT NULL,
+    recruiter_id TEXT NOT NULL,
+    cooldown_until INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, recruiter_id)
+  );
+
   `);
 
   try {
-    await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region)');
+    await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(guild_id, channel_id, region)');
   } catch (e) {
     void e;
   }
@@ -311,70 +413,92 @@ async function init() {
     }
   };
 
+  const getTableInfo = async (table) => {
+    try {
+      return await db.all(`PRAGMA table_info(${table})`);
+    } catch (e) {
+      return [];
+    }
+  };
+
+  const hasColumn = async (table, column) => {
+    const info = await getTableInfo(table);
+    return info.some(row => row && row.name === column);
+  };
+
+  const hasCompositePk = async (table, columns) => {
+    const info = await getTableInfo(table);
+    const pkCols = info
+      .filter(row => row && row.pk)
+      .sort((a, b) => a.pk - b.pk)
+      .map(row => row.name);
+    return columns.length === pkCols.length && columns.every((col, idx) => pkCols[idx] === col);
+  };
+
   await applyMigration('2026-02-06-recruiter-triggers', async () => {
     await db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_recruits_recruiter_row
       AFTER INSERT ON recruits
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_warnings_recruiter_row
       AFTER INSERT ON warnings
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_flags_recruiter_row
       AFTER INSERT ON flags
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_multipliers_recruiter_row
       AFTER INSERT ON multipliers
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_purchases_recruiter_row
       AFTER INSERT ON purchases
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_absences_recruiter_row
       AFTER INSERT ON absences
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_weekly_calc_recruiter_row
       AFTER INSERT ON weekly_calculations
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_trial_fast_track_recruiter_row
       AFTER INSERT ON trial_fast_track
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_verifications_recruiter_row
       AFTER INSERT ON verifications
       WHEN NEW.recruiter_id IS NOT NULL
       BEGIN
-        INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base)
-        VALUES (NEW.recruiter_id, 0, 0, 0, 4);
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
     `);
   });
@@ -506,6 +630,240 @@ async function init() {
     `);
   });
 
+  await applyMigration('2026-02-07-guild-columns', async () => {
+    const defaultGuild = DEFAULT_GUILD_ID;
+    const addGuildColumn = async (table) => {
+      if (!(await hasColumn(table, 'guild_id'))) {
+        await db.exec(`ALTER TABLE ${table} ADD COLUMN guild_id TEXT`);
+      }
+      await db.run(`UPDATE ${table} SET guild_id = ? WHERE guild_id IS NULL`, defaultGuild);
+    };
+
+    await addGuildColumn('recruits');
+    await addGuildColumn('flags');
+    await addGuildColumn('warnings');
+    await addGuildColumn('multipliers');
+    await addGuildColumn('purchases');
+    await addGuildColumn('leaderboard_messages');
+    await addGuildColumn('weekly_calculations');
+    await addGuildColumn('verifications');
+    await addGuildColumn('rookie_war_logs');
+    await addGuildColumn('absences');
+    await addGuildColumn('system_events');
+
+    if (!(await hasCompositePk('recruiters', ['guild_id', 'id']))) {
+      const hasGuild = await hasColumn('recruiters', 'guild_id');
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS recruiters_new (
+          guild_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          points INTEGER DEFAULT 0,
+          warnings INTEGER DEFAULT 0,
+          promoted INTEGER DEFAULT 0,
+          channel_base INTEGER DEFAULT 4,
+          PRIMARY KEY (guild_id, id)
+        );
+      `);
+      const guildExpr = hasGuild ? 'COALESCE(guild_id, ?)' : '?';
+      await db.run(
+        `INSERT OR IGNORE INTO recruiters_new (guild_id, id, points, warnings, promoted, channel_base)
+         SELECT ${guildExpr}, id, points, warnings, promoted, channel_base FROM recruiters`,
+        defaultGuild
+      );
+      await db.exec('DROP TABLE recruiters');
+      await db.exec('ALTER TABLE recruiters_new RENAME TO recruiters');
+    }
+
+    if (!(await hasCompositePk('rookie_points', ['guild_id', 'member_id']))) {
+      const hasGuild = await hasColumn('rookie_points', 'guild_id');
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS rookie_points_new (
+          guild_id TEXT NOT NULL,
+          member_id TEXT NOT NULL,
+          points REAL NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (guild_id, member_id)
+        );
+      `);
+      const guildExpr = hasGuild ? 'COALESCE(guild_id, ?)' : '?';
+      await db.run(
+        `INSERT OR IGNORE INTO rookie_points_new (guild_id, member_id, points, updated_at)
+         SELECT ${guildExpr}, member_id, points, updated_at FROM rookie_points`,
+        defaultGuild
+      );
+      await db.exec('DROP TABLE rookie_points');
+      await db.exec('ALTER TABLE rookie_points_new RENAME TO rookie_points');
+    }
+
+    if (!(await hasCompositePk('trial_fast_track', ['guild_id', 'recruiter_id']))) {
+      const hasGuild = await hasColumn('trial_fast_track', 'guild_id');
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS trial_fast_track_new (
+          guild_id TEXT NOT NULL,
+          recruiter_id TEXT NOT NULL,
+          started_at INTEGER NOT NULL,
+          recruit1_id TEXT,
+          recruit2_id TEXT,
+          recruit3_id TEXT,
+          count INTEGER DEFAULT 0,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (guild_id, recruiter_id)
+        );
+      `);
+      const guildExpr = hasGuild ? 'COALESCE(guild_id, ?)' : '?';
+      await db.run(
+        `INSERT OR IGNORE INTO trial_fast_track_new (guild_id, recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at)
+         SELECT ${guildExpr}, recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at FROM trial_fast_track`,
+        defaultGuild
+      );
+      await db.exec('DROP TABLE trial_fast_track');
+      await db.exec('ALTER TABLE trial_fast_track_new RENAME TO trial_fast_track');
+    }
+
+    if (!(await hasCompositePk('rookie_chat_activity', ['guild_id', 'member_id', 'week_start']))) {
+      const hasGuild = await hasColumn('rookie_chat_activity', 'guild_id');
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS rookie_chat_activity_new (
+          guild_id TEXT NOT NULL,
+          member_id TEXT NOT NULL,
+          week_start INTEGER NOT NULL,
+          message_count INTEGER DEFAULT 0,
+          awarded_chunks INTEGER DEFAULT 0,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (guild_id, member_id, week_start)
+        );
+      `);
+      const guildExpr = hasGuild ? 'COALESCE(guild_id, ?)' : '?';
+      await db.run(
+        `INSERT OR IGNORE INTO rookie_chat_activity_new (guild_id, member_id, week_start, message_count, awarded_chunks, updated_at)
+         SELECT ${guildExpr}, member_id, week_start, message_count, awarded_chunks, updated_at FROM rookie_chat_activity`,
+        defaultGuild
+      );
+      await db.exec('DROP TABLE rookie_chat_activity');
+      await db.exec('ALTER TABLE rookie_chat_activity_new RENAME TO rookie_chat_activity');
+    }
+
+    if (!(await hasCompositePk('analytics_user_activity', ['guild_id', 'user_id']))) {
+      const hasGuild = await hasColumn('analytics_user_activity', 'guild_id');
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS analytics_user_activity_new (
+          guild_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          last_message_at INTEGER,
+          last_voice_at INTEGER,
+          last_active_at INTEGER,
+          PRIMARY KEY (guild_id, user_id)
+        );
+      `);
+      const guildExpr = hasGuild ? 'COALESCE(guild_id, ?)' : '?';
+      await db.run(
+        `INSERT OR IGNORE INTO analytics_user_activity_new (guild_id, user_id, last_message_at, last_voice_at, last_active_at)
+         SELECT ${guildExpr}, user_id, last_message_at, last_voice_at, last_active_at FROM analytics_user_activity`,
+        defaultGuild
+      );
+      await db.exec('DROP TABLE analytics_user_activity');
+      await db.exec('ALTER TABLE analytics_user_activity_new RENAME TO analytics_user_activity');
+    }
+
+    if (!(await hasCompositePk('system_events', ['guild_id', 'key']))) {
+      const hasGuild = await hasColumn('system_events', 'guild_id');
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS system_events_new (
+          guild_id TEXT NOT NULL,
+          key TEXT NOT NULL,
+          timestamp INTEGER NOT NULL,
+          PRIMARY KEY (guild_id, key)
+        );
+      `);
+      const guildExpr = hasGuild ? 'COALESCE(guild_id, ?)' : '?';
+      await db.run(
+        `INSERT OR IGNORE INTO system_events_new (guild_id, key, timestamp)
+         SELECT ${guildExpr}, key, timestamp FROM system_events`,
+        defaultGuild
+      );
+      await db.exec('DROP TABLE system_events');
+      await db.exec('ALTER TABLE system_events_new RENAME TO system_events');
+    }
+  });
+
+  await applyMigration('2026-02-07-recruiter-triggers-guild', async () => {
+    await db.exec(`
+      DROP TRIGGER IF EXISTS trg_recruits_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_warnings_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_flags_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_multipliers_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_purchases_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_absences_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_weekly_calc_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_trial_fast_track_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_verifications_recruiter_row;
+
+      CREATE TRIGGER IF NOT EXISTS trg_recruits_recruiter_row
+      AFTER INSERT ON recruits
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_warnings_recruiter_row
+      AFTER INSERT ON warnings
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_flags_recruiter_row
+      AFTER INSERT ON flags
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_multipliers_recruiter_row
+      AFTER INSERT ON multipliers
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_purchases_recruiter_row
+      AFTER INSERT ON purchases
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_absences_recruiter_row
+      AFTER INSERT ON absences
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_weekly_calc_recruiter_row
+      AFTER INSERT ON weekly_calculations
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_trial_fast_track_recruiter_row
+      AFTER INSERT ON trial_fast_track
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_verifications_recruiter_row
+      AFTER INSERT ON verifications
+      WHEN NEW.recruiter_id IS NOT NULL
+      BEGIN
+        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+      END;
+    `);
+  });
+
   // Add columns if missing (best-effort)
   try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) { void e; }
@@ -516,7 +874,7 @@ async function init() {
   try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN week_start INTEGER"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(recruiter_id, week_start)'); } catch (e) { void e; }
+  try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { void e; }
   try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
@@ -525,6 +883,8 @@ async function init() {
   try { await db.exec("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+
+  await runIntegrityChecks(db, 'startup');
 
   return db;
 }
@@ -538,6 +898,7 @@ module.exports = {
   run: async (sql, ...params) => (await dbPromise).run(sql, ...params),
   exec: async (sql) => (await dbPromise).exec(sql),
   close: async () => { const d = await dbPromise; return d.close(); },
+  checkIntegrity: async (label) => runIntegrityChecks(await dbPromise, label || 'manual'),
   // prepare returns object with async helpers to ease migration
   prepare: (sql) => ({
     get: async (...params) => (await dbPromise).get(sql, ...params),

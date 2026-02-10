@@ -85,6 +85,81 @@ function hasPending(snapshot) {
     || snapshot.voiceDaily.size;
 }
 
+function mergeCountEntry(target, incoming, fields = ['count']) {
+  if (!incoming) return target;
+  if (!target) return { ...incoming };
+  const merged = { ...target };
+  for (const field of fields) {
+    merged[field] = (Number(merged[field]) || 0) + (Number(incoming[field]) || 0);
+  }
+  if (incoming.lastMessageAt != null) {
+    merged.lastMessageAt = Math.max(Number(merged.lastMessageAt) || 0, Number(incoming.lastMessageAt) || 0);
+  }
+  return merged;
+}
+
+function mergeActivityEntry(target, incoming) {
+  if (!incoming) return target;
+  if (!target) return { ...incoming };
+  return {
+    ...target,
+    lastMessageAt: Math.max(Number(target.lastMessageAt) || 0, Number(incoming.lastMessageAt) || 0),
+    lastVoiceAt: Math.max(Number(target.lastVoiceAt) || 0, Number(incoming.lastVoiceAt) || 0),
+    lastActiveAt: Math.max(Number(target.lastActiveAt) || 0, Number(incoming.lastActiveAt) || 0)
+  };
+}
+
+function mergeSnapshot(snapshot) {
+  if (!snapshot) return;
+
+  for (const [key, entry] of snapshot.channelCounts.entries()) {
+    const existing = channelCounts.get(key);
+    channelCounts.set(key, mergeCountEntry(existing, entry, ['count']));
+  }
+  for (const [key, speakers] of snapshot.channelSpeakers.entries()) {
+    const existing = channelSpeakers.get(key) || new Set();
+    for (const userId of speakers || []) existing.add(userId);
+    channelSpeakers.set(key, existing);
+  }
+  for (const [key, entry] of snapshot.guildCounts.entries()) {
+    const existing = guildCounts.get(key);
+    guildCounts.set(key, mergeCountEntry(existing, entry, ['messageCount']));
+  }
+  for (const [key, speakers] of snapshot.guildSpeakers.entries()) {
+    const existing = guildSpeakers.get(key) || new Set();
+    for (const userId of speakers || []) existing.add(userId);
+    guildSpeakers.set(key, existing);
+  }
+  for (const [key, entry] of snapshot.userDailyMessages.entries()) {
+    const existing = userDailyMessages.get(key);
+    userDailyMessages.set(key, mergeCountEntry(existing, entry, ['count']));
+  }
+  for (const [key, entry] of snapshot.commandUsage.entries()) {
+    const existing = commandUsage.get(key);
+    commandUsage.set(key, mergeCountEntry(existing, entry, ['count']));
+  }
+  for (const [key, entry] of snapshot.voiceDaily.entries()) {
+    const existing = voiceDaily.get(key);
+    voiceDaily.set(key, mergeCountEntry(existing, entry, ['minutes']));
+  }
+  for (const [key, entry] of snapshot.userActivity.entries()) {
+    const existing = userActivity.get(key);
+    userActivity.set(key, mergeActivityEntry(existing, entry));
+  }
+}
+
+function countSnapshotEntries(snapshot) {
+  if (!snapshot) return 0;
+  return snapshot.channelCounts.size
+    + snapshot.channelSpeakers.size
+    + snapshot.guildCounts.size
+    + snapshot.guildSpeakers.size
+    + snapshot.userDailyMessages.size
+    + snapshot.userActivity.size
+    + snapshot.commandUsage.size
+    + snapshot.voiceDaily.size;
+}
+
 async function flushAll() {
   if (flushInFlight) return flushInFlight;
   flushInFlight = (async () => {
@@ -203,9 +278,9 @@ async function flushAll() {
 
       for (const entry of snapshot.userActivity.values()) {
         await db.run(
-          `INSERT INTO analytics_user_activity (user_id, last_message_at, last_voice_at, last_active_at)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(user_id) DO UPDATE SET
+          `INSERT INTO analytics_user_activity (guild_id, user_id, last_message_at, last_voice_at, last_active_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(guild_id, user_id) DO UPDATE SET
              last_message_at = CASE
                WHEN excluded.last_message_at IS NULL THEN last_message_at
                WHEN last_message_at IS NULL OR excluded.last_message_at > last_message_at THEN excluded.last_message_at
@@ -221,6 +296,7 @@ async function flushAll() {
                WHEN last_active_at IS NULL OR excluded.last_active_at > last_active_at THEN excluded.last_active_at
                ELSE last_active_at
              END`,
+          entry.guildId,
           entry.userId,
           entry.lastMessageAt,
           entry.lastVoiceAt,
@@ -230,8 +306,14 @@ async function flushAll() {
 
       await db.exec('COMMIT');
     } catch (e) {
-      await db.exec('ROLLBACK');
+      try {
+        await db.exec('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Analytics rollback failed:', rollbackErr);
+      }
       console.error('Analytics flush failed:', e);
+      mergeSnapshot(snapshot);
+      pendingWrites = Math.min(MAX_BUFFER_SIZE, pendingWrites + countSnapshotEntries(snapshot));
     }
   })();
 
@@ -305,7 +387,9 @@ async function recordMessage({ guildId, channelId, userId, timestamp = Date.now(
   userEntry.count += 1;
   userDailyMessages.set(userKey, userEntry);
 
-  const activityEntry = userActivity.get(userId) || {
+  const activityKey = `${guildId}:${userId}`;
+  const activityEntry = userActivity.get(activityKey) || {
+    guildId,
     userId,
     lastMessageAt: 0,
     lastVoiceAt: null,
@@ -313,7 +397,7 @@ async function recordMessage({ guildId, channelId, userId, timestamp = Date.now(
   };
   activityEntry.lastMessageAt = Math.max(activityEntry.lastMessageAt, timestamp);
   activityEntry.lastActiveAt = Math.max(activityEntry.lastActiveAt, timestamp);
-  userActivity.set(userId, activityEntry);
+  userActivity.set(activityKey, activityEntry);
 
   bumpPending();
 }
@@ -432,7 +516,9 @@ async function recordVoiceMinutes({ guildId, userId, minutes, timestamp = Date.n
   entry.minutes += minutes;
   voiceDaily.set(key, entry);
 
-  const activityEntry = userActivity.get(userId) || {
+  const activityKey = `${guildId}:${userId}`;
+  const activityEntry = userActivity.get(activityKey) || {
+    guildId,
     userId,
     lastMessageAt: 0,
     lastVoiceAt: 0,
@@ -440,7 +526,7 @@ async function recordVoiceMinutes({ guildId, userId, minutes, timestamp = Date.n
   };
   activityEntry.lastVoiceAt = Math.max(activityEntry.lastVoiceAt || 0, timestamp);
   activityEntry.lastActiveAt = Math.max(activityEntry.lastActiveAt || 0, timestamp);
-  userActivity.set(userId, activityEntry);
+  userActivity.set(activityKey, activityEntry);
   bumpPending();
 }
 

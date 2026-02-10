@@ -31,6 +31,9 @@ const ECONOMY_CONFIG = {
   INACTIVITY_DEFAULT: 0.70
 };
 
+const { logUnexpectedError } = require('./logger');
+const { resolveGuildId } = require('./guild');
+
 function calculateMinRecruitsRequired({
   channelBase = ECONOMY_CONFIG.BASE_VALUE,
   roleModifier = ECONOMY_CONFIG.ROLE_MODIFIERS.NONE,
@@ -76,38 +79,69 @@ function formatPointsValue(value) {
   return rounded.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
 }
 
-async function getActiveMultiplier(db, recruiterId) {
+async function getActiveMultiplier(db, recruiterId, opts = {}) {
   try {
+    const guildId = resolveGuildId(opts.guild || opts.guildId);
     const now = Date.now();
     try {
-      await db.run('DELETE FROM multipliers WHERE recruiter_id = ? AND expires_at <= ?', recruiterId, now);
+      await db.run(
+        'DELETE FROM multipliers WHERE guild_id = ? AND recruiter_id = ? AND expires_at <= ?',
+        guildId,
+        recruiterId,
+        now
+      );
     } catch (e) {
       console.error('Failed to purge expired multipliers', { recruiterId, error: e });
     }
-    const row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1', recruiterId, now);
+    const row = await db.get(
+      'SELECT * FROM multipliers WHERE guild_id = ? AND recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1',
+      guildId,
+      recruiterId,
+      now
+    );
     return row ? { value: row.value, expiresAt: row.expires_at, type: row.type } : { value: 1.0, expiresAt: 0, type: null };
   } catch (e) {
     // If the multipliers table doesn't exist or other DB error, fall back to no multiplier
+    const msg = (e && e.message ? String(e.message) : '').toLowerCase();
+    if (!msg.includes('no such table')) {
+      logUnexpectedError('economy.getActiveMultiplier', e, { recruiterId });
+    }
     return { value: 1.0, expiresAt: 0, type: null };
   }
 }
 
-async function applyMultiplier(db, recruiterId, multiplierKey) {
+async function applyMultiplier(db, recruiterId, multiplierKey, opts = {}) {
   const cfg = ECONOMY_CONFIG.MULTIPLIERS[multiplierKey];
   if (!cfg) throw new Error('Unknown multiplier type');
   const expiresAt = Date.now() + cfg.days * 24 * 60 * 60 * 1000;
-  await db.run('INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)', recruiterId, cfg.value, multiplierKey, Date.now(), expiresAt);
+  try {
+    const guildId = resolveGuildId(opts.guild || opts.guildId);
+    await db.run(
+      'INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      guildId,
+      recruiterId,
+      cfg.value,
+      multiplierKey,
+      Date.now(),
+      expiresAt
+    );
+  } catch (e) {
+    logUnexpectedError('economy.applyMultiplier', e, { recruiterId, multiplierKey });
+    throw e;
+  }
   return cfg;
 } 
 
-async function resetMultipliers(db, recruiterId) {
+async function resetMultipliers(db, recruiterId, opts = {}) {
   if (!db) return;
+  const guildId = resolveGuildId(opts.guild || opts.guildId);
   await db.run('BEGIN TRANSACTION');
   try {
-    await db.run('DELETE FROM multipliers WHERE recruiter_id = ?', recruiterId);
+    await db.run('DELETE FROM multipliers WHERE guild_id = ? AND recruiter_id = ?', guildId, recruiterId);
     await db.run('COMMIT');
   } catch (e) {
     await db.run('ROLLBACK');
+    logUnexpectedError('economy.resetMultipliers', e, { recruiterId });
     throw e;
   }
 }

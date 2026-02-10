@@ -1,7 +1,7 @@
-const db = require('../db_async');
-const { ROLE_IDS } = require('../constants');
-const { hasModPlusPermissions } = require('../lib/recruiting-system');
-const { replyError } = require('../lib/embeds');
+const db = require('../../db_async');
+const { ROLE_IDS } = require('../../constants');
+const { hasModPlusPermissions } = require('../../lib/recruiting-system');
+const { replyError } = require('../../lib/embeds');
 
 module.exports = {
     data: {
@@ -36,7 +36,7 @@ module.exports = {
             return replyError(interaction, 'That member is not a rookie.');
         }
 
-        const { promoteMember } = require('../lib/promote');
+        const { promoteMember } = require('../../lib/promote');
         const result = await promoteMember({
             member: targetMember,
             db,

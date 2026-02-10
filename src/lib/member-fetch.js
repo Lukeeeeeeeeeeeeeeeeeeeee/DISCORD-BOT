@@ -10,24 +10,7 @@ function chunkArray(items, size = DEFAULT_CHUNK_SIZE) {
   }
   return out;
 }
-
-async function runWithConcurrency(items, limit, worker) {
-  const results = [];
-  let index = 0;
-  const runners = Array.from({ length: Math.max(1, limit) }, async () => {
-    while (index < items.length) {
-      const current = items[index++];
-      try {
-        results.push(await worker(current));
-      } catch (e) {
-        results.push({ ok: false, error: e });
-      }
-    }
-  });
-  await Promise.all(runners);
-  return results;
-}
-
+const { runWithConcurrency } = require('./concurrency');
 async function fetchMembersByIds(guild, ids, opts = {}) {
   const members = new Map();
   if (!guild || !ids || !ids.length) return members;

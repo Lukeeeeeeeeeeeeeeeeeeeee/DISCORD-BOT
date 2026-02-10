@@ -1,11 +1,36 @@
 const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 const { PermissionsBitField } = require('discord.js');
 
+function getMemberPermissions(member) {
+  if (!member || !member.permissions) return null;
+  if (typeof member.permissions.has === 'function') return member.permissions;
+  try {
+    return new PermissionsBitField(member.permissions);
+  } catch (e) {
+    return null;
+  }
+}
+
+function getMemberRoleIds(member) {
+  if (!member || !member.roles) return [];
+  if (Array.isArray(member.roles)) return member.roles.filter(Boolean);
+  if (member.roles.cache && typeof member.roles.cache.keys === 'function') {
+    return Array.from(member.roles.cache.keys());
+  }
+  if (member.roles instanceof Set) return Array.from(member.roles);
+  return [];
+}
+
+function memberHasRole(member, roleId) {
+  if (!roleId) return false;
+  const roles = getMemberRoleIds(member);
+  return roles.includes(roleId);
+}
+
 function hasAdministrator(member) {
-  if (!member) return false;
-  const hasPermissions = !!member.permissions && typeof member.permissions.has === 'function';
-  if (!hasPermissions) return false;
-  return member.permissions.has(PermissionsBitField.Flags.Administrator) || member.permissions.has('Administrator');
+  const perms = getMemberPermissions(member);
+  if (!perms) return false;
+  return perms.has(PermissionsBitField.Flags.Administrator) || perms.has('Administrator');
 }
 
 function getStaffRoleIds() {
@@ -32,12 +57,12 @@ function getStaffRoleIds() {
  */
 function hasRecruiterOrStaffPermissions(member) {
   if (!member) return false;
-  const hasRoleCache = !!member.roles && !!member.roles.cache && typeof member.roles.cache.has === 'function';
+  const roleIds = getMemberRoleIds(member);
 
   // Check Discord admin permission
   if (hasAdministrator(member)) return true;
 
-  const perms = member.permissions;
+  const perms = getMemberPermissions(member);
   if (perms && typeof perms.has === 'function') {
     const elevated = [
       PermissionsBitField.Flags.ManageGuild,
@@ -62,8 +87,8 @@ function hasRecruiterOrStaffPermissions(member) {
 
   const allAllowedRoles = [...staffRoles, ...recruiterRoles];
 
-  if (!hasRoleCache) return false;
-  return allAllowedRoles.some(roleId => member.roles.cache.has(roleId));
+  if (!roleIds.length) return false;
+  return allAllowedRoles.some(roleId => roleIds.includes(roleId));
 }
 
 /**
@@ -73,12 +98,12 @@ function hasRecruiterOrStaffPermissions(member) {
  */
 function hasAdminOrStaffPermissions(member) {
   if (!member) return false;
-  const hasRoleCache = !!member.roles && !!member.roles.cache && typeof member.roles.cache.has === 'function';
+  const roleIds = getMemberRoleIds(member);
 
   // Check Discord admin permission
   if (hasAdministrator(member)) return true;
 
-  const perms = member.permissions;
+  const perms = getMemberPermissions(member);
   if (perms && typeof perms.has === 'function') {
     const elevated = [
       PermissionsBitField.Flags.ManageGuild,
@@ -94,12 +119,15 @@ function hasAdminOrStaffPermissions(member) {
   // Check staff roles
   const staffRoles = getStaffRoleIds();
 
-  if (!hasRoleCache) return false;
-  return staffRoles.some(roleId => member.roles.cache.has(roleId));
+  if (!roleIds.length) return false;
+  return staffRoles.some(roleId => roleIds.includes(roleId));
 }
 
 module.exports = {
   hasRecruiterOrStaffPermissions,
   hasAdminOrStaffPermissions,
-  hasAdministrator
+  hasAdministrator,
+  getMemberPermissions,
+  getMemberRoleIds,
+  memberHasRole
 };

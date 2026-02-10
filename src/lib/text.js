@@ -5,4 +5,13 @@ function clampText(input, maxLen) {
   return `${str.slice(0, maxLen - 3)}...`;
 }
 
-module.exports = { clampText };
+function escapeMentions(input) {
+  const str = input == null ? '' : String(input);
+  return str.replace(/@/g, '@\u200b');
+}
+
+function sanitizeForEmbed(input, maxLen = 1024) {
+  return clampText(escapeMentions(input), maxLen);
+}
+
+module.exports = { clampText, escapeMentions, sanitizeForEmbed };

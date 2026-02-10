@@ -11,6 +11,7 @@ const { trackRookieChatMessage } = require('./lib/rookie-chat');
 const { handleRookieWarLogMessage } = require('./lib/rookie-war');
 const analytics = require('./lib/analytics');
 const runtime = require('./lib/runtime');
+const { logUnexpectedError, getCommandCategory, getInteractionMeta } = require('./lib/logger');
 
 const enableMessageContent = (process.env.ENABLE_MESSAGE_CONTENT || '').toLowerCase() === 'true';
 const intents = [
@@ -45,7 +46,7 @@ const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
 
 const inviteInitPromise = (async () => {
   const { createInviteTables } = require('./lib/create-invite-tables');
-  const inviteCommand = require('./commands/invite');
+  const inviteCommand = require('./commands/recruiting/invite');
   await createInviteTables();
   await inviteCommand.init();
   console.log('🔗 Invite system ready!');
@@ -54,17 +55,30 @@ const inviteInitPromise = (async () => {
 });
 
 const commandsPath = path.join(__dirname, 'commands');
-const commandFiles = fs.readdirSync(commandsPath)
-  .filter(f => f.endsWith('.js'))
-  .filter(f => f !== 'verify.js');
-for (const file of commandFiles) {
-  const cmd = require(path.join(commandsPath, file));
-  if (!cmd || !cmd.data || !cmd.data.name || typeof cmd.execute !== 'function') {
-    console.warn(`Skipping invalid command module: ${file}`);
-    continue;
+
+function loadCommandsRecursively(dir) {
+  const files = fs.readdirSync(dir);
+  for (const file of files) {
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      loadCommandsRecursively(fullPath);
+    } else if (file.endsWith('.js') && file !== 'verify.js') {
+      try {
+        const cmd = require(fullPath);
+        if (cmd && cmd.data && cmd.data.name && typeof cmd.execute === 'function') {
+          client.commands.set(cmd.data.name, cmd);
+        } else {
+          console.warn(`Skipping invalid command module: ${file}`);
+        }
+      } catch (e) {
+        console.error(`Failed to load command ${file}:`, e);
+      }
+    }
   }
-  client.commands.set(cmd.data.name, cmd);
 }
+
+loadCommandsRecursively(commandsPath);
 
 let _readyCalled = false;
 async function onReady() {
@@ -143,7 +157,9 @@ client.on('interactionCreate', async interaction => {
   } catch (err) {
     // If the interaction itself failed because it's unknown/expired (10062), ignore silently
     if (err && err.code === 10062) return;
-    console.error('Command handler failed', err);
+    const meta = getInteractionMeta(interaction);
+    const category = getCommandCategory(meta.command);
+    logUnexpectedError('command', err, { ...meta, category });
     // Safely notify the user (use editReply if deferred/replied)
     try {
       const { buildErrorEmbed } = require('./lib/embeds');

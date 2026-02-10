@@ -2,9 +2,9 @@ const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { getWeekStartUtcTs } = require('./week');
 const { formatUtcDateOnly } = require('./time');
-const { 
-  calculate7DayStats, 
-  getPreviousMinReq, 
+const {
+  calculate7DayStats,
+  getPreviousMinReq,
   storeWeeklyCalculation,
   calculateMinRecruitsFixed,
   getBaseRequirement,
@@ -17,22 +17,7 @@ const WEEK_ROLLOVER_OFFSET_MS = 5 * 60 * 1000;
 const DM_CONCURRENCY = 5;
 const CALC_CONCURRENCY = Number.parseInt(process.env.RECALC_CONCURRENCY || '4', 10);
 
-async function runWithConcurrency(items, limit, worker) {
-  const results = [];
-  let index = 0;
-  const runners = Array.from({ length: Math.max(1, limit) }, async () => {
-    while (index < items.length) {
-      const current = items[index++];
-      try {
-        results.push(await worker(current));
-      } catch (e) {
-        results.push({ ok: false, error: e });
-      }
-    }
-  });
-  await Promise.all(runners);
-  return results;
-}
+const { runWithConcurrency } = require('../lib/concurrency');
 
 function getRetryAfterMs(error, fallbackMs) {
   const retryAfter = error && (error.retryAfter ?? error.retry_after ?? error.data?.retry_after ?? error.rawError?.retry_after);
@@ -73,7 +58,7 @@ async function performWeeklyRecalculations(guild) {
   const weekStart = getWeekStartUtcTs(new Date(Date.now() + WEEK_ROLLOVER_OFFSET_MS));
   const weekWindowStart = weekStart - (7 * 24 * 60 * 60 * 1000);
   const statsWindow = { sinceTs: weekWindowStart, untilTs: weekStart };
-  
+
   try {
     // Get all recruiters (staff roles + recruiter roles)
     const staffRoleIds = [
@@ -217,7 +202,7 @@ async function performWeeklyRecalculations(guild) {
 async function sendWeeklyRecalculationDM(result, options = {}) {
   const { staffMember, newMinReq, stats7d, activeWarnings, absence, previousMinReq } = result;
   const logChannel = options.logChannel || null;
-  
+
   try {
     const embed = new EmbedBuilder()
       .setTitle('📊 Weekly Recruiter Update')
@@ -249,7 +234,7 @@ async function sendWeeklyRecalculationDM(result, options = {}) {
     } else {
       explanation = '✅ **On Track**: Meeting or exceeding requirements';
     }
-    
+
     embed.addFields({ name: 'Status', value: explanation, inline: false });
 
     await sendWithRetries(() => staffMember.send({ embeds: [embed] })).catch(async (e) => {
@@ -273,7 +258,7 @@ async function sendWeeklyRecalculationDM(result, options = {}) {
  */
 async function postRetentionToInviteChannels(guild, result) {
   const { staffMember, stats7d, newMinReq } = result;
-  
+
   try {
     const embed = new EmbedBuilder()
       .setTitle('📊 Weekly Recruiter Update')
@@ -302,10 +287,10 @@ async function postRetentionToInviteChannels(guild, result) {
     );
 
     for (const recruit of recentRecruits) {
-      const channelId = recruit.region === 'EU' ? CHANNELS.INVITES_EU : 
-                        recruit.region === 'NA' ? CHANNELS.INVITES_NA : 
-                        recruit.region === 'AS' ? CHANNELS.INVITES_AS : null;
-      
+      const channelId = recruit.region === 'EU' ? CHANNELS.INVITES_EU :
+        recruit.region === 'NA' ? CHANNELS.INVITES_NA :
+          recruit.region === 'AS' ? CHANNELS.INVITES_AS : null;
+
       if (channelId) {
         const regionalChannel = guild.channels.cache.get(channelId);
         if (regionalChannel) {
@@ -384,6 +369,5 @@ async function handleExpiredAbsences(guild) {
 module.exports = {
   performWeeklyRecalculations,
   sendWeeklyRecalculationDM,
-  handleExpiredAbsences,
-  isNewStaff
+  handleExpiredAbsences
 };

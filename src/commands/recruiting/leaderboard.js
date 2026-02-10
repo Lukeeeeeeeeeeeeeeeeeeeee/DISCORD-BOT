@@ -1,11 +1,11 @@
-const db = require('../db_async');
-const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../constants');
-const { getRegionInfo } = require('../lib/regions');
-const { hasAdministrator } = require('../lib/permissions');
-const { getWeekStartUtcTs } = require('../lib/week');
-const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../lib/leaderboard-utils');
-const { fetchMembersByIds } = require('../lib/member-fetch');
-const { replyError } = require('../lib/embeds');
+const db = require('../../db_async');
+const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../../constants');
+const { getRegionInfo } = require('../../lib/regions');
+const { hasAdministrator } = require('../../lib/permissions');
+const { getWeekStartUtcTs } = require('../../lib/week');
+const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
+const { fetchMembersByIds } = require('../../lib/member-fetch');
+const { replyError } = require('../../lib/embeds');
 
 const FULL_FETCH_MAX = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_MAX || '5000', 10);
 const FULL_FETCH_COOLDOWN_MS = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_COOLDOWN_MS || '600000', 10);
@@ -94,7 +94,7 @@ module.exports = {
         const meta = await loadRecruiterMeta(db, recruiterMembers);
 
         if (recruiterMembers.length === 0) {
-          const { makeLeaderboardText } = require('../lib/messages');
+          const { makeLeaderboardText } = require('../../lib/messages');
           const lang = interaction.locale || 'en';
           const text = makeLeaderboardText([], region, lang);
           return respond({ content: text });
@@ -106,7 +106,7 @@ module.exports = {
         const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
 
         // Get 7-day stats and minReq for each recruiter
-        const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
+        const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../../lib/recruiting-system');
         const rows = [];
         const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
 
@@ -164,7 +164,7 @@ module.exports = {
           });
         }
 
-        const { makeLeaderboardText } = require('../lib/messages');
+        const { makeLeaderboardText } = require('../../lib/messages');
         const lang = interaction.locale || 'en';
         const text = makeLeaderboardText(rows, region, lang);
         return respond({ content: text });
@@ -229,7 +229,7 @@ module.exports = {
       const meta = await loadRecruiterMeta(db, recruiterMembers);
 
       if (recruiterMembers.length === 0) {
-        const { makeLeaderboardText } = require('../lib/messages');
+        const { makeLeaderboardText } = require('../../lib/messages');
         const lang = interaction.locale || 'en';
         const text = makeLeaderboardText([], 'GLOBAL', lang);
         return respond({ content: text });
@@ -241,7 +241,7 @@ module.exports = {
       const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
 
       // Get 7-day stats and minReq for global
-      const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../lib/recruiting-system');
+      const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../../lib/recruiting-system');
       const rows = [];
       const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
 
@@ -293,7 +293,7 @@ module.exports = {
         });
       }
 
-      const { makeLeaderboardText } = require('../lib/messages');
+      const { makeLeaderboardText } = require('../../lib/messages');
       const lang = interaction.locale || 'en';
       const text = makeLeaderboardText(rows, 'GLOBAL', lang);
       return respond({ content: text });
@@ -303,7 +303,7 @@ module.exports = {
       // admin only
       if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin only.');
       try {
-        const scheduler = require('../scheduler');
+        const scheduler = require('../../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);
         await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
         return interaction.reply({ content: 'Leaderboards initialized/updated.' });

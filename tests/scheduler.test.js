@@ -30,6 +30,7 @@ function makeGuildMock(_db) {
   channels.set('CENTRAL', createChannel('CENTRAL'));
 
   return {
+    id: 'GLOBAL',
     channels: { cache: { get: (id) => channels.get(id) } }
   };
 }
@@ -45,12 +46,12 @@ describe('scheduler recompute & persistence', () => {
     db = await open({ filename: dbPath, driver: sqlite3.Database });
     // create minimal schema used by tests
     await db.exec(`
-      CREATE TABLE IF NOT EXISTS recruiters ( id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0 );
-      CREATE TABLE IF NOT EXISTS recruits ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, recruited_id TEXT NOT NULL, region TEXT NOT NULL, ign TEXT, created_at INTEGER NOT NULL, valid INTEGER DEFAULT 1 );
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(recruited_id);
-      CREATE TABLE IF NOT EXISTS leaderboard_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, region TEXT, updated_at INTEGER NOT NULL );
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region);
-      CREATE TABLE IF NOT EXISTS warnings ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, created_at INTEGER NOT NULL, note TEXT, revoked INTEGER DEFAULT 0, expired_at INTEGER );
+      CREATE TABLE IF NOT EXISTS recruiters ( guild_id TEXT NOT NULL, id TEXT NOT NULL, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0, channel_base INTEGER DEFAULT 4, PRIMARY KEY (guild_id, id) );
+      CREATE TABLE IF NOT EXISTS recruits ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, recruited_id TEXT NOT NULL, region TEXT NOT NULL, ign TEXT, created_at INTEGER NOT NULL, valid INTEGER DEFAULT 1 );
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(guild_id, recruited_id);
+      CREATE TABLE IF NOT EXISTS leaderboard_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, region TEXT, updated_at INTEGER NOT NULL );
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(guild_id, channel_id, region);
+      CREATE TABLE IF NOT EXISTS warnings ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, created_at INTEGER NOT NULL, note TEXT, revoked INTEGER DEFAULT 0, expired_at INTEGER );
     `);
   });
   afterEach(async () => {
@@ -63,11 +64,12 @@ describe('scheduler recompute & persistence', () => {
 
     // Insert some recruits into EU
     const now = Date.now();
-    await db.run('INSERT INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)', 'A');
-    await db.run('INSERT INTO recruiters (id, points, warnings, promoted) VALUES (?, 0, 0, 0)', 'B');
-    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)', 'A','u1','EU','x', now);
-    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)', 'B','u2','EU','y', now);
-    await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, 1)', 'A','u3','EU','z', now);
+    await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)', 'GLOBAL', 'A');
+    await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)', 'GLOBAL', 'B');
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, ?, 1)', 'GLOBAL', 'A', 'u1', 'EU', 'x', now);
+
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, ?, 1)', 'GLOBAL', 'B', 'u2', 'EU', 'y', now);
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, ?, 1)', 'GLOBAL', 'A', 'u3', 'EU', 'z', now);
 
     const guild = makeGuildMock(db);
     // patch constants to use our channel ids
@@ -92,7 +94,7 @@ describe('scheduler recompute & persistence', () => {
 
   test('formatLeaderboardMessage lists recruiters and counts', () => {
     const scheduler = require('../src/scheduler');
-    const rows = [{recruiter_id: 'A', cnt: 1, points: 10},{recruiter_id:'B', cnt:1, points:5}];
+    const rows = [{ recruiter_id: 'A', cnt: 1, points: 10 }, { recruiter_id: 'B', cnt: 1, points: 5 }];
     const text = scheduler.formatLeaderboardMessage(rows, 'EU');
     expect(text).toMatch(/A/);
     expect(text).toMatch(/B/);

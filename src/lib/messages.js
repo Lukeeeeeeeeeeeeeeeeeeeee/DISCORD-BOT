@@ -147,9 +147,16 @@ function makeDemotionWatchText(rows, _lang = 'en') {
   return text.length > 2000 ? text.slice(0, 1997) + '...' : text;
 }
 
-async function upsertLeaderboardMessage(db, channel, region, content, embed) {
-  // record keyed by channel_id + region
-  const record = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, region);
+async function upsertLeaderboardMessage(db, channel, region, content, embed, guildId) {
+  // Try to resolve guildId from channel if not provided
+  const resolvedGuildId = guildId || (channel && channel.guild ? channel.guild.id : null);
+
+  if (!resolvedGuildId) {
+    console.error('upsertLeaderboardMessage: Missing guildId', { channelId: channel && channel.id, region });
+    return null;
+  }
+  // record keyed by channel_id + region (and guild_id for correctness)
+  const record = await db.get('SELECT * FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?', resolvedGuildId, channel.id, region);
   if (record) {
     const msg = await channel.messages.fetch(record.message_id).catch(() => null);
     if (msg) {
@@ -172,9 +179,9 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed) {
   } else {
     const m = embed && typeof embed === 'object' && typeof embed.toJSON === 'function' ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
     try {
-      await db.run('INSERT INTO leaderboard_messages (channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?)', channel.id, m.id, region, Date.now());
+      await db.run('INSERT INTO leaderboard_messages (guild_id, channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?, ?)', resolvedGuildId, channel.id, m.id, region, Date.now());
     } catch (e) {
-      // ignore insert failure
+      console.error('Failed to insert leaderboard message record:', e);
     }
     return m;
   }

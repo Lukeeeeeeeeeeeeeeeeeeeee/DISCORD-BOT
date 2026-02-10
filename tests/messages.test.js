@@ -7,13 +7,14 @@ async function makeDb() {
   await db.exec(`
     CREATE TABLE leaderboard_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guild_id TEXT NOT NULL,
       channel_id TEXT NOT NULL,
       message_id TEXT NOT NULL,
       region TEXT,
       updated_at INTEGER NOT NULL
     );
   `);
-  await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region)');
+  await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(guild_id, channel_id, region)');
   return db;
 }
 
@@ -26,7 +27,7 @@ describe('upsertLeaderboardMessage', () => {
       send: jest.fn(async (opts) => ({ id: 'm-1', content: opts.content, embeds: opts.embeds }))
     };
 
-    await upsertLeaderboardMessage(db, channel, 'EU', 'hello', null);
+    await upsertLeaderboardMessage(db, channel, 'EU', 'hello', null, 'GLOBAL');
     expect(channel.send).toHaveBeenCalled();
     const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, 'EU');
     expect(row).toBeDefined();
@@ -36,7 +37,7 @@ describe('upsertLeaderboardMessage', () => {
   test('edits existing message when present', async () => {
     const db = await makeDb();
     // pre-insert record
-    await db.run('INSERT INTO leaderboard_messages (channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?)', 'chan-2', 'm-2', 'NA', Date.now());
+    await db.run('INSERT INTO leaderboard_messages (guild_id, channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?, ?)', 'GLOBAL', 'chan-2', 'm-2', 'NA', Date.now());
 
     let edited = false;
     const channel = {
@@ -45,7 +46,7 @@ describe('upsertLeaderboardMessage', () => {
       send: jest.fn(async (_opts) => ({ id: 'm-new' }))
     };
 
-    await upsertLeaderboardMessage(db, channel, 'NA', 'updated', null);
+    await upsertLeaderboardMessage(db, channel, 'NA', 'updated', null, 'GLOBAL');
     expect(edited).toBe(true);
     const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, 'NA');
     expect(row.message_id).toBe('m-2');

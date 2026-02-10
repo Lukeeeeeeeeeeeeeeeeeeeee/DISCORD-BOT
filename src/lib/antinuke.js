@@ -224,7 +224,10 @@ class AntiNuke {
       });
       return;
     }
-    const member = await guild.members.fetch(executorId).catch(() => null);
+    const member = await guild.members.fetch(executorId).catch(err => {
+      console.error('Failed to fetch executor member:', err);
+      return null;
+    });
     if (!member) {
       this.logAction(guild.id, {
         type: 'prune_ban_failed',
@@ -282,36 +285,7 @@ class AntiNuke {
       actionLabel: 'Member Prune',
       traceId,
       whitelisted,
-      successType: 'prune_ban',
-      failType: 'prune_ban_failed'
     });
-  }
-
-  async getRecentAuditEntry(guild, type, targetId, maxAgeMs = 5000) {
-    const auditLogs = await guild.fetchAuditLogs({ limit: 6, type }).catch(() => null);
-    if (!auditLogs) return null;
-
-    const now = Date.now();
-    for (const entry of auditLogs.entries.values()) {
-      if (!entry) continue;
-      const entryTargetId = entry.target?.id;
-      if (targetId && entryTargetId !== targetId) continue;
-      if (now - entry.createdTimestamp > maxAgeMs) continue;
-      return entry;
-    }
-
-    return null;
-  }
-
-  async disableAllInvites(guild) {
-    const invites = await guild.invites.fetch().catch(() => null);
-    if (!invites) return;
-
-    for (const invite of invites.values()) {
-      await invite.delete('Anti-nuke: emergency mode invite lockdown').catch((e) => {
-        console.error('Failed to delete invite during emergency lockdown', e);
-      });
-    }
   }
 
   // Initialize the anti-nuke system

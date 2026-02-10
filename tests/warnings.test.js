@@ -23,6 +23,7 @@ function makeGuildMock() {
   channels.set('WARN_CH', createChannel('WARN_CH'));
 
   return {
+    id: 'GLOBAL',
     channels: { cache: { get: (id) => channels.get(id) } }
   };
 }
@@ -35,11 +36,12 @@ describe('warnings leaderboard', () => {
     const sqlite3 = require('sqlite3');
     const { open } = require('sqlite');
     db = await open({ filename: dbPath, driver: sqlite3.Database });
+    await db.exec('DROP TABLE IF EXISTS recruiters; DROP TABLE IF EXISTS warnings; DROP TABLE IF EXISTS leaderboard_messages;');
     await db.exec(`
-      CREATE TABLE IF NOT EXISTS recruiters ( id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0 );
-      CREATE TABLE IF NOT EXISTS warnings ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, created_at INTEGER NOT NULL, note TEXT, revoked INTEGER DEFAULT 0, expired_at INTEGER );
-      CREATE TABLE IF NOT EXISTS leaderboard_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, region TEXT, updated_at INTEGER NOT NULL );
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(channel_id, region);
+      CREATE TABLE recruiters ( guild_id TEXT NOT NULL, id TEXT NOT NULL, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0, channel_base INTEGER DEFAULT 4, PRIMARY KEY (guild_id, id) );
+      CREATE TABLE warnings ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, created_at INTEGER NOT NULL, note TEXT, revoked INTEGER DEFAULT 0, expired_at INTEGER );
+      CREATE TABLE leaderboard_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, region TEXT, updated_at INTEGER NOT NULL );
+      CREATE UNIQUE INDEX uniq_leaderboard_channel_region ON leaderboard_messages(guild_id, channel_id, region);
     `);
   });
   afterEach(async () => {
@@ -50,9 +52,9 @@ describe('warnings leaderboard', () => {
   test('recomputeWarningsLeaderboard posts/upserts a leaderboard message', async () => {
     const scheduler = require('../src/scheduler');
     // Insert warnings
-    await db.run('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)', 'A', Date.now(), 'x');
-    await db.run('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)', 'A', Date.now(), 'y');
-    await db.run('INSERT INTO warnings (recruiter_id, created_at, note) VALUES (?, ?, ?)', 'B', Date.now(), 'z');
+    await db.run('INSERT INTO warnings (guild_id, recruiter_id, created_at, note) VALUES (?, ?, ?, ?)', 'GLOBAL', 'A', Date.now(), 'x');
+    await db.run('INSERT INTO warnings (guild_id, recruiter_id, created_at, note) VALUES (?, ?, ?, ?)', 'GLOBAL', 'A', Date.now(), 'y');
+    await db.run('INSERT INTO warnings (guild_id, recruiter_id, created_at, note) VALUES (?, ?, ?, ?)', 'GLOBAL', 'B', Date.now(), 'z');
 
     const guild = makeGuildMock();
     const consts = require('../src/constants');

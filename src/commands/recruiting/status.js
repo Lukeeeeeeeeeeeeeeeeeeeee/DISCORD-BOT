@@ -1,8 +1,8 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { EmbedBuilder } = require('discord.js');
-const { hasAdministrator } = require('../lib/permissions');
-const { buildErrorEmbed } = require('../lib/embeds');
+const { hasAdministrator } = require('../../lib/permissions');
+const { buildErrorEmbed } = require('../../lib/embeds');
 
 module.exports = {
   data: { name: 'status' },
@@ -15,7 +15,7 @@ module.exports = {
       await interaction.deferReply({ flags: 64 });
     }
 
-    const { DB_PATH } = require('../db_async');
+    const { DB_PATH } = require('../../db_async');
     let dbSize = 'N/A';
     try {
       const s = await fs.stat(DB_PATH);
@@ -40,7 +40,7 @@ module.exports = {
     const uptime = `${Math.round(process.uptime())}s`;
 
     // gather DB counts
-    const db = require('../db_async');
+    const db = require('../../db_async');
     const recruitsRow = await db.get('SELECT COUNT(*) as c FROM recruits');
     const recruitersRow = await db.get('SELECT COUNT(*) as c FROM recruiters');
     const recruits = recruitsRow ? recruitsRow.c : 0;

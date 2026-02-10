@@ -1,8 +1,8 @@
 const { EmbedBuilder } = require('discord.js');
-const InviteSystem = require('../lib/invite-system');
-const { hasAdministrator } = require('../lib/permissions');
-const analytics = require('../lib/analytics');
-const { replyError } = require('../lib/embeds');
+const InviteSystem = require('../../lib/invite-system');
+const { hasAdministrator } = require('../../lib/permissions');
+const analytics = require('../../lib/analytics');
+const { replyError } = require('../../lib/embeds');
 
 // Global invite system instance
 let inviteSystem = null;

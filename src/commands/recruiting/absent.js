@@ -1,8 +1,8 @@
-const db = require('../db_async');
+const db = require('../../db_async');
 const { EmbedBuilder } = require('discord.js');
-const { hasModPlusPermissions } = require('../lib/recruiting-system');
-const { formatUtcDateOnly } = require('../lib/time');
-const { replyError } = require('../lib/embeds');
+const { hasModPlusPermissions } = require('../../lib/recruiting-system');
+const { formatUtcDateOnly } = require('../../lib/time');
+const { replyError } = require('../../lib/embeds');
 
 module.exports = {
   data: {

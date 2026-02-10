@@ -1,5 +1,6 @@
 const { ROLE_IDS } = require('../constants');
 const { promoteMember } = require('./promote');
+const { resolveGuildId } = require('./guild');
 
 function parseRookieNickname(rawName) {
   if (!rawName) return { base: null, points: null };
@@ -48,10 +49,15 @@ async function retrySetNickname(member, nickname, opts = {}) {
   return false;
 }
 
-async function getLinkedPoints({ db, member }) {
+async function getLinkedPoints({ db, member, guild, guildId }) {
   if (!db || !member) return { points: 0, updatedAt: null, baseName: null, source: 'none' };
+  const resolvedGuildId = resolveGuildId(guildId || guild || member.guild);
   try {
-    const row = await db.get('SELECT points, updated_at FROM rookie_points WHERE member_id = ?', member.id);
+    const row = await db.get(
+      'SELECT points, updated_at FROM rookie_points WHERE guild_id = ? AND member_id = ?',
+      resolvedGuildId,
+      member.id
+    );
     if (row && Number.isFinite(Number(row.points))) {
       const points = Number(row.points);
       const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
@@ -72,11 +78,12 @@ async function getLinkedPoints({ db, member }) {
     const now = Date.now();
     try {
       await db.run(
-        `INSERT INTO rookie_points (member_id, points, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(member_id) DO UPDATE SET
+        `INSERT INTO rookie_points (guild_id, member_id, points, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(guild_id, member_id) DO UPDATE SET
            points = excluded.points,
            updated_at = excluded.updated_at`,
+        resolvedGuildId,
         member.id,
         parsed.points,
         now
@@ -92,6 +99,7 @@ async function getLinkedPoints({ db, member }) {
 
 async function setLinkedPoints({ db, member, points, guild, verifierId }) {
   if (!db || !member) return { points: 0, promoted: false };
+  const resolvedGuildId = resolveGuildId(guild || member.guild);
   if (!member.roles || !member.roles.cache || !member.roles.cache.has(ROLE_IDS.ROOKIE)) {
     return { points: 0, promoted: false, skipped: true };
   }
@@ -101,11 +109,12 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
 
   try {
     await db.run(
-      `INSERT INTO rookie_points (member_id, points, updated_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(member_id) DO UPDATE SET
+      `INSERT INTO rookie_points (guild_id, member_id, points, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(guild_id, member_id) DO UPDATE SET
          points = excluded.points,
          updated_at = excluded.updated_at`,
+      resolvedGuildId,
       member.id,
       clamped,
       now

@@ -25,22 +25,7 @@ function debugLog(...args) {
 
 const SNAPSHOT_CONCURRENCY = Number.parseInt(process.env.SNAPSHOT_CONCURRENCY || '3', 10);
 
-async function runWithConcurrency(items, limit, worker) {
-  const results = [];
-  let index = 0;
-  const runners = Array.from({ length: Math.max(1, limit) }, async () => {
-    while (index < items.length) {
-      const current = items[index++];
-      try {
-        results.push(await worker(current));
-      } catch (e) {
-        results.push({ ok: false, error: e });
-      }
-    }
-  });
-  await Promise.all(runners);
-  return results;
-}
+const { runWithConcurrency } = require('./lib/concurrency');
 
 let weeklyCalcEnsured = false;
 let recruitsEnsured = false;
@@ -54,6 +39,7 @@ async function ensureWeeklyCalculationsTable(db) {
     await db.exec(`
       CREATE TABLE IF NOT EXISTS weekly_calculations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL DEFAULT 'GLOBAL',
         recruiter_id TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
         week_start INTEGER,
@@ -532,11 +518,11 @@ async function recomputeLeaderboardsInternal(db, guild) {
 
     if (channel) {
       debugLog(`Updating leaderboard for ${rg.key} in channel ${channel.name || channel.id}...`);
-      await upsertLeaderboardMessage(db, channel, rg.key, leaderboardText);
+      await upsertLeaderboardMessage(db, channel, rg.key, leaderboardText, null, guild.id);
     }
     if (central) {
       debugLog(`Cross-posting to central leaderboard for ${rg.key}...`);
-      await upsertLeaderboardMessage(db, central, rg.key, leaderboardText);
+      await upsertLeaderboardMessage(db, central, rg.key, leaderboardText, null, guild.id);
     }
   }
 }
@@ -593,7 +579,7 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   const recruiterIds = (warningRows || []).map(r => r.recruiter_id);
   if (!recruiterIds.length) {
     const text = makeDemotionWatchText([]);
-    await upsertLeaderboardMessage(db, channel, 'WARNINGS', text);
+    await upsertLeaderboardMessage(db, channel, 'WARNINGS', text, null, guild.id);
     return;
   }
 
@@ -660,7 +646,7 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   }
 
   const text = makeDemotionWatchText(rows);
-  await upsertLeaderboardMessage(db, channel, 'WARNINGS', text);
+  await upsertLeaderboardMessage(db, channel, 'WARNINGS', text, null, guild.id);
 }
 
 async function recomputeWarningsLeaderboard(db, guild) {
@@ -690,7 +676,7 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
         const announceKey = `weekly_reset_announce_${weekStart}`;
         const existing = await db.get('SELECT key FROM system_events WHERE key = ?', announceKey);
         if (!existing) {
-          await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', announceKey, Date.now());
+          await db.run('INSERT OR REPLACE INTO system_events (key, "timestamp") VALUES (?, ?)', announceKey, Date.now());
           const guild = await resolveGuild(client);
           const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
           if (ch) {

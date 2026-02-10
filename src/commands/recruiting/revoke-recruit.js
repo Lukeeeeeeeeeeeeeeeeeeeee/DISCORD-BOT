@@ -1,7 +1,7 @@
-const db = require('../db_async');
+const db = require('../../db_async');
 const { EmbedBuilder } = require('discord.js');
-const { hasAdminOrStaffPermissions } = require('../lib/permissions');
-const { replyError } = require('../lib/embeds');
+const { hasAdminOrStaffPermissions } = require('../../lib/permissions');
+const { replyError } = require('../../lib/embeds');
 
 module.exports = {
   data: {
@@ -61,7 +61,7 @@ module.exports = {
       }
 
       // Remove roles from the member
-      const { ROLE_IDS } = require('../constants');
+      const { ROLE_IDS } = require('../../constants');
       try {
         // Remove rookie role
         if (targetMember.roles.cache.has(ROLE_IDS.ROOKIE)) {
@@ -92,7 +92,7 @@ module.exports = {
 
       // Update leaderboards to reflect the change
       try {
-        const scheduler = require('../scheduler');
+        const scheduler = require('../../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);
       } catch (e) {
         console.error('Failed to update leaderboards after recruit revocation:', e);
@@ -100,7 +100,7 @@ module.exports = {
 
       // Post notification to invite channels
       // Post to economy notifications channel
-      const { CHANNELS } = require('../constants');
+      const { CHANNELS } = require('../../constants');
       const embed = new EmbedBuilder()
         .setTitle('🚫 Recruit Revoked')
         .setDescription(`**${member.tag}** has been revoked as a recruit.`)

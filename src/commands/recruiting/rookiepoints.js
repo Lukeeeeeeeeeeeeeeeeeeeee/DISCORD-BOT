@@ -1,9 +1,9 @@
-const db = require('../db_async');
-const { ROLE_IDS } = require('../constants');
+const db = require('../../db_async');
+const { ROLE_IDS } = require('../../constants');
 const { PermissionsBitField } = require('discord.js');
-const { hasModPlusPermissions } = require('../lib/recruiting-system');
-const { addRookiePoints, formatPoints } = require('../lib/rookie-points');
-const { replyError } = require('../lib/embeds');
+const { hasModPlusPermissions } = require('../../lib/recruiting-system');
+const { addRookiePoints, formatPoints } = require('../../lib/rookie-points');
+const { replyError } = require('../../lib/embeds');
 
 const { SlashCommandBuilder } = require('discord.js');
 

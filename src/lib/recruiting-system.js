@@ -1,5 +1,7 @@
 const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 const { hasAdministrator } = require('./permissions');
+const { resolveGuildId } = require('./guild');
+const { fetchMembersByIds } = require('./member-fetch');
 
 // Role hierarchy for permissions
 const ROLE_HIERARCHY = {
@@ -97,6 +99,7 @@ function hasModPlusPermissions(member) {
 
 async function isNewStaff(db, recruiterId, opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const guildId = resolveGuildId(opts.guild || opts.guildId);
   try {
     const recruiterRoleIds = [
       ROLE_IDS.RECRUITER,
@@ -109,7 +112,8 @@ async function isNewStaff(db, recruiterId, opts = {}) {
       const row = await db.get(
         `SELECT MAX(created_at) as last_added
          FROM analytics_role_changes
-         WHERE user_id = ? AND action = 'added' AND role_id IN (${placeholders})`,
+         WHERE guild_id = ? AND user_id = ? AND action = 'added' AND role_id IN (${placeholders})`,
+        guildId,
         recruiterId,
         ...recruiterRoleIds
       );
@@ -128,7 +132,8 @@ async function isNewStaff(db, recruiterId, opts = {}) {
 
   try {
     const calculationCount = await db.get(
-      'SELECT COUNT(*) as c FROM weekly_calculations WHERE recruiter_id = ?',
+      'SELECT COUNT(*) as c FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ?',
+      guildId,
       recruiterId
     );
     return calculationCount ? calculationCount.c < 2 : true;
@@ -204,28 +209,28 @@ function calculateMinRecruitsFixed({
 
 function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, absent = false, attention = false } = {}) {
   if (absent || minReq === 0) {
-    return { bucket: 'ABSENT', label: '📅 Absent', color: 0xFFAA00 };
+    return { bucket: 'ABSENT', label: '??? Absent', color: 0x808080 };
   }
 
   if (activeWarnings >= 2) {
-    return { bucket: 'DEMOTION', label: '🚨 Demotion watch (2+ warnings)', color: 0x992D22 };
+    return { bucket: 'DEMOTION', label: '?? Demotion Watch (2+ warnings)', color: 0x992D22 };
   }
 
   // Per requested rules: failing if you got none.
   if ((recruits7d || 0) === 0) {
-    return { bucket: 'FAILING', label: `⚠️ Failing (0/${minReq})`, color: 0xFF4444 };
+    return { bucket: 'FAILING', label: `? Failing (0/${minReq})`, color: 0xFF4444 };
   }
 
   // Attention if you meet the auto-warning criteria (computed by caller).
   if (attention && (recruits7d || 0) < (minReq || 0)) {
-    return { bucket: 'ATTENTION', label: `⚠️ Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
+    return { bucket: 'ATTENTION', label: `?? Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
   }
 
   if ((recruits7d || 0) < (minReq || 0)) {
-    return { bucket: 'FAILING', label: `⚠️ Below Minimum (${recruits7d}/${minReq})`, color: 0xFFAA00 };
+    return { bucket: 'FAILING', label: `?? Below Minimum (${recruits7d}/${minReq})`, color: 0xFFAA00 };
   }
 
-  return { bucket: 'GOOD', label: `🔥 Good (${recruits7d}/${minReq})`, color: 0x00CC66 };
+  return { bucket: 'PASSING', label: `? Passing (${recruits7d}/${minReq})`, color: 0x00CC66 };
 }
 
 /**
@@ -235,6 +240,7 @@ function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, ab
  * @returns {Object} - Activity and retention data
  */
 async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
+  const guildId = resolveGuildId(guild || opts.guildId);
   const windowEnd = Number.isFinite(opts.untilTs) ? opts.untilTs : Date.now();
   const windowStart = Number.isFinite(opts.sinceTs)
     ? opts.sinceTs
@@ -247,7 +253,8 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
   try {
     // Count recruits from last 7 days without loading full rows
     const recruitsRow = await db.get(
-      'SELECT COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1',
+      'SELECT COUNT(*) as c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1',
+      guildId,
       recruiterId,
       windowStart,
       windowEnd
@@ -259,7 +266,11 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
     let verifyRate = 0;
     try {
       const verifiedRow = await db.get(
-        'SELECT COUNT(*) as c FROM recruits r INNER JOIN verifications v ON v.recruited_id = r.recruited_id WHERE r.recruiter_id = ? AND r.created_at >= ? AND r.created_at < ? AND r.valid = 1',
+        `SELECT COUNT(*) as c
+         FROM recruits r
+         INNER JOIN verifications v ON v.guild_id = r.guild_id AND v.recruited_id = r.recruited_id
+         WHERE r.guild_id = ? AND r.recruiter_id = ? AND r.created_at >= ? AND r.created_at < ? AND r.valid = 1`,
+        guildId,
         recruiterId,
         windowStart,
         windowEnd
@@ -274,26 +285,18 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
     let retention = 0;
     if (guild) {
       const retentionCohort = await db.all(
-        'SELECT recruited_id FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC',
-        recruiterId, retentionStart, retentionEnd
+        'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC',
+        guildId,
+        recruiterId,
+        retentionStart,
+        retentionEnd
       );
 
       const cohortSize = retentionCohort.length;
       if (cohortSize > 0) {
-        let retainedCount = 0;
-        try {
-          const recruitedIds = retentionCohort.map(r => r.recruited_id);
-          // Fetch members in bulk to avoid repetitive individual fetch calls
-          const members = (await guild.members.fetch({ user: recruitedIds }).catch(() => new Map())) || new Map();
-          retainedCount = members.size;
-        } catch (e) {
-          // Fallback to loop if bulk fetch fails for some reason
-          for (const r of retentionCohort) {
-            const member = await guild.members.fetch(r.recruited_id).catch(() => null);
-            if (member) retainedCount++;
-          }
-        }
-        retention = retainedCount / cohortSize;
+        const recruitedIds = retentionCohort.map(r => r.recruited_id);
+        const members = await fetchMembersByIds(guild, recruitedIds).catch(() => new Map());
+        retention = cohortSize > 0 ? (members.size / cohortSize) : 0;
       }
     }
 
@@ -321,13 +324,15 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
  */
 async function storeWeeklyCalculation(db, data) {
   try {
+    const guildId = resolveGuildId(data.guild || data.guildId);
     const weekStart = data.weekStart ?? null;
     const absent = data.absent ? 1 : 0;
     await db.run(`
       INSERT OR REPLACE INTO weekly_calculations 
-      (recruiter_id, timestamp, week_start, recruits7d, activity_rate, verify_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (guild_id, recruiter_id, timestamp, week_start, recruits7d, activity_rate, verify_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
+      guildId,
       data.recruiterId,
       Date.now(),
       weekStart,
@@ -352,10 +357,12 @@ async function storeWeeklyCalculation(db, data) {
  * @param {string} recruiterId - Recruiter Discord ID
  * @returns {number|null} - Previous minimum requirement or null
  */
-async function getPreviousMinReq(db, recruiterId) {
+async function getPreviousMinReq(db, recruiterId, opts = {}) {
   try {
+    const guildId = resolveGuildId(opts.guild || opts.guildId);
     const row = await db.get(
-      'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 1',
+      'SELECT calculated_min_req FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 1',
+      guildId,
       recruiterId
     );
     return row ? row.calculated_min_req : null;
@@ -387,3 +394,4 @@ module.exports = {
   BASE_MAX_DELTA_UP,
   BASE_MAX_DELTA_DOWN
 };
+

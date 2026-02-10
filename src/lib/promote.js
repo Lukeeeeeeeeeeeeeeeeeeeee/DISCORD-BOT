@@ -50,6 +50,7 @@ function stripRookiePoints(nickname) {
 }
 
 async function promoteMember({ member, db, guild, verifierId }) {
+    const guildId = guild ? guild.id : null;
     const team = inferTeamFromOnboarding(member) || inferTeamFromRegionTag(member);
     const teamRoleId = ROLE_IDS.TEAM_MEMBER && team ? ROLE_IDS.TEAM_MEMBER[team] : null;
 
@@ -90,7 +91,8 @@ async function promoteMember({ member, db, guild, verifierId }) {
     let recruiterId = null;
     try {
         const recruitRow = await db.get(
-            'SELECT recruiter_id FROM recruits WHERE recruited_id = ? AND valid = 1 ORDER BY created_at DESC LIMIT 1',
+            'SELECT recruiter_id FROM recruits WHERE guild_id = ? AND recruited_id = ? AND valid = 1 ORDER BY created_at DESC LIMIT 1',
+            guildId,
             member.id
         );
         recruiterId = recruitRow ? recruitRow.recruiter_id : null;
@@ -98,7 +100,8 @@ async function promoteMember({ member, db, guild, verifierId }) {
 
     try {
         await db.run(
-            'INSERT OR REPLACE INTO verifications (recruited_id, recruiter_id, verified_at, verified_by) VALUES (?, ?, ?, ?)',
+            'INSERT OR REPLACE INTO verifications (guild_id, recruited_id, recruiter_id, verified_at, verified_by) VALUES (?, ?, ?, ?, ?)',
+            guildId,
             member.id,
             recruiterId,
             Date.now(),

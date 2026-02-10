@@ -13,8 +13,8 @@ describe('/status command', () => {
   beforeEach(() => {
     dbPath = path.join(require('os').tmpdir(), `recruiter-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
     process.env.DATABASE_PATH = dbPath;
-    delete require.cache[require.resolve('../src/db.js')];
-    require('../src/db.js');
+    delete require.cache[require.resolve('../src/db_async.js')];
+    require('../src/db_async.js');
   });
   afterEach(() => {
     try { fs.unlinkSync(dbPath); } catch (e) { void e; }
@@ -31,7 +31,7 @@ describe('/status command', () => {
     const bfile = path.join(backupsDir, 'recruiter-test-backup.db');
     fs.writeFileSync(bfile, 'ok');
 
-    const cmd = require('../src/commands/status.js');
+    const cmd = require('../src/commands/recruiting/status.js');
     await cmd.execute(interaction);
 
     expect(reply).toHaveBeenCalled();

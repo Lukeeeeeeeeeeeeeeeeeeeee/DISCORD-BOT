@@ -12,9 +12,9 @@ async function makeDb(dbPath) {
   const { open } = require('sqlite');
   const db = await open({ filename: dbPath, driver: sqlite3.Database });
   await db.exec(`
-    CREATE TABLE IF NOT EXISTS recruiters ( id TEXT PRIMARY KEY, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0 );
-    CREATE TABLE IF NOT EXISTS multipliers ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL );
-    CREATE TABLE IF NOT EXISTS purchases ( id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, item TEXT NOT NULL, cost INTEGER NOT NULL, created_at INTEGER NOT NULL );
+    CREATE TABLE IF NOT EXISTS recruiters ( guild_id TEXT NOT NULL, id TEXT NOT NULL, points INTEGER DEFAULT 0, warnings INTEGER DEFAULT 0, promoted INTEGER DEFAULT 0, channel_base INTEGER DEFAULT 4, PRIMARY KEY (guild_id, id) );
+    CREATE TABLE IF NOT EXISTS multipliers ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL );
+    CREATE TABLE IF NOT EXISTS purchases ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, item TEXT NOT NULL, cost INTEGER NOT NULL, created_at INTEGER NOT NULL );
   `);
   return db;
 }
@@ -32,7 +32,7 @@ describe('multiplier purchase and admin application', () => {
   test('recruiter can buy a multiplier when they have enough points', async () => {
     // prepare DB
     const db = await makeDb(dbPath);
-    await db.run('INSERT INTO recruiters (id, points) VALUES (?, ?)', 'R1', 50);
+    await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, 0, 0, 4)', 'GLOBAL', 'R1', 50);
 
     // mock interaction for buy
     const reply = jest.fn();
@@ -40,10 +40,10 @@ describe('multiplier purchase and admin application', () => {
       getSubcommand: () => 'buy',
       getString: (_k) => 'm1.15_14d'
     };
-    const interaction = { options, user: { id: 'R1' }, reply, member: { permissions: { has: () => true } } };
+    const interaction = { options, user: { id: 'R1' }, reply, member: { permissions: { has: () => true } }, guild: { id: 'GLOBAL' } };
 
     // execute
-    const cmd = require('../src/commands/recruiter.js');
+    const cmd = require('../src/commands/recruiting/recruiter.js');
     await cmd.execute(interaction);
 
     const row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ?', 'R1');
@@ -58,7 +58,7 @@ describe('multiplier purchase and admin application', () => {
 
   test('econ.applyMultiplier works directly on DB', async () => {
     const db = await makeDb(dbPath);
-    await db.run('INSERT INTO recruiters (id, points) VALUES (?, ?)', 'R2', 0);
+    await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, 0, 0, 4)', 'GLOBAL', 'R2', 0);
     const econ = require('../src/lib/economy');
     await econ.applyMultiplier(db, 'R2', 'm1.5_7d');
     const row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ?', 'R2');
@@ -69,7 +69,7 @@ describe('multiplier purchase and admin application', () => {
 
   test('admin can apply and reset multipliers', async () => {
     const db = await makeDb(dbPath);
-    await db.run('INSERT INTO recruiters (id, points) VALUES (?, ?)', 'R2', 0);
+    await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, 0, 0, 4)', 'GLOBAL', 'R2', 0);
 
     const reply = jest.fn();
     const optionsApply = {
@@ -81,8 +81,8 @@ describe('multiplier purchase and admin application', () => {
     const interactionApply = { options: optionsApply, user: { id: 'Admin' }, member: { permissions: { has: () => true } }, guild: { channels: { cache: new Map() } }, reply };
     // Clear cached modules so they re-init with our DB path
     delete require.cache[require.resolve('../src/db_async.js')];
-    delete require.cache[require.resolve('../src/commands/recruiter.js')];
-    const cmd = require('../src/commands/recruiter.js');
+    delete require.cache[require.resolve('../src/commands/recruiting/recruiter.js')];
+    const cmd = require('../src/commands/recruiting/recruiter.js');
     await cmd.execute(interactionApply);
     // Use a fresh DB connection to ensure visibility across connections
     const sqlite3 = require('sqlite3');

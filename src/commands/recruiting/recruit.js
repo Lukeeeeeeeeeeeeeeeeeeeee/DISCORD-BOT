@@ -1,11 +1,13 @@
-const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_ROLE_IDS, REGION_INFO, CHANNELS } = require('../constants');
-const { getRegionInfo, getTeamLabel } = require('../lib/regions');
-const { replyError } = require('../lib/embeds');
-const db = require('../db_async');
-const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../lib/economy');
+const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_ROLE_IDS, REGION_INFO, CHANNELS } = require('../../constants');
+const { getRegionInfo, getTeamLabel } = require('../../lib/regions');
+const { replyError } = require('../../lib/embeds');
+const db = require('../../db_async');
+const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
+const { fetchMembersByIds } = require('../../lib/member-fetch');
+const { resolveGuildId } = require('../../lib/guild');
 
-const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../lib/recruiting-system');
-const { getWeekStartUtcTs } = require('../lib/week');
+const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
+const { getWeekStartUtcTs } = require('../../lib/week');
 
 function inferTeamFromRecruiter(member) {
   if (!member || !member.roles || !member.roles.cache || typeof member.roles.cache.has !== 'function') return null;
@@ -86,19 +88,32 @@ Make sure to put down your achievements in ${logsChannel} always. This is a must
 Wishing you good luck and once again welcoming you to Solace `;
 }
 
+function normalizeIgn(rawIgn, suffix) {
+  const base = rawIgn == null ? '' : String(rawIgn);
+  const cleaned = base.replace(/\s+/g, ' ').trim();
+  if (!suffix) return cleaned;
+  const maxLen = Math.max(1, 32 - suffix.length);
+  if (cleaned.length > maxLen) return cleaned.slice(0, maxLen).trim();
+  return cleaned;
+}
+
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
   try {
+    const guildId = resolveGuildId(guild);
     const weekStart = getWeekStartUtcTs();
     const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
-    const currentStats = await calculate7DayStats(db, recruiterMember.id, guild || null, statsWindow);
+    const currentStats = await calculate7DayStats(db, recruiterMember.id, guild || null, { ...statsWindow, guildId });
 
     const warnings = await db.get(
-      'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-      recruiterMember.id, Date.now()
+      'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+      guildId,
+      recruiterMember.id,
+      Date.now()
     );
     const activeWarnings = warnings ? warnings.c : 0;
     const absence = await db.get(
-      'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+      'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+      guildId,
       recruiterMember.id
     );
     const roleBase = getBaseRequirement(recruiterMember);
@@ -116,6 +131,7 @@ async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
     });
 
     await storeWeeklyCalculation(db, {
+      guildId,
       recruiterId: recruiterMember.id,
       weekStart,
       recruits7d: currentStats.recruits7d,
@@ -139,32 +155,47 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
 
   const now = Date.now();
   const windowMs = 9 * 24 * 60 * 60 * 1000;
+  const guildId = resolveGuildId(guild);
 
-  let row = await db.get('SELECT * FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id);
+  let row = await db.get(
+    'SELECT * FROM trial_fast_track WHERE guild_id = ? AND recruiter_id = ?',
+    guildId,
+    recruiterMember.id
+  );
   const needsResetByTime = !row || (now - row.started_at) > windowMs;
 
   if (needsResetByTime) {
     await db.run(
-      'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, NULL, NULL, NULL, 0, ?)',
+      'INSERT OR REPLACE INTO trial_fast_track (guild_id, recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, NULL, NULL, NULL, 0, ?)',
+      guildId,
       recruiterMember.id,
       now,
       now
     );
-    row = await db.get('SELECT * FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id);
+    row = await db.get(
+      'SELECT * FROM trial_fast_track WHERE guild_id = ? AND recruiter_id = ?',
+      guildId,
+      recruiterMember.id
+    );
   }
 
   const trackedIds = [row.recruit1_id, row.recruit2_id, row.recruit3_id].filter(Boolean);
-  for (const id of trackedIds) {
-    const m = await guild.members.fetch(id).catch(() => null);
-    if (!m) {
+  if (trackedIds.length) {
+    const memberMap = await fetchMembersByIds(guild, trackedIds).catch(() => new Map());
+    const missing = trackedIds.find(id => !memberMap.has(id));
+    if (missing) {
       await db.run(
-        'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, NULL, NULL, NULL, 0, ?)',
+        'INSERT OR REPLACE INTO trial_fast_track (guild_id, recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, NULL, NULL, NULL, 0, ?)',
+        guildId,
         recruiterMember.id,
         now,
         now
       );
-      row = await db.get('SELECT * FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id);
-      break;
+      row = await db.get(
+        'SELECT * FROM trial_fast_track WHERE guild_id = ? AND recruiter_id = ?',
+        guildId,
+        recruiterMember.id
+      );
     }
   }
 
@@ -179,7 +210,8 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
   else if (!updates.recruit3_id) updates.recruit3_id = recruitedId;
   else {
     await db.run(
-      'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR REPLACE INTO trial_fast_track (guild_id, recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      guildId,
       recruiterMember.id,
       row.started_at,
       row.recruit1_id,
@@ -193,7 +225,8 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
 
   count = Math.min(3, count + 1);
   await db.run(
-    'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'INSERT OR REPLACE INTO trial_fast_track (guild_id, recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    guildId,
     recruiterMember.id,
     row.started_at,
     updates.recruit1_id,
@@ -205,7 +238,8 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
 
   const windowStart = Math.max(row.started_at || now, now - windowMs);
   const recent = await db.all(
-    'SELECT recruited_id FROM recruits WHERE recruiter_id = ? AND valid = 1 AND created_at >= ? ORDER BY created_at DESC LIMIT 3',
+    'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND valid = 1 AND created_at >= ? ORDER BY created_at DESC LIMIT 3',
+    guildId,
     recruiterMember.id,
     windowStart
   );
@@ -217,11 +251,13 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
     ? recent.map(r => r.recruited_id)
     : [updates.recruit1_id, updates.recruit2_id, updates.recruit3_id].filter(Boolean);
 
-  for (const id of idsToCheck) {
-    const m = await guild.members.fetch(id).catch(() => null);
-    if (!m) {
+  if (idsToCheck.length) {
+    const memberMap = await fetchMembersByIds(guild, idsToCheck).catch(() => new Map());
+    const missing = idsToCheck.find(id => !memberMap.has(id));
+    if (missing) {
       await db.run(
-        'INSERT OR REPLACE INTO trial_fast_track (recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, NULL, NULL, NULL, 0, ?)',
+        'INSERT OR REPLACE INTO trial_fast_track (guild_id, recruiter_id, started_at, recruit1_id, recruit2_id, recruit3_id, count, updated_at) VALUES (?, ?, ?, NULL, NULL, NULL, 0, ?)',
+        guildId,
         recruiterMember.id,
         now,
         now
@@ -233,12 +269,13 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
   let recruiterRoleId = null;
   try {
     const rows = await db.all(
-      'SELECT region, COUNT(*) as c FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND valid = 1 GROUP BY region ORDER BY c DESC',
+      'SELECT region, COUNT(*) as c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND valid = 1 GROUP BY region ORDER BY c DESC',
+      guildId,
       recruiterMember.id,
       windowStart
     );
     const topRegion = rows && rows.length ? rows[0].region : null;
-    recruiterRoleId = topRegion ? require('../constants').RECRUITER_ROLE_IDS[topRegion] : null;
+    recruiterRoleId = topRegion ? require('../../constants').RECRUITER_ROLE_IDS[topRegion] : null;
   } catch (e) {
     recruiterRoleId = null;
   }
@@ -259,14 +296,14 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
   }
 
   try {
-    await db.run('UPDATE recruiters SET promoted = 1 WHERE id = ?', recruiterMember.id);
+    await db.run('UPDATE recruiters SET promoted = 1 WHERE guild_id = ? AND id = ?', guildId, recruiterMember.id);
   } catch (e) {
     void e;
   }
 
   await storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember);
 
-  await db.run('DELETE FROM trial_fast_track WHERE recruiter_id = ?', recruiterMember.id).catch(err => {
+  await db.run('DELETE FROM trial_fast_track WHERE guild_id = ? AND recruiter_id = ?', guildId, recruiterMember.id).catch(err => {
     console.error('Failed to clear trial fast track row:', err);
   });
   return { promoted: true };
@@ -290,32 +327,34 @@ module.exports = {
       }
 
       const member = interaction.options.getUser('member');
-      const ign = interaction.options.getString('ign');
+      const rawIgn = interaction.options.getString('ign');
 
       // Validate inputs
-      if (!member || !ign) {
-        return respond({ content: 'Missing required parameters. Please provide member and ign.' });
+      if (!member || !rawIgn) {
+        return replyError(interaction, 'Missing required parameters. Please provide member and ign.');
       }
+
+      const guildId = resolveGuildId(interaction.guild);
 
       // Check if user has permission to recruit (basic check)
       const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       if (!guildMember) {
-        return respond({ content: 'Unable to verify your guild membership.' });
+        return replyError(interaction, 'Unable to verify your guild membership.');
       }
 
       // Only recruiters (incl trial/regional) or staff/admin can recruit.
       // In tests we run with minimal mocks; skip strict permission enforcement there.
       if (process.env.NODE_ENV !== 'test') {
-        const { hasRecruiterOrStaffPermissions } = require('../lib/permissions');
+        const { hasRecruiterOrStaffPermissions } = require('../../lib/permissions');
         if (!hasRecruiterOrStaffPermissions(guildMember)) {
-          return respond({ content: 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).' });
+          return replyError(interaction, 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).');
         }
       }
 
       const recruitedGuildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-      if (!recruitedGuildMember) return respond({ content: 'Member not found in this guild.' });
+      if (!recruitedGuildMember) return replyError(interaction, 'Member not found in this guild.');
 
-      const { hasAdministrator } = require('../lib/permissions');
+      const { hasAdministrator } = require('../../lib/permissions');
       const recruiterMemberForTeam = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
       let team = inferTeamFromRecruiter(recruiterMemberForTeam);
       const regionTag = inferRegionTagFromMember(recruitedGuildMember);
@@ -325,30 +364,39 @@ module.exports = {
         } else {
           const regionCodes = Object.keys(REGION_INFO || {}).length ? Object.keys(REGION_INFO) : ['EU', 'NA', 'AS'];
           const labelList = regionCodes.map(code => getTeamLabel(code)).join(', ');
-          return respond({ content: `You must have a team recruiter role (${labelList}) to use this command.` });
+          return replyError(interaction, `You must have a team recruiter role (${labelList}) to use this command.`);
         }
       }
       const teamInfo = getRegionInfo(team);
       const teamName = teamInfo && teamInfo.name ? teamInfo.name : team;
+      const nicknameSuffix = ` | ${regionTag || team} 0/10`;
+      const ign = normalizeIgn(rawIgn, nicknameSuffix);
+      if (!ign) {
+        return replyError(interaction, 'IGN must include at least 1 visible character.');
+      }
 
       // checks
-      if (recruitedGuildMember.user.bot) return respond({ content: 'Cannot recruit bots.' });
+      if (recruitedGuildMember.user.bot) return replyError(interaction, 'Cannot recruit bots.');
 
       const joinedAt = recruitedGuildMember.joinedAt;
       const now = new Date();
-      if (!joinedAt) return respond({ content: 'Unable to verify when that member joined. Please try again.' });
+      if (!joinedAt) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
       const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-      if (minutesSinceJoin > 120) return respond({ content: 'Cannot give roles to someone who joined more than 2 hours ago.' });
+      if (minutesSinceJoin > 120) return replyError(interaction, 'Cannot give roles to someone who joined more than 2 hours ago.');
 
       const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000 * 60 * 60 * 24);
-      if (accountAgeDays < (30 * 6)) return respond({ content: 'Account must be at least 6 months old.' });
+      if (accountAgeDays < (30 * 6)) return replyError(interaction, 'Account must be at least 6 months old.');
 
       // already verified = has rookie
-      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return respond({ content: 'Member is already verified.' });
+      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return replyError(interaction, 'Member is already verified.');
 
       // check if recruited already
-      const exist = await db.get('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1', member.id);
-      if (exist) return respond({ content: 'That member has already been recruited previously.' });
+      const exist = await db.get(
+        'SELECT * FROM recruits WHERE guild_id = ? AND recruited_id = ? AND valid = 1',
+        guildId,
+        member.id
+      );
+      if (exist) return replyError(interaction, 'That member has already been recruited previously.');
 
       const chosenRole = pickOnboardingRole(team);
 
@@ -362,14 +410,15 @@ module.exports = {
 
         // set nickname
         if (recruitedGuildMember.manageable) {
-          await recruitedGuildMember.setNickname(`${ign} | ${regionTag || team} 0/10`).catch(err => {
+          await recruitedGuildMember.setNickname(`${ign}${nicknameSuffix}`).catch(err => {
             console.error('Failed to set recruit nickname:', err);
           });
         }
 
         try {
           await db.run(
-            'INSERT OR REPLACE INTO rookie_points (member_id, points, updated_at) VALUES (?, ?, ?)',
+            'INSERT OR REPLACE INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
+            guildId,
             recruitedGuildMember.id,
             0,
             Date.now()
@@ -404,11 +453,29 @@ module.exports = {
         await db.run('BEGIN TRANSACTION');
         try {
           // Cleanup prior revoked records to allow re-recruitment if unique constraint exists
-          await db.run('DELETE FROM recruits WHERE recruited_id = ? AND valid = 0', member.id);
+          await db.run('DELETE FROM recruits WHERE guild_id = ? AND recruited_id = ? AND valid = 0', guildId, member.id);
 
-          await db.run('INSERT INTO recruits (recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, 1, ?)', interaction.user.id, member.id, team, ign, nowTs, points);
-          await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', interaction.user.id);
-          await db.run('UPDATE recruiters SET points = points + ? WHERE id = ?', points, interaction.user.id);
+          await db.run(
+            'INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',
+            guildId,
+            interaction.user.id,
+            member.id,
+            team,
+            ign,
+            nowTs,
+            points
+          );
+          await db.run(
+            'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
+            guildId,
+            interaction.user.id
+          );
+          await db.run(
+            'UPDATE recruiters SET points = points + ? WHERE guild_id = ? AND id = ?',
+            points,
+            guildId,
+            interaction.user.id
+          );
           await db.run('COMMIT');
         } catch (e) {
           await db.run('ROLLBACK');
@@ -424,7 +491,7 @@ module.exports = {
         }
 
         try {
-          const scheduler = require('../scheduler');
+          const scheduler = require('../../scheduler');
           await scheduler.recomputeLeaderboards(db, interaction.guild);
         } catch (e) {
           console.error('Failed updating leaderboards:', e);

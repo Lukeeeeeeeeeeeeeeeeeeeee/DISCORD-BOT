@@ -105,7 +105,7 @@ describe('integration: /recruit -> scheduler -> leaderboard_messages', () => {
 
     // Ensure clean require cache for DB + modules that capture DB path
     delete require.cache[require.resolve('../src/db_async')];
-    delete require.cache[require.resolve('../src/commands/recruit')];
+    delete require.cache[require.resolve('../src/commands/recruiting/recruit')];
     delete require.cache[require.resolve('../src/scheduler')];
     delete require.cache[require.resolve('../src/lib/messages')];
   });
@@ -150,7 +150,7 @@ describe('integration: /recruit -> scheduler -> leaderboard_messages', () => {
       editReply: jest.fn().mockResolvedValue(true)
     };
 
-    const cmd = require('../src/commands/recruit');
+    const cmd = require('../src/commands/recruiting/recruit');
     await cmd.execute(interaction);
 
     const rowEU = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', 'EU_CH', 'EU');

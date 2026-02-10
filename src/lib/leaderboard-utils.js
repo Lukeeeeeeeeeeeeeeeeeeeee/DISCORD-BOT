@@ -1,4 +1,5 @@
 const DEFAULT_CHUNK_SIZE = Number.parseInt(process.env.LEADERBOARD_CHUNK_SIZE || '400', 10);
+const { resolveGuildId } = require('./guild');
 
 function chunkArray(items, size = DEFAULT_CHUNK_SIZE) {
   const out = [];
@@ -12,6 +13,7 @@ function chunkArray(items, size = DEFAULT_CHUNK_SIZE) {
 
 async function fetchLeaderboardRows(db, recruiterIds, opts = {}) {
   if (!db || !recruiterIds || !recruiterIds.length) return [];
+  const guildId = resolveGuildId(opts.guild || opts.guildId);
   const region = opts.region || null;
   const weekStart = opts.weekStart || null;
   const sinceTs = Number.isFinite(opts.sinceTs) ? opts.sinceTs : weekStart || Date.now();
@@ -34,12 +36,12 @@ async function fetchLeaderboardRows(db, recruiterIds, opts = {}) {
         LEFT JOIN (
           SELECT recruiter_id, COUNT(*) as cnt
           FROM recruits
-          WHERE region = ? AND valid = 1 AND created_at >= ?
+          WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?
           GROUP BY recruiter_id
         ) c ON c.recruiter_id = r.id
-        LEFT JOIN recruiters db_rec ON db_rec.id = r.id
-        LEFT JOIN weekly_calculations wc ON wc.recruiter_id = r.id AND wc.week_start = ?
-      `, ...chunk, region, sinceTs, weekStart);
+        LEFT JOIN recruiters db_rec ON db_rec.guild_id = ? AND db_rec.id = r.id
+        LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?
+      `, ...chunk, guildId, region, sinceTs, guildId, guildId, weekStart);
       if (rowsBase && rowsBase.length) rows.push(...rowsBase);
     } else {
       const rowsBase = await db.all(`
@@ -53,12 +55,12 @@ async function fetchLeaderboardRows(db, recruiterIds, opts = {}) {
         LEFT JOIN (
           SELECT recruiter_id, COUNT(*) as cnt
           FROM recruits
-          WHERE valid = 1 AND created_at >= ?
+          WHERE guild_id = ? AND valid = 1 AND created_at >= ?
           GROUP BY recruiter_id
         ) c ON c.recruiter_id = r.id
-        LEFT JOIN recruiters db_rec ON db_rec.id = r.id
-        LEFT JOIN weekly_calculations wc ON wc.recruiter_id = r.id AND wc.week_start = ?
-      `, ...chunk, sinceTs, weekStart);
+        LEFT JOIN recruiters db_rec ON db_rec.guild_id = ? AND db_rec.id = r.id
+        LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?
+      `, ...chunk, guildId, sinceTs, guildId, guildId, weekStart);
       if (rowsBase && rowsBase.length) rows.push(...rowsBase);
     }
   }
@@ -75,6 +77,7 @@ async function loadRecruiterMeta(db, recruiterIds, opts = {}) {
   }
 
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const guildId = resolveGuildId(opts.guild || opts.guildId);
   const chunks = chunkArray(recruiterIds, opts.chunkSize);
   for (const chunk of chunks) {
     const placeholders = chunk.map(() => '?').join(',');
@@ -82,16 +85,19 @@ async function loadRecruiterMeta(db, recruiterIds, opts = {}) {
     try {
       const [absences, warnings, systemWarnings] = await Promise.all([
         db.all(
-          `SELECT recruiter_id FROM absences WHERE active = 1 AND end_date >= date("now") AND recruiter_id IN (${placeholders})`,
+          `SELECT recruiter_id FROM absences WHERE guild_id = ? AND active = 1 AND end_date >= date("now") AND recruiter_id IN (${placeholders})`,
+          guildId,
           ...chunk
         ).catch(() => []),
         db.all(
-          `SELECT recruiter_id, COUNT(*) as c FROM warnings WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND recruiter_id IN (${placeholders}) GROUP BY recruiter_id`,
+          `SELECT recruiter_id, COUNT(*) as c FROM warnings WHERE guild_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND recruiter_id IN (${placeholders}) GROUP BY recruiter_id`,
+          guildId,
           now,
           ...chunk
         ).catch(() => []),
         db.all(
-          `SELECT recruiter_id FROM warnings WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND note LIKE ? AND recruiter_id IN (${placeholders}) GROUP BY recruiter_id`,
+          `SELECT recruiter_id FROM warnings WHERE guild_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) AND note LIKE ? AND recruiter_id IN (${placeholders}) GROUP BY recruiter_id`,
+          guildId,
           now,
           'Quota warning%',
           ...chunk
@@ -112,6 +118,7 @@ async function loadRecruiterMeta(db, recruiterIds, opts = {}) {
 async function loadPreviousMinReqs(db, recruiterIds, weekStart, opts = {}) {
   const map = new Map();
   if (!db || !recruiterIds || !recruiterIds.length || !Number.isFinite(weekStart)) return map;
+  const guildId = resolveGuildId(opts.guild || opts.guildId);
   const chunks = chunkArray(recruiterIds, opts.chunkSize);
   for (const chunk of chunks) {
     const placeholders = chunk.map(() => '?').join(',');
@@ -119,8 +126,9 @@ async function loadPreviousMinReqs(db, recruiterIds, weekStart, opts = {}) {
     const rows = await db.all(
       `SELECT recruiter_id, calculated_min_req, week_start
        FROM weekly_calculations
-       WHERE week_start < ? AND recruiter_id IN (${placeholders})
+       WHERE guild_id = ? AND week_start < ? AND recruiter_id IN (${placeholders})
        ORDER BY week_start DESC`,
+      guildId,
       weekStart,
       ...chunk
     ).catch(() => []);
