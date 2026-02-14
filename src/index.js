@@ -67,6 +67,15 @@ const inviteInitPromise = (async () => {
 
 const commandsPath = path.join(__dirname, 'commands');
 
+function shouldIgnoreCommandModule(fullPath) {
+  const normalized = fullPath.split(path.sep).join('/');
+  if (normalized.includes('/recruiter-handlers/')) return true;
+  const base = path.basename(fullPath).toLowerCase();
+  if (base.endsWith('-helpers.js')) return true;
+  if (base === 'verify.js') return true;
+  return false;
+}
+
 function loadCommandsRecursively(dir) {
   const files = fs.readdirSync(dir);
   for (const file of files) {
@@ -74,7 +83,8 @@ function loadCommandsRecursively(dir) {
     const stat = fs.statSync(fullPath);
     if (stat.isDirectory()) {
       loadCommandsRecursively(fullPath);
-    } else if (file.endsWith('.js') && file !== 'verify.js') {
+    } else if (file.endsWith('.js')) {
+      if (shouldIgnoreCommandModule(fullPath)) continue;
       try {
         const cmd = require(fullPath);
         if (cmd && cmd.data && cmd.data.name && typeof cmd.execute === 'function') {
@@ -125,8 +135,8 @@ async function onReady() {
     }
   }
 }
-// Use the ready event to start schedulers and subsystems once the client is online.
-client.once('ready', onReady);
+// Use clientReady to avoid v15 breaking changes (ready alias deprecation in v14).
+client.once('clientReady', onReady);
 
 async function flushShutdown(signal) {
   try {
@@ -294,7 +304,7 @@ client.on('guildMemberAdd', async (member) => {
 
   try {
     // Get invite system instance
-    const inviteCommand = require('./commands/invite');
+    const inviteCommand = require('./commands/recruiting/invite');
     const inviteSystem = await inviteCommand.init();
 
     if (!inviteSystem) return;

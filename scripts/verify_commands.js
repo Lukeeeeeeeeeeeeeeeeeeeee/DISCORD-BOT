@@ -8,6 +8,15 @@ const client = {
 
 const commandsPath = path.join(__dirname, '../src/commands');
 
+function shouldIgnoreCommandModule(fullPath) {
+    const normalized = fullPath.split(path.sep).join('/');
+    if (normalized.includes('/recruiter-handlers/')) return true;
+    const base = path.basename(fullPath).toLowerCase();
+    if (base.endsWith('-helpers.js')) return true;
+    if (base === 'verify.js') return true;
+    return false;
+}
+
 function loadCommandsRecursively(dir) {
     const files = fs.readdirSync(dir);
     for (const file of files) {
@@ -15,7 +24,8 @@ function loadCommandsRecursively(dir) {
         const stat = fs.statSync(fullPath);
         if (stat.isDirectory()) {
             loadCommandsRecursively(fullPath);
-        } else if (file.endsWith('.js') && file !== 'verify.js') {
+        } else if (file.endsWith('.js')) {
+            if (shouldIgnoreCommandModule(fullPath)) continue;
             try {
                 const cmd = require(fullPath);
                 if (cmd && cmd.data && cmd.data.name && typeof cmd.execute === 'function') {

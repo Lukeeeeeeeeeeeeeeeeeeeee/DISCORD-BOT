@@ -1,0 +1,447 @@
+PASS tests/recruit.test.js
+  /recruit command
+    √ successfully recruits a member and updates DB and roles (663 ms)
+    √ rejects if joined more than 2 hours ago (2 ms)
+    √ rejects if account too young (1 ms)
+    √ rejects if member already verified (1 ms)
+    √ rejects if already recruited (1 ms)
+    √ recruiter info shows extended fields (64 ms)
+
+PASS tests/scheduler.test.js
+  scheduler recompute & persistence
+    √ recomputeLeaderboards writes leaderboard_messages on new messages (661 ms)
+    √ formatLeaderboardMessage lists recruiters and counts (34 ms)
+
+PASS tests/integration_recruit_flow.test.js
+  integration: /recruit -> scheduler -> leaderboard_messages
+    √ creates/updates leaderboard_messages after a recruit (279 ms)
+
+PASS tests/multiplier.test.js
+  multiplier purchase and admin application
+    √ recruiter can buy a multiplier when they have enough points (293 ms)
+    √ econ.applyMultiplier works directly on DB (31 ms)
+    √ admin can apply and reset multipliers (40 ms)
+
+  console.warn
+    OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.
+
+    [0m [90m 21 |[39m     [36mthis[39m[33m.[39m[33mOWNER_ID[39m [33m=[39m ownerEnv [33m?[39m [33mString[39m(ownerEnv)[33m.[39mtrim() [33m:[39m [36mnull[39m[33m;[39m
+     [90m 22 |[39m     [36mif[39m ([33m![39m[36mthis[39m[33m.[39m[33mOWNER_ID[39m) {
+    [31m[1m>[22m[39m[90m 23 |[39m       console[33m.[39mwarn([32m'OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.'[39m)[33m;[39m
+     [90m    |[39m               [31m[1m^[22m[39m
+     [90m 24 |[39m     }
+     [90m 25 |[39m     [36mthis[39m[33m.[39m[33mLOG_DM_ID[39m [33m=[39m [32m'1262471979215355969'[39m[33m;[39m
+     [90m 26 |[39m[0m
+
+      at new warn (src/lib/antinuke.js:23:15)
+      at new AntiNukeSystem (src/lib/antinuke-system.js:7:21)
+      at Object.<anonymous> (tests/antinuke_integration.test.js:7:20)
+
+  console.warn
+    ANTINUKE_ENCRYPTION_KEY is missing; encrypted backups are required and will fail until configured.
+
+    [0m [90m 81 |[39m     [36mif[39m ([33m![39m[36mthis[39m[33m.[39m[33mENCRYPTION_KEY[39m) {
+     [90m 82 |[39m       [36mif[39m ([36mthis[39m[33m.[39m[33mREQUIRE_BACKUP_ENCRYPTION[39m) {
+    [31m[1m>[22m[39m[90m 83 |[39m         console[33m.[39mwarn([32m'ANTINUKE_ENCRYPTION_KEY is missing; encrypted backups are required and will fail until configured.'[39m)[33m;[39m
+     [90m    |[39m                 [31m[1m^[22m[39m
+     [90m 84 |[39m       } [36melse[39m {
+     [90m 85 |[39m         console[33m.[39mwarn([32m'ANTINUKE_ENCRYPTION_KEY is missing; backups will be stored unencrypted.'[39m)[33m;[39m
+     [90m 86 |[39m       }[0m
+
+      at new warn (src/lib/antinuke.js:83:17)
+      at new AntiNukeSystem (src/lib/antinuke-system.js:7:21)
+      at Object.<anonymous> (tests/antinuke_integration.test.js:7:20)
+
+  console.log
+    🔄 Anti-nuke rollback integration enabled
+
+      at AntiNukeSystem.log [as setupIntegration] (src/lib/antinuke-system.js:153:13)
+
+  console.log
+    🔄 Recorded pre-action state for rapid_role_delete in GuildAnti
+
+      at AntiNukeRollback.log [as recordPreActionState] (src/lib/antinuke-rollback.js:132:13)
+
+  console.log
+    🔄 Recorded post-action state for rapid_role_delete in GuildAnti
+
+      at AntiNukeRollback.log [as recordPostActionState] (src/lib/antinuke-rollback.js:162:15)
+
+  console.warn
+    OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.
+
+    [0m [90m 21 |[39m     [36mthis[39m[33m.[39m[33mOWNER_ID[39m [33m=[39m ownerEnv [33m?[39m [33mString[39m(ownerEnv)[33m.[39mtrim() [33m:[39m [36mnull[39m[33m;[39m
+     [90m 22 |[39m     [36mif[39m ([33m![39m[36mthis[39m[33m.[39m[33mOWNER_ID[39m) {
+    [31m[1m>[22m[39m[90m 23 |[39m       console[33m.[39mwarn([32m'OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.'[39m)[33m;[39m
+     [90m    |[39m               [31m[1m^[22m[39m
+     [90m 24 |[39m     }
+     [90m 25 |[39m     [36mthis[39m[33m.[39m[33mLOG_DM_ID[39m [33m=[39m [32m'1262471979215355969'[39m[33m;[39m
+     [90m 26 |[39m[0m
+
+      at new warn (src/lib/antinuke.js:23:15)
+      at new AntiNukeSystem (src/lib/antinuke-system.js:7:21)
+      at mkSystem (tests/antinuke_integration.test.js:69:22)
+      at Object.mkSystem (tests/antinuke_integration.test.js:104:20)
+
+  console.warn
+    ANTINUKE_ENCRYPTION_KEY is missing; encrypted backups are required and will fail until configured.
+
+    [0m [90m 81 |[39m     [36mif[39m ([33m![39m[36mthis[39m[33m.[39m[33mENCRYPTION_KEY[39m) {
+     [90m 82 |[39m       [36mif[39m ([36mthis[39m[33m.[39m[33mREQUIRE_BACKUP_ENCRYPTION[39m) {
+    [31m[1m>[22m[39m[90m 83 |[39m         console[33m.[39mwarn([32m'ANTINUKE_ENCRYPTION_KEY is missing; encrypted backups are required and will fail until configured.'[39m)[33m;[39m
+     [90m    |[39m                 [31m[1m^[22m[39m
+     [90m 84 |[39m       } [36melse[39m {
+     [90m 85 |[39m         console[33m.[39mwarn([32m'ANTINUKE_ENCRYPTION_KEY is missing; backups will be stored unencrypted.'[39m)[33m;[39m
+     [90m 86 |[39m       }[0m
+
+      at new warn (src/lib/antinuke.js:83:17)
+      at new AntiNukeSystem (src/lib/antinuke-system.js:7:21)
+      at mkSystem (tests/antinuke_integration.test.js:69:22)
+      at Object.mkSystem (tests/antinuke_integration.test.js:104:20)
+
+  console.log
+    🔄 Anti-nuke rollback integration enabled
+
+      at AntiNukeSystem.log [as setupIntegration] (src/lib/antinuke-system.js:153:13)
+
+  console.warn
+    OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.
+
+    [0m [90m 21 |[39m     [36mthis[39m[33m.[39m[33mOWNER_ID[39m [33m=[39m ownerEnv [33m?[39m [33mString[39m(ownerEnv)[33m.[39mtrim() [33m:[39m [36mnull[39m[33m;[39m
+     [90m 22 |[39m     [36mif[39m ([33m![39m[36mthis[39m[33m.[39m[33mOWNER_ID[39m) {
+    [31m[1m>[22m[39m[90m 23 |[39m       console[33m.[39mwarn([32m'OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.'[39m)[33m;[39m
+     [90m    |[39m               [31m[1m^[22m[39m
+     [90m 24 |[39m     }
+     [90m 25 |[39m     [36mthis[39m[33m.[39m[33mLOG_DM_ID[39m [33m=[39m [32m'1262471979215355969'[39m[33m;[39m
+     [90m 26 |[39m[0m
+
+      at new warn (src/lib/antinuke.js:23:15)
+      at new AntiNukeSystem (src/lib/antinuke-system.js:7:21)
+      at mkSystem (tests/antinuke_integration.test.js:69:22)
+      at Object.mkSystem (tests/antinuke_integration.test.js:105:20)
+
+  console.warn
+    ANTINUKE_ENCRYPTION_KEY is missing; encrypted backups are required and will fail until configured.
+
+    [0m [90m 81 |[39m     [36mif[39m ([33m![39m[36mthis[39m[33m.[39m[33mENCRYPTION_KEY[39m) {
+     [90m 82 |[39m       [36mif[39m ([36mthis[39m[33m.[39m[33mREQUIRE_BACKUP_ENCRYPTION[39m) {
+    [31m[1m>[22m[39m[90m 83 |[39m         console[33m.[39mwarn([32m'ANTINUKE_ENCRYPTION_KEY is missing; encrypted backups are required and will fail until configured.'[39m)[33m;[39m
+     [90m    |[39m                 [31m[1m^[22m[39m
+     [90m 84 |[39m       } [36melse[39m {
+     [90m 85 |[39m         console[33m.[39mwarn([32m'ANTINUKE_ENCRYPTION_KEY is missing; backups will be stored unencrypted.'[39m)[33m;[39m
+     [90m 86 |[39m       }[0m
+
+      at new warn (src/lib/antinuke.js:83:17)
+      at new AntiNukeSystem (src/lib/antinuke-system.js:7:21)
+      at mkSystem (tests/antinuke_integration.test.js:69:22)
+      at Object.mkSystem (tests/antinuke_integration.test.js:105:20)
+
+  console.log
+    🔄 Anti-nuke rollback integration enabled
+
+      at AntiNukeSystem.log [as setupIntegration] (src/lib/antinuke-system.js:153:13)
+
+  console.log
+    🔄 Recorded pre-action state for rapid_kick in Guild-G0
+
+      at AntiNukeRollback.log [as recordPreActionState] (src/lib/antinuke-rollback.js:132:13)
+
+  console.log
+    🔄 Recorded post-action state for rapid_kick in Guild-G0
+
+      at AntiNukeRollback.log [as recordPostActionState] (src/lib/antinuke-rollback.js:162:15)
+
+  console.log
+    🔄 Recorded pre-action state for rapid_webhook_create in Guild-G1
+
+      at AntiNukeRollback.log [as recordPreActionState] (src/lib/antinuke-rollback.js:132:13)
+
+  console.log
+    🔄 Recorded post-action state for rapid_webhook_create in Guild-G1
+
+      at AntiNukeRollback.log [as recordPostActionState] (src/lib/antinuke-rollback.js:162:15)
+
+PASS tests/antinuke_integration.test.js
+  integration: anti-nuke -> rollback recording
+    √ setupIntegration records pre/post state for dynamic rapid action types (113 ms)
+    √ records shard-specific metadata across multiple system instances (90 ms)
+
+PASS tests/invite_interaction_ack.test.js
+  /invite interaction acknowledgment handling
+    √ defers before role checks and edits deferred reply for recruiter-gate errors (305 ms)
+    √ swallows unknown interaction errors raised during defer (276 ms)
+    √ swallows already-acknowledged errors while reporting command failures (264 ms)
+
+PASS tests/warnings.test.js
+  warnings leaderboard
+    √ recomputeWarningsLeaderboard posts/upserts a leaderboard message (404 ms)
+
+PASS tests/promote_role_safety.test.js
+  promote role safety
+    √ uses granular add/remove and avoids destructive roles.set when supported (2 ms)
+    √ falls back to roles.set when granular operations are unavailable
+
+PASS tests/retention.test.js
+  computeRetentionFromGuild
+    √ counts active recruits based on message thresholds (3 ms)
+    √ returns 0 if no recruits (1 ms)
+    √ fallback to heuristic when message fetch permission denied (1 ms)
+    √ deduplicates recruited IDs before retention calculation
+    √ memoizes retention per guild and query parameters (1 ms)
+
+PASS tests/analytics_role_queue.test.js
+  analytics role change queue
+    √ flushes buffered role changes in a single transaction when forced (36 ms)
+    √ auto flushes when queued role changes reach batch size (3 ms)
+
+PASS tests/antinuke_rollback_prune.test.js
+  AntiNukeRollback pruning
+    √ prunes expired actions, enforces per-guild cap, and trims guild count (2 ms)
+    √ saveRollbackData persists pruned data via temp-file swap (5 ms)
+
+PASS tests/absences_repo.test.js
+  absences repo overlap handling
+    √ extends existing active absence window instead of creating duplicates (15 ms)
+    √ reactivates and merges with overlapping historical absence (1 ms)
+
+PASS tests/antinuke_audit_scope.test.js
+  antinuke audit scope handling
+    √ handleAuditLogEntry tracks MemberBanAdd actions (4 ms)
+    √ handleAuditLogEntry tracks MemberKick actions (1 ms)
+    √ dedupe prevents double tracking when both audit and ban event paths see same audit id
+
+PASS tests/rookie_war.test.js
+  rookie-war log handling
+    √ filters out casual chat that only mentions war keyword (5 ms)
+    √ does not award points once per-window cap is exceeded and sends feedback (3 ms)
+
+PASS tests/db_referential_preflight.test.js
+  db referential preflight
+    √ inserts missing recruiters and removes malformed rows when fix is enabled (8 ms)
+    √ reports unresolved refs in check-only mode (2 ms)
+
+PASS tests/rookie_points_atomic.test.js
+  rookie points atomic updates
+    √ concurrent addRookiePoints does not lose increments (95 ms)
+    √ getLinkedPoints does not seed points from nickname (11 ms)
+    √ parseRookieNickname rejects scientific notation point tokens (11 ms)
+
+PASS tests/buy_role.test.js
+  buy role items
+    √ buy vip-role deducts points and assigns role (347 ms)
+
+PASS tests/antinuke_wait_for_audit_log.test.js
+  anti-nuke audit log lookup hardening
+    √ escalates fetch depth when target is not found in initial audit window (3 ms)
+    √ retries when fetchAuditLogs is rate-limited (1 ms)
+
+PASS tests/voice_state_update_handler.test.js
+  voice state update handler hardening
+    √ reports analytics failures with trace id and still clears in-memory session on leave (3 ms)
+    √ reports persistence errors on join without aborting session tracking (1 ms)
+
+PASS tests/invite_cooldowns.test.js
+  invite cooldowns persistence
+    √ writes and reads invite cooldowns from DB (15 ms)
+    √ cleanupExpired does not perform global delete unless explicitly allowed (1 ms)
+
+PASS tests/messages.test.js
+  upsertLeaderboardMessage
+    √ inserts a new message record when none exists (7 ms)
+    √ edits existing message when present (2 ms)
+
+PASS tests/memberLeave.test.js
+  member leave handling
+    √ removes recruit and deducts points from recruiter (418 ms)
+
+PASS tests/command_auth.test.js
+  command auth helper
+    √ denies by default when admin permission is missing (3 ms)
+    √ allows when staff mode is enabled and staff permission passes
+    √ enforces above-bot hierarchy when requested (1 ms)
+
+  console.error
+    Job lock acquisition failed {
+      key: 'job-fail',
+      error: Error: database is locked
+          at Object.<anonymous> (C:\discord-bot\tests\job-locks.test.js:50:40)
+          at C:\discord-bot\node_modules\jest-mock\build\index.js:397:39
+          at Object.<anonymous> (C:\discord-bot\node_modules\jest-mock\build\index.js:404:13)
+          at Object.mockConstructor [as run] (C:\discord-bot\node_modules\jest-mock\build\index.js:148:19)
+          at run (C:\discord-bot\src\lib\job-locks.js:7:26)
+          at Object.acquireJobLock (C:\discord-bot\tests\job-locks.test.js:53:26)
+          at Promise.then.completed (C:\discord-bot\node_modules\jest-circus\build\utils.js:298:28)
+          at new Promise (<anonymous>)
+          at callAsyncCircusFn (C:\discord-bot\node_modules\jest-circus\build\utils.js:231:10)
+          at _callCircusTest (C:\discord-bot\node_modules\jest-circus\build\run.js:316:40)
+          at _runTest (C:\discord-bot\node_modules\jest-circus\build\run.js:252:3)
+          at _runTestsForDescribeBlock (C:\discord-bot\node_modules\jest-circus\build\run.js:126:9)
+          at _runTestsForDescribeBlock (C:\discord-bot\node_modules\jest-circus\build\run.js:121:9)
+          at run (C:\discord-bot\node_modules\jest-circus\build\run.js:71:3)
+          at runAndTransformResultsToJestFormat (C:\discord-bot\node_modules\jest-circus\build\legacy-code-todo-rewrite\jestAdapterInit.js:122:21)
+          at jestAdapter (C:\discord-bot\node_modules\jest-circus\build\legacy-code-todo-rewrite\jestAdapter.js:79:19)
+          at runTestInternal (C:\discord-bot\node_modules\jest-runner\build\runTest.js:367:16)
+          at runTest (C:\discord-bot\node_modules\jest-runner\build\runTest.js:444:34)
+    }
+
+    [0m [90m 21 |[39m     [36mconst[39m fallbackNeeded [33m=[39m msg[33m.[39mincludes([32m'syntax error'[39m) [33m||[39m msg[33m.[39mincludes([32m'on conflict'[39m)[33m;[39m
+     [90m 22 |[39m     [36mif[39m ([33m![39mfallbackNeeded) {
+    [31m[1m>[22m[39m[90m 23 |[39m       console[33m.[39merror([32m'Job lock acquisition failed'[39m[33m,[39m { key[33m,[39m error[33m:[39m err })[33m;[39m
+     [90m    |[39m               [31m[1m^[22m[39m
+     [90m 24 |[39m       [36mreturn[39m [33m![39m[33m![39mfailOpen[33m;[39m
+     [90m 25 |[39m     }
+     [90m 26 |[39m   }[0m
+
+      at error (src/lib/job-locks.js:23:15)
+      at Object.<anonymous> (tests/job-locks.test.js:53:20)
+
+  console.error
+    Job lock acquisition failed {
+      key: 'job-fail-open',
+      error: Error: database is locked
+          at Object.<anonymous> (C:\discord-bot\tests\job-locks.test.js:63:40)
+          at C:\discord-bot\node_modules\jest-mock\build\index.js:397:39
+          at Object.<anonymous> (C:\discord-bot\node_modules\jest-mock\build\index.js:404:13)
+          at Object.mockConstructor [as run] (C:\discord-bot\node_modules\jest-mock\build\index.js:148:19)
+          at run (C:\discord-bot\src\lib\job-locks.js:7:26)
+          at Object.acquireJobLock (C:\discord-bot\tests\job-locks.test.js:66:26)
+          at Promise.then.completed (C:\discord-bot\node_modules\jest-circus\build\utils.js:298:28)
+          at new Promise (<anonymous>)
+          at callAsyncCircusFn (C:\discord-bot\node_modules\jest-circus\build\utils.js:231:10)
+          at _callCircusTest (C:\discord-bot\node_modules\jest-circus\build\run.js:316:40)
+          at _runTest (C:\discord-bot\node_modules\jest-circus\build\run.js:252:3)
+          at _runTestsForDescribeBlock (C:\discord-bot\node_modules\jest-circus\build\run.js:126:9)
+          at _runTestsForDescribeBlock (C:\discord-bot\node_modules\jest-circus\build\run.js:121:9)
+          at run (C:\discord-bot\node_modules\jest-circus\build\run.js:71:3)
+          at runAndTransformResultsToJestFormat (C:\discord-bot\node_modules\jest-circus\build\legacy-code-todo-rewrite\jestAdapterInit.js:122:21)
+          at jestAdapter (C:\discord-bot\node_modules\jest-circus\build\legacy-code-todo-rewrite\jestAdapter.js:79:19)
+          at runTestInternal (C:\discord-bot\node_modules\jest-runner\build\runTest.js:367:16)
+          at runTest (C:\discord-bot\node_modules\jest-runner\build\runTest.js:444:34)
+    }
+
+    [0m [90m 21 |[39m     [36mconst[39m fallbackNeeded [33m=[39m msg[33m.[39mincludes([32m'syntax error'[39m) [33m||[39m msg[33m.[39mincludes([32m'on conflict'[39m)[33m;[39m
+     [90m 22 |[39m     [36mif[39m ([33m![39mfallbackNeeded) {
+    [31m[1m>[22m[39m[90m 23 |[39m       console[33m.[39merror([32m'Job lock acquisition failed'[39m[33m,[39m { key[33m,[39m error[33m:[39m err })[33m;[39m
+     [90m    |[39m               [31m[1m^[22m[39m
+     [90m 24 |[39m       [36mreturn[39m [33m![39m[33m![39mfailOpen[33m;[39m
+     [90m 25 |[39m     }
+     [90m 26 |[39m   }[0m
+
+      at error (src/lib/job-locks.js:23:15)
+      at Object.<anonymous> (tests/job-locks.test.js:66:20)
+
+PASS tests/job-locks.test.js
+  job-locks
+    √ acquireJobLock respects ttl (3 ms)
+    √ defaults to fail-closed when lock storage errors (13 ms)
+    √ can fail-open explicitly when requested (2 ms)
+
+PASS tests/dispatcher.test.js
+  command dispatcher
+    √ supports commands that only accept interaction (3 ms)
+    √ supports commands that accept interaction, client, db
+    √ supports future optional args (1 ms)
+    √ throws on invalid command module (7 ms)
+
+PASS tests/permissions.test.js
+  permissions helpers
+    √ detects elevated Discord permissions (2 ms)
+    √ allows recruiter/staff based on configured roles (1 ms)
+    √ hasAnyRole and getMemberRoleIds handle heterogeneous role containers (1 ms)
+
+PASS tests/multiplier_active.test.js
+  multiplier-active admin
+    √ multiplier-active returns embed with list (335 ms)
+
+(node:16508) [DEP0147] DeprecationWarning: In future versions of Node.js, fs.rmdir(path, { recursive: true }) will be removed. Use fs.rm(path, { recursive: true }) instead
+(Use `node --trace-deprecation ...` to show where the warning was created)
+PASS tests/status.test.js
+  /status command
+    √ returns status embed with counts and backup info (288 ms)
+
+PASS tests/recruiter_helpers.test.js
+  recruiter helpers
+    √ getAverageWeeklyRecruitsMap uses recent weekly rows per recruiter (3 ms)
+    √ getAverageWeeklyRecruitsMap falls back to recruits counts when weekly data is missing
+    √ getAverageWeeklyRecruitsMap returns empty map for empty recruiter list (1 ms)
+
+PASS tests/leaderboardEmbed.test.js
+  makeLeaderboardEmbed
+    √ returns no-recruits embed for empty rows (3 ms)
+    √ lists below-threshold recruiters when there are few (1 ms)
+    √ returns a full listing when enough data
+    √ supports localization (spanish)
+
+PASS tests/analytics_membership_transactions.test.js
+  analytics membership transactional writes
+    √ recordJoin writes daily join increment and member row inside transaction (7 ms)
+    √ recordLeave writes daily leave increment and member left_at inside transaction (1 ms)
+
+PASS tests/antinuke_whitelist.test.js
+  antinuke whitelist scoping
+    √ whitelist is per guild (2 ms)
+    √ emergency whitelist bypass is controlled by emergencyForceProtect flag
+
+  console.error
+    DB integrity check failed to run {
+      label: 'startup',
+      mode: 'quick',
+      error: Error: SQLITE_CORRUPT: database disk image is malformed
+          at formatError (C:\discord-bot\node_modules\sqlite\src\utils\format-error.ts:7:22)
+          at Statement.<anonymous> (C:\discord-bot\node_modules\sqlite\src\Database.ts:285:36) {
+        errno: 11,
+        code: 'SQLITE_CORRUPT'
+      }
+    }
+
+    [0m [90m 36 |[39m     }
+     [90m 37 |[39m   } [36mcatch[39m (e) {
+    [31m[1m>[22m[39m[90m 38 |[39m     console[33m.[39merror([32m'DB integrity check failed to run'[39m[33m,[39m { label[33m,[39m mode[33m,[39m error[33m:[39m e })[33m;[39m
+     [90m    |[39m             [31m[1m^[22m[39m
+     [90m 39 |[39m     [36mif[39m ((process[33m.[39menv[33m.[39m[33mDB_INTEGRITY_STRICT[39m [33m||[39m [32m''[39m)[33m.[39mtoLowerCase() [33m===[39m [32m'true'[39m) [36mthrow[39m e[33m;[39m
+     [90m 40 |[39m     [36mreturn[39m { ok[33m:[39m [36mfalse[39m[33m,[39m error[33m:[39m e }[33m;[39m
+     [90m 41 |[39m   }[0m
+
+      at error (src/db_async.js:38:13)
+      at init (src/db_async.js:908:3)
+      at Object.run (src/db_async.js:919:35)
+      at Object.getActiveMultiplier (src/lib/economy.js:135:9)
+      at Object.execute (src/commands/recruiting/recruiter.js:154:30)
+      at Object.<anonymous> (tests/multiplier_ui.test.js:22:5)
+
+PASS tests/multiplier_ui.test.js
+  multiplier UI
+    √ multiplier-list replies with embed (285 ms)
+    √ multiplier-view shows no multiplier when none set (34 ms)
+
+PASS tests/transactions.test.js
+  withTransaction concurrency safety
+    √ serializes concurrent transactions on a single DB handle (312 ms)
+
+PASS tests/i18n_preload.test.js
+  i18n preload
+    √ preloads locale files and serves translations from cache (3 ms)
+    √ falls back to english when locale is missing (1 ms)
+
+PASS tests/economy_legacy_multipliers.test.js
+  economy legacy multipliers compatibility
+    √ reads/writes/resets multiplier rows when guild_id column is absent (7 ms)
+
+PASS tests/runtime_state.test.js
+  runtime singleton hardening
+    √ ignores null/undefined overwrite attempts (1 ms)
+    √ explicit clear methods reset values
+
+PASS tests/concurrency.test.js
+  runWithConcurrency
+    √ preserves input ordering in results (48 ms)
+    √ captures worker failures without aborting remaining tasks (1 ms)
+
+PASS tests/db.test.js
+  √ db is created at DATABASE_PATH when required (15 ms)
+
+Test Suites: 39 passed, 39 total
+Tests:       88 passed, 88 total
+Snapshots:   0 total
+Time:        13.041 s
+Ran all test suites.

@@ -12,12 +12,12 @@
   "beastModeTracker": {},
   "pendingWhitelist": {},
   "backups": {},
-  "guildConfig": {
-    "GUILD_ONE": {
-      "strictMode": false,
-      "aggressiveBan": false,
-      "autoStrictUntil": 0,
-      "strictForce": false,
+  "guildConfig": {},
+  "quarantineAssignments": {},
+  "recoveryMappings": {},
+  "emergencyLockdownUntil": {},
+  "emergencyMode": {}
+}ictForce": false,
       "emergencyForceProtect": true,
       "pruneInstantBan": true,
       "pruneThreshold": 1,

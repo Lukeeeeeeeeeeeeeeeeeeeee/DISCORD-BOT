@@ -303,10 +303,33 @@ module.exports = {
       // admin only
       if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin only.');
       try {
+        const guildId = interaction.guild && interaction.guild.id ? interaction.guild.id : 'GLOBAL';
         const scheduler = require('../../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);
         await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
-        return interaction.reply({ content: 'Leaderboards initialized/updated.' });
+
+        const rows = await db.all(
+          `SELECT channel_id, region, COUNT(*) AS cnt
+           FROM leaderboard_messages
+           WHERE guild_id = ?
+           GROUP BY channel_id, region
+           ORDER BY channel_id, region`,
+          guildId
+        );
+        const duplicateRows = (rows || []).filter(r => Number(r.cnt || 0) > 1);
+        const uniqueChannels = new Set((rows || []).map(r => r.channel_id)).size;
+        const summary = [
+          'Leaderboards initialized/updated.',
+          `Tracked rows: ${(rows || []).length}`,
+          `Tracked channels: ${uniqueChannels}`,
+          `Duplicate row groups: ${duplicateRows.length}`
+        ];
+        if (duplicateRows.length) {
+          const sample = duplicateRows.slice(0, 5).map((r) => `- <#${r.channel_id}> [${r.region || 'null'}]: ${r.cnt}`);
+          summary.push('Duplicate details (first 5):');
+          summary.push(...sample);
+        }
+        return interaction.reply({ content: summary.join('\n'), allowedMentions: { parse: [] } });
       } catch (e) {
         console.error(e);
         return replyError(interaction, 'Failed to initialize leaderboards.');

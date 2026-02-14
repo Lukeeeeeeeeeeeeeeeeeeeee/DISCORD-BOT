@@ -940,7 +940,7 @@ function start(client, db) {
   // Hourly cleanup: expired invites
   cron.schedule('0 * * * *', async () => {
     try {
-      const inviteCommand = require('./commands/invite');
+      const inviteCommand = require('./commands/recruiting/invite');
       const inviteSystem = await inviteCommand.init();
 
       if (inviteSystem) {

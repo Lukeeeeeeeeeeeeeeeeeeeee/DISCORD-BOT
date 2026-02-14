@@ -145,44 +145,204 @@ function makeDemotionWatchText(rows, _lang = 'en') {
   return text.length > 2000 ? text.slice(0, 1997) + '...' : text;
 }
 
+const LEADERBOARD_HISTORY_SCAN_LIMIT = Number.parseInt(process.env.LEADERBOARD_HISTORY_SCAN_LIMIT || '100', 10);
+
+function isEmbedLike(value) {
+  return Boolean(value && typeof value === 'object' && typeof value.toJSON === 'function');
+}
+
+function buildMessagePayload(content, embed) {
+  const payload = { allowedMentions: { parse: [] } };
+  if (isEmbedLike(embed)) {
+    payload.content = content || null;
+    payload.embeds = [embed];
+    return payload;
+  }
+  payload.content = content == null ? '' : String(content);
+  return payload;
+}
+
+function extractMessageText(message) {
+  if (!message) return '';
+  const parts = [];
+  if (message.content) parts.push(String(message.content));
+  const embeds = Array.isArray(message.embeds) ? message.embeds : [];
+  for (const embed of embeds) {
+    if (!embed) continue;
+    if (embed.title) parts.push(String(embed.title));
+    if (embed.description) parts.push(String(embed.description));
+  }
+  return parts.join('\n').toLowerCase();
+}
+
+function messageMatchesLeaderboardRegion(message, region) {
+  const text = extractMessageText(message);
+  if (!text) return false;
+  const regionKey = region == null ? '' : String(region).toUpperCase();
+  const hasLeaderboardWord = text.includes('leaderboard') || text.includes('clasificacion') || text.includes('clasificación');
+
+  if (regionKey === 'WARNINGS') {
+    return text.includes('demotion watch') || text.includes('warnings leaderboard');
+  }
+  if (regionKey === 'GLOBAL') {
+    return text.includes('global') && hasLeaderboardWord;
+  }
+  const info = getRegionInfo(regionKey);
+  const regionName = info && info.name ? String(info.name).toLowerCase() : '';
+  return hasLeaderboardWord && (
+    (regionName && text.includes(regionName))
+    || text.includes(` ${regionKey.toLowerCase()} `)
+  );
+}
+
+async function fetchRecentChannelMessages(channel, limit = LEADERBOARD_HISTORY_SCAN_LIMIT) {
+  if (!channel || !channel.messages || typeof channel.messages.fetch !== 'function') return [];
+  const fetched = await Promise.resolve(channel.messages.fetch({ limit })).catch(() => null);
+  if (!fetched) return [];
+  if (typeof fetched.values === 'function') return Array.from(fetched.values());
+  if (Array.isArray(fetched)) return fetched;
+  return [];
+}
+
+async function findReusableLeaderboardMessage(channel, region, keepMessageId = null) {
+  const botUserId = channel && channel.client && channel.client.user ? channel.client.user.id : null;
+  const recent = await fetchRecentChannelMessages(channel);
+  for (const message of recent) {
+    if (!message) continue;
+    if (keepMessageId && message.id === keepMessageId) continue;
+    if (botUserId && message.author && message.author.id !== botUserId) continue;
+    if (!messageMatchesLeaderboardRegion(message, region)) continue;
+    return message;
+  }
+  return null;
+}
+
+async function pruneDuplicateLeaderboardMessages(channel, region, keepMessageId) {
+  if (!keepMessageId) return 0;
+  const botUserId = channel && channel.client && channel.client.user ? channel.client.user.id : null;
+  const recent = await fetchRecentChannelMessages(channel);
+  let deleted = 0;
+  for (const message of recent) {
+    if (!message || message.id === keepMessageId) continue;
+    if (botUserId && message.author && message.author.id !== botUserId) continue;
+    if (!messageMatchesLeaderboardRegion(message, region)) continue;
+    if (typeof message.delete !== 'function') continue;
+    await message.delete().catch(() => null);
+    deleted += 1;
+  }
+  return deleted;
+}
+
+async function getCanonicalLeaderboardRecord(db, guildId, channelId, region) {
+  const records = await db.all(
+    'SELECT * FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ? ORDER BY updated_at DESC, id DESC',
+    guildId,
+    channelId,
+    region
+  );
+  if (!records || records.length === 0) return null;
+  const keep = records[0];
+  for (let i = 1; i < records.length; i += 1) {
+    await db.run('DELETE FROM leaderboard_messages WHERE id = ?', records[i].id).catch(() => null);
+  }
+  return keep;
+}
+
+function isUniqueConstraintError(error) {
+  const msg = String(error && error.message ? error.message : '').toLowerCase();
+  return msg.includes('unique constraint') || msg.includes('constraint failed');
+}
+
 async function upsertLeaderboardMessage(db, channel, region, content, embed, guildId) {
   // Try to resolve guildId from channel if not provided
   const resolvedGuildId = guildId || (channel && channel.guild ? channel.guild.id : null);
+  const regionKey = region == null ? null : String(region).toUpperCase();
+  const payload = buildMessagePayload(content, embed);
 
   if (!resolvedGuildId) {
-    console.error('upsertLeaderboardMessage: Missing guildId', { channelId: channel && channel.id, region });
+    console.error('upsertLeaderboardMessage: Missing guildId', { channelId: channel && channel.id, region: regionKey });
     return null;
   }
-  // record keyed by channel_id + region (and guild_id for correctness)
-  const record = await db.get('SELECT * FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?', resolvedGuildId, channel.id, region);
+
+  let record = await getCanonicalLeaderboardRecord(db, resolvedGuildId, channel.id, regionKey);
+  const now = Date.now();
+
   if (record) {
-    const msg = await channel.messages.fetch(record.message_id).catch(() => null);
-    if (msg) {
-      if (embed && typeof embed === 'object' && typeof embed.toJSON === 'function') {
-        await msg.edit({ content: content || null, embeds: [embed] });
+    let msg = await channel.messages.fetch(record.message_id).catch(() => null);
+    if (!msg) {
+      msg = await findReusableLeaderboardMessage(channel, regionKey);
+      if (msg) {
+        await db.run(
+          'UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?',
+          msg.id,
+          now,
+          record.id
+        ).catch((error) => {
+          console.error('Failed to relink leaderboard message record:', error);
+        });
       } else {
-        await msg.edit(content);
+        const created = await channel.send(payload);
+        try {
+          await db.run(
+            'UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?',
+            created.id,
+            now,
+            record.id
+          );
+        } catch (error) {
+          // Fail-closed: avoid orphan duplicates if we cannot persist pointer update.
+          if (created && typeof created.delete === 'function') await created.delete().catch(() => null);
+          console.error('Failed to update leaderboard message record:', error);
+          return null;
+        }
+        msg = created;
       }
-      await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), record.id);
-      return msg;
-    } else {
-      const m = embed && typeof embed === 'object' && typeof embed.toJSON === 'function' ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
-      try {
-        await db.run('UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?', m.id, Date.now(), record.id);
-      } catch (e) {
-        console.error('Failed to update leaderboard message record:', e);
-      }
-      return m;
     }
-  } else {
-    const m = embed && typeof embed === 'object' && typeof embed.toJSON === 'function' ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
-    try {
-      await db.run('INSERT INTO leaderboard_messages (guild_id, channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?, ?)', resolvedGuildId, channel.id, m.id, region, Date.now());
-    } catch (e) {
-      console.error('Failed to insert leaderboard message record:', e);
-    }
-    return m;
+    await msg.edit(payload);
+    await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), record.id).catch(() => null);
+    await pruneDuplicateLeaderboardMessages(channel, regionKey, msg.id).catch(() => null);
+    return msg;
   }
+
+  let msg = await findReusableLeaderboardMessage(channel, regionKey);
+  if (!msg) {
+    msg = await channel.send(payload);
+  } else {
+    await msg.edit(payload);
+  }
+
+  try {
+    await db.run(
+      'INSERT INTO leaderboard_messages (guild_id, channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?, ?)',
+      resolvedGuildId,
+      channel.id,
+      msg.id,
+      regionKey,
+      Date.now()
+    );
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      // Another runner won the race: reconcile and reuse canonical record.
+      record = await getCanonicalLeaderboardRecord(db, resolvedGuildId, channel.id, regionKey);
+      if (record) {
+        const existing = await channel.messages.fetch(record.message_id).catch(() => null);
+        if (existing) {
+          await existing.edit(payload).catch(() => null);
+          if (msg && existing.id !== msg.id && typeof msg.delete === 'function') {
+            await msg.delete().catch(() => null);
+          }
+          await pruneDuplicateLeaderboardMessages(channel, regionKey, existing.id).catch(() => null);
+          return existing;
+        }
+      }
+    }
+    if (msg && typeof msg.delete === 'function') await msg.delete().catch(() => null);
+    console.error('Failed to insert leaderboard message record:', error);
+    return null;
+  }
+
+  await pruneDuplicateLeaderboardMessages(channel, regionKey, msg.id).catch(() => null);
+  return msg;
 }
 
 function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
