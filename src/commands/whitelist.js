@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { hasAdministrator } = require('../lib/permissions');
+const { ensureCommandAccess } = require('../lib/command-auth');
 const runtime = require('../lib/runtime');
 const { replyError } = require('../lib/embeds');
 
@@ -28,21 +28,12 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    // Check admin permissions
-    if (!hasAdministrator(interaction.member)) {
-      return replyError(interaction, 'Administrator permission required.', { flags: 64 });
-    }
-
-    const botMember = interaction.guild && interaction.guild.members && interaction.guild.members.me
-      ? interaction.guild.members.me
-      : null;
-    if (botMember && interaction.member && interaction.member.roles && botMember.roles) {
-      const userTop = interaction.member.roles.highest;
-      const botTop = botMember.roles.highest;
-      if (userTop && botTop && userTop.comparePositionTo(botTop) <= 0) {
-        return replyError(interaction, 'You must be above the bot in role hierarchy to use whitelist actions.', { flags: 64 });
-      }
-    }
+    const allowed = await ensureCommandAccess(interaction, {
+      allowStaff: false,
+      requireAboveBot: true,
+      deniedMessage: 'Administrator permission required.'
+    });
+    if (!allowed) return null;
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
@@ -82,7 +73,7 @@ module.exports = {
             }
           }
 
-          if (antiNuke.isWhitelisted(targetUser.id)) {
+          if (antiNuke.isWhitelisted(targetUser.id, interaction.guild.id)) {
             const embed = new EmbedBuilder()
               .setColor('#FFFF00')
               .setTitle('⚠️ User Already Whitelisted')
@@ -157,7 +148,7 @@ module.exports = {
             return replyError(interaction, 'User parameter is required for remove action.', { flags: 64 });
           }
 
-          if (!antiNuke.isWhitelisted(targetUser.id)) {
+          if (!antiNuke.isWhitelisted(targetUser.id, interaction.guild.id)) {
             const cancelled = typeof antiNuke.cancelWhitelistRequest === 'function'
               ? antiNuke.cancelWhitelistRequest(interaction.guild.id, targetUser.id)
               : false;
@@ -189,7 +180,7 @@ module.exports = {
             return interaction.reply({ embeds: [pendingEmbed], flags: 64 });
           }
 
-          antiNuke.removeFromWhitelist(targetUser.id);
+          antiNuke.removeFromWhitelist(interaction.guild.id, targetUser.id);
 
           const removeEmbed = new EmbedBuilder()
             .setColor('#00FF00')
@@ -211,7 +202,7 @@ module.exports = {
         }
 
         case 'list': {
-          const whitelist = antiNuke.getWhitelist();
+          const whitelist = antiNuke.getWhitelist(interaction.guild.id);
           const pending = typeof antiNuke.getPendingWhitelist === 'function'
             ? antiNuke.getPendingWhitelist(interaction.guild.id)
             : [];

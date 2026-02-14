@@ -6,6 +6,9 @@ class AntiNukeRollback {
     this.rollbackData = new Map(); // guildId -> rollback data
     this.ROLLBACK_FILE = path.join(__dirname, '../data/antinuke_rollback.json');
     this.OWNER_ID = process.env.OWNER_ID || null;
+    this.ROLLBACK_TTL_MS = Number.parseInt(process.env.ANTINUKE_ROLLBACK_TTL_MS || `${7 * 24 * 60 * 60 * 1000}`, 10);
+    this.ROLLBACK_MAX_ACTIONS_PER_GUILD = Number.parseInt(process.env.ANTINUKE_ROLLBACK_MAX_ACTIONS || '200', 10);
+    this.ROLLBACK_MAX_GUILDS = Number.parseInt(process.env.ANTINUKE_ROLLBACK_MAX_GUILDS || '250', 10);
     this._saveQueue = Promise.resolve();
   }
 
@@ -22,7 +25,8 @@ class AntiNukeRollback {
     try {
       const data = await fs.readFile(this.ROLLBACK_FILE, 'utf8');
       const parsed = JSON.parse(data);
-      this.rollbackData = new Map(Object.entries(parsed));
+      this.rollbackData = new Map(Object.entries(parsed || {}));
+      this.pruneRollbackData();
       console.log('🔄 Anti-nuke rollback system loaded');
     } catch (error) {
       console.log('🔄 No existing rollback data found, starting fresh');
@@ -30,13 +34,60 @@ class AntiNukeRollback {
     }
   }
 
+  normalizeGuildRollbackData(guildId, guildData = {}) {
+    const actions = Array.isArray(guildData.actions) ? guildData.actions.filter(Boolean) : [];
+    return {
+      guildId,
+      guildName: guildData.guildName || guildId,
+      actions,
+      timestamp: Number(guildData.timestamp || Date.now())
+    };
+  }
+
+  pruneRollbackData(now = Date.now()) {
+    const ttlMs = Number.isFinite(this.ROLLBACK_TTL_MS) && this.ROLLBACK_TTL_MS > 0
+      ? this.ROLLBACK_TTL_MS
+      : (7 * 24 * 60 * 60 * 1000);
+    const maxActions = Number.isFinite(this.ROLLBACK_MAX_ACTIONS_PER_GUILD) && this.ROLLBACK_MAX_ACTIONS_PER_GUILD > 0
+      ? this.ROLLBACK_MAX_ACTIONS_PER_GUILD
+      : 200;
+    const maxGuilds = Number.isFinite(this.ROLLBACK_MAX_GUILDS) && this.ROLLBACK_MAX_GUILDS > 0
+      ? this.ROLLBACK_MAX_GUILDS
+      : 250;
+    const cutoff = now - ttlMs;
+
+    const normalized = [];
+    for (const [guildId, guildData] of this.rollbackData.entries()) {
+      const safe = this.normalizeGuildRollbackData(guildId, guildData);
+      const keptActions = safe.actions
+        .filter(action => action && Number.isFinite(Number(action.timestamp)) && Number(action.timestamp) >= cutoff)
+        .sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
+      const sliced = keptActions.length > maxActions
+        ? keptActions.slice(keptActions.length - maxActions)
+        : keptActions;
+      if (!sliced.length) continue;
+      safe.actions = sliced;
+      safe.timestamp = Math.max(
+        Number(safe.timestamp || 0),
+        Number(sliced[sliced.length - 1].timestamp || 0)
+      );
+      normalized.push([guildId, safe]);
+    }
+
+    normalized.sort((a, b) => Number((b[1] && b[1].timestamp) || 0) - Number((a[1] && a[1].timestamp) || 0));
+    this.rollbackData = new Map(normalized.slice(0, maxGuilds));
+  }
+
   // Save rollback data to file
   async saveRollbackData() {
     this._saveQueue = this._saveQueue.then(async () => {
       try {
         await this.ensureDataDir();
+        this.pruneRollbackData();
         const data = Object.fromEntries(this.rollbackData);
-        await fs.writeFile(this.ROLLBACK_FILE, JSON.stringify(data, null, 2));
+        const tmpFile = `${this.ROLLBACK_FILE}.tmp`;
+        await fs.writeFile(tmpFile, JSON.stringify(data, null, 2));
+        await fs.rename(tmpFile, this.ROLLBACK_FILE);
       } catch (error) {
         console.error('❌ Failed to save rollback data:', error);
       }
@@ -45,8 +96,15 @@ class AntiNukeRollback {
     return this._saveQueue;
   }
 
+  normalizeCaptureActionType(actionType) {
+    if (!actionType) return actionType;
+    if (actionType === 'beast_mode') return 'ban';
+    if (typeof actionType === 'string' && actionType.startsWith('rapid_')) return 'ban';
+    return actionType;
+  }
+
   // Record state before anti-nuke action
-  recordPreActionState(guild, actionType, targetData) {
+  recordPreActionState(guild, actionType, targetData, metadata = null) {
     const guildId = guild.id;
     
     if (!this.rollbackData.has(guildId)) {
@@ -63,18 +121,20 @@ class AntiNukeRollback {
       timestamp: Date.now(),
       preState: this.captureState(guild, actionType, targetData),
       postState: null, // Will be filled after action
-      reverted: false
+      reverted: false,
+      meta: metadata && typeof metadata === 'object' ? { ...metadata } : null
     };
 
     const guildData = this.rollbackData.get(guildId);
     guildData.actions.push(rollbackEntry);
+    guildData.timestamp = rollbackEntry.timestamp;
     
     console.log(`🔄 Recorded pre-action state for ${actionType} in ${guild.name}`);
     this.saveRollbackData();
   }
 
   // Record state after anti-nuke action
-  recordPostActionState(guild, actionType, targetData) {
+  recordPostActionState(guild, actionType, targetData, metadata = null) {
     const guildId = guild.id;
     const guildData = this.rollbackData.get(guildId);
     
@@ -92,6 +152,13 @@ class AntiNukeRollback {
 
     if (action) {
       action.postState = this.captureState(guild, actionType, targetData);
+      if (metadata && typeof metadata === 'object') {
+        action.meta = {
+          ...(action.meta && typeof action.meta === 'object' ? action.meta : {}),
+          ...metadata
+        };
+      }
+      guildData.timestamp = Math.max(Number(guildData.timestamp || 0), Number(action.timestamp || Date.now()));
       console.log(`🔄 Recorded post-action state for ${actionType} in ${guild.name}`);
       this.saveRollbackData();
     }
@@ -108,7 +175,8 @@ class AntiNukeRollback {
       }
     };
 
-    switch (actionType) {
+    const normalizedActionType = this.normalizeCaptureActionType(actionType);
+    switch (normalizedActionType) {
       case 'ban':
       case 'kick':
         state.member = targetData ? {
@@ -269,6 +337,7 @@ class AntiNukeRollback {
 
     switch (actionType) {
       case 'ban':
+      case 'beast_mode':
         return await this.rollbackBan(guild, preState);
       
       case 'kick':
@@ -296,6 +365,9 @@ class AntiNukeRollback {
         return await this.rollbackMemberPrune(guild, preState);
       
       default:
+        if (typeof actionType === 'string' && actionType.startsWith('rapid_')) {
+          return await this.rollbackBan(guild, preState);
+        }
         return { success: false, error: `Unknown action type: ${actionType}` };
     }
   }
@@ -561,6 +633,7 @@ class AntiNukeRollback {
 
   // Get rollback status for a guild
   getRollbackStatus(guildId) {
+    this.pruneRollbackData();
     const guildData = this.rollbackData.get(guildId);
     if (!guildData) {
       return { hasActions: false, actions: [] };

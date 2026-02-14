@@ -1,6 +1,5 @@
-const { PermissionsBitField } = require('discord.js');
 const { CHANNELS } = require('../constants');
-const { hasAdministrator } = require('../lib/permissions');
+const { ensureCommandAccess } = require('../lib/command-auth');
 const { replyError } = require('../lib/embeds');
 
 // Tunables
@@ -16,12 +15,11 @@ const cooldowns = new Map();
 module.exports = {
   data: { name: 'dm' },
   async execute(interaction, _client, _db) {
-    // admin only
-    if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin only.');
-
-    const perms = interaction.member.permissions || interaction.member.permissionsIn?.(interaction.channel);
-    const isAdmin = perms && perms.has && perms.has(PermissionsBitField.Flags.Administrator);
-    if (!isAdmin) return replyError(interaction, 'Administrator permission required.');
+    const allowed = await ensureCommandAccess(interaction, {
+      allowStaff: false,
+      deniedMessage: 'Administrator permission required.'
+    });
+    if (!allowed) return null;
 
     const role = interaction.options.getRole('role', false);  // Make role optional
     const message = interaction.options.getString('message', true);

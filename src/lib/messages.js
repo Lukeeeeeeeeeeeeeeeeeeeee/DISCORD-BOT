@@ -1,9 +1,9 @@
 const { EmbedBuilder } = require('discord.js');
 const { formatPointsValue } = require('./economy');
 const { getRegionInfo } = require('./regions');
+const { t } = require('./i18n');
 
 function makeRecruitEmbed(recruiter, recruited, region, ign, lang = 'en', meta = {}) {
-  const { t } = require('./i18n');
   const info = getRegionInfo(region);
   const title = `${info.emoji} ${t('recruit.title', lang)}`;
   const embed = new EmbedBuilder()
@@ -83,8 +83,6 @@ function formatLeaderboardLine(row, index) {
 }
 
 function makeLeaderboardText(rows, regionLabel, lang = 'en') {
-  const { t } = require('./i18n');
-
   // Map region codes to team names
   let info;
   if (regionLabel === 'GLOBAL') {
@@ -172,7 +170,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed, gui
       try {
         await db.run('UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?', m.id, Date.now(), record.id);
       } catch (e) {
-        // best-effort: ignore DB problems
+        console.error('Failed to update leaderboard message record:', e);
       }
       return m;
     }
@@ -188,8 +186,6 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed, gui
 }
 
 function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
-  const { t } = require('./i18n');
-
   let info;
   if (regionLabel === 'GLOBAL') {
     info = { emoji: '🌍', color: 0xFFD700, name: 'Global' };
@@ -232,7 +228,6 @@ function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
 }
 
 function makeWarningsEmbed(rows, _lang = 'en') {
-  const { t } = require('./i18n');
   const title = '⚠️ Warnings Leaderboard';
 
   const embed = new EmbedBuilder().setTitle(title).setColor(0xffaa00).setTimestamp();
@@ -244,7 +239,6 @@ function makeWarningsEmbed(rows, _lang = 'en') {
 
   const lines = rows.map((r, i) => `${i + 1}. <@${r.recruiter_id}> — **${r.cnt}** warnings`).join('\n');
   embed.addFields({ name: 'Warnings', value: lines });
-  void t;
   return embed;
 }
 

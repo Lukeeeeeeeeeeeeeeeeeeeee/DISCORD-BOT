@@ -64,19 +64,36 @@ async function promoteMember({ member, db, guild, verifierId }) {
         ...(ROLE_IDS.ONBOARDING || [])
     ].filter(Boolean);
 
-    const uniqueRolesToRemove = new Set(rolesToRemove);
-    const currentRoleIds = new Set(member.roles.cache.map(r => r.id));
-    for (const roleId of uniqueRolesToRemove) {
-        currentRoleIds.delete(roleId);
+    const uniqueRolesToRemove = Array.from(new Set(rolesToRemove));
+    const targetRoleIds = [ROLE_IDS.SOLACE, teamRoleId].filter(Boolean);
+    const hasGranularRoleOps = member && member.roles
+      && typeof member.roles.remove === 'function'
+      && typeof member.roles.add === 'function';
+
+    if (hasGranularRoleOps) {
+        const removeList = uniqueRolesToRemove.filter(roleId => member.roles.cache.has(roleId));
+        if (removeList.length > 0) {
+            await member.roles.remove(removeList, 'Rookie promotion cleanup').catch(err => {
+                console.error('Failed to remove onboarding roles during rookie promotion:', err);
+            });
+        }
+
+        const addList = targetRoleIds.filter(roleId => !member.roles.cache.has(roleId));
+        if (addList.length > 0) {
+            await member.roles.add(addList, 'Rookie promotion').catch(err => {
+                console.error('Failed to add target roles during rookie promotion:', err);
+            });
+        }
+    } else {
+        // Fallback for partial mocks/legacy wrappers that do not expose add/remove.
+        const currentRoleIds = new Set(member.roles.cache.map(r => r.id));
+        for (const roleId of uniqueRolesToRemove) currentRoleIds.delete(roleId);
+        for (const roleId of targetRoleIds) currentRoleIds.add(roleId);
+        const finalRoleIds = Array.from(currentRoleIds).filter(id => id !== member.guild.id);
+        await member.roles.set(finalRoleIds, 'Rookie promotion').catch(err => {
+            console.error('Failed to update roles during rookie promotion:', err);
+        });
     }
-
-    if (ROLE_IDS.SOLACE) currentRoleIds.add(ROLE_IDS.SOLACE);
-    if (teamRoleId) currentRoleIds.add(teamRoleId);
-
-    const finalRoleIds = Array.from(currentRoleIds).filter(id => id !== member.guild.id);
-    await member.roles.set(finalRoleIds, 'Rookie promotion').catch(err => {
-      console.error('Failed to update roles during rookie promotion:', err);
-    });
 
     // Update Nickname
     const cleanedNickname = stripRookiePoints(member.nickname) || member.user.username;

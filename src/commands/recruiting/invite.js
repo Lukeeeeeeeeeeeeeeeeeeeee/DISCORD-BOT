@@ -6,6 +6,11 @@ const { replyError } = require('../../lib/embeds');
 
 // Global invite system instance
 let inviteSystem = null;
+const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
+
+function isInteractionAckError(error) {
+  return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
+}
 
 module.exports = {
   data: {
@@ -13,14 +18,23 @@ module.exports = {
     description: 'Create a time-limited invite link (Recruiters only)'
   },
   async execute(interaction) {
-    // Initialize invite system if not already done
-    if (!inviteSystem) {
-      inviteSystem = new InviteSystem();
-      await inviteSystem.init();
-    }
-
-    // Recruiters/trial/team recruiters only (admins always allowed)
     try {
+      if (!interaction.guild) {
+        return replyError(interaction, 'This command can only be used in a server.', { flags: 64 });
+      }
+
+      // Acknowledge quickly to avoid Unknown interaction (10062) on slow paths.
+      if (!interaction.deferred && !interaction.replied && typeof interaction.deferReply === 'function') {
+        await interaction.deferReply({ flags: 64 });
+      }
+
+      // Initialize invite system if not already done
+      if (!inviteSystem) {
+        inviteSystem = new InviteSystem();
+        await inviteSystem.init();
+      }
+
+      // Recruiters/trial/team recruiters only (admins always allowed)
       const isAdmin = hasAdministrator(interaction.member);
       const isRecruiter = interaction.guild
         ? await inviteSystem.isRecruiter(interaction.user.id, interaction.guild, interaction.member)
@@ -64,7 +78,7 @@ module.exports = {
           .setFooter({ text: 'Right-click the link above and select "Copy Link"' })
           .setTimestamp();
 
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.editReply({ embeds: [embed] });
       }
 
       if (status.onCooldown) {
@@ -87,11 +101,8 @@ module.exports = {
           })
           .setTimestamp();
 
-        return interaction.reply({ embeds: [embed], flags: 64 });
+        return interaction.editReply({ embeds: [embed] });
       }
-
-      // Create new invite
-      await interaction.deferReply({ flags: 64 });
 
       const result = await inviteSystem.createInvite(interaction.user.id, interaction.guild);
 
@@ -147,6 +158,7 @@ module.exports = {
       }
 
     } catch (error) {
+      if (isInteractionAckError(error)) return;
       console.error('Invite command error:', error);
       
       const embed = new EmbedBuilder()
@@ -155,10 +167,15 @@ module.exports = {
         .setDescription('An error occurred while processing your request. Please try again later.')
         .setTimestamp();
 
-      if (interaction.replied || interaction.deferred) {
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.reply({ embeds: [embed], flags: 64 });
+      try {
+        if (interaction.replied || interaction.deferred) {
+          await interaction.editReply({ embeds: [embed] });
+        } else {
+          await interaction.reply({ embeds: [embed], flags: 64 });
+        }
+      } catch (responseError) {
+        if (isInteractionAckError(responseError)) return;
+        console.error('Failed to send invite command error response:', responseError);
       }
     }
   },

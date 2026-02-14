@@ -394,6 +394,21 @@ async function init() {
   } catch (e) {
     void e;
   }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_valid_created ON recruits(guild_id, recruiter_id, valid, created_at)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_valid_created ON recruits(guild_id, valid, created_at)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_recruited_valid ON recruits(recruited_id, valid)');
+  } catch (e) {
+    void e;
+  }
 
   const applyMigration = async (id, fn) => {
     try {
@@ -862,6 +877,12 @@ async function init() {
         VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
       END;
     `);
+  });
+
+  await applyMigration('2026-02-14-recruits-performance-indexes', async () => {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_valid_created ON recruits(guild_id, recruiter_id, valid, created_at)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_valid_created ON recruits(guild_id, valid, created_at)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_recruited_valid ON recruits(recruited_id, valid)');
   });
 
   // Add columns if missing (best-effort)

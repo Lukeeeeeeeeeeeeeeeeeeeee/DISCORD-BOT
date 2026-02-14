@@ -9,6 +9,36 @@ class AntiNukeSystem {
     this.initialized = false;
   }
 
+  normalizeActionToken(actionType) {
+    const raw = actionType == null ? 'unknown' : String(actionType);
+    return raw
+      .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .toLowerCase() || 'unknown';
+  }
+
+  resolveRapidRollbackActionType(actionType) {
+    return `rapid_${this.normalizeActionToken(actionType)}`;
+  }
+
+  getCurrentShardId() {
+    const shard = this.antiNuke && this.antiNuke.client ? this.antiNuke.client.shard : null;
+    if (!shard) return null;
+    const ids = Array.isArray(shard.ids) ? shard.ids : [];
+    if (!ids.length) return null;
+    const first = Number(ids[0]);
+    return Number.isFinite(first) ? first : null;
+  }
+
+  buildRollbackMeta(extra = {}) {
+    const shardId = this.getCurrentShardId();
+    return {
+      shardId,
+      ...extra
+    };
+  }
+
   // Initialize the complete anti-nuke system
   async init(client) {
     if (this.initialized) return;
@@ -45,15 +75,21 @@ class AntiNukeSystem {
     this.antiNuke.handleRapidAction = async (guildId, userId, actionType, actions) => {
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
       const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
+      const rollbackActionType = this.resolveRapidRollbackActionType(actionType);
+      const meta = this.buildRollbackMeta({
+        triggerActionType: actionType || null,
+        eventFamily: 'rapid_action',
+        actionCount: Array.isArray(actions) ? actions.length : 0
+      });
 
       if (guild && member) {
-        this.rollback.recordPreActionState(guild, 'ban', member);
+        this.rollback.recordPreActionState(guild, rollbackActionType, member, meta);
       }
 
       await originalHandleRapidAction(guildId, userId, actionType, actions);
 
       if (guild && member) {
-        this.rollback.recordPostActionState(guild, 'ban', member);
+        this.rollback.recordPostActionState(guild, rollbackActionType, member, meta);
       }
     };
 
@@ -61,43 +97,56 @@ class AntiNukeSystem {
     this.antiNuke.handleBeastModeTrigger = async (guildId, userId, score) => {
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
       const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
+      const meta = this.buildRollbackMeta({
+        triggerActionType: 'beast_mode',
+        eventFamily: 'beast_mode',
+        score: Number(score)
+      });
 
       if (guild && member) {
-        this.rollback.recordPreActionState(guild, 'ban', member);
+        this.rollback.recordPreActionState(guild, 'beast_mode', member, meta);
       }
 
       await originalHandleBeastModeTrigger(guildId, userId, score);
 
       if (guild && member) {
-        this.rollback.recordPostActionState(guild, 'ban', member);
+        this.rollback.recordPostActionState(guild, 'beast_mode', member, meta);
       }
     };
 
     const originalHandleEmergencyMode = this.antiNuke.handleEmergencyMode.bind(this.antiNuke);
     this.antiNuke.handleEmergencyMode = async (guildId) => {
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
+      const meta = this.buildRollbackMeta({
+        triggerActionType: 'emergency_mode',
+        eventFamily: 'emergency'
+      });
       if (guild) {
-        this.rollback.recordPreActionState(guild, 'emergency_lockdown', null);
+        this.rollback.recordPreActionState(guild, 'emergency_lockdown', null, meta);
       }
 
       await originalHandleEmergencyMode(guildId);
 
       if (guild) {
-        this.rollback.recordPostActionState(guild, 'emergency_lockdown', null);
+        this.rollback.recordPostActionState(guild, 'emergency_lockdown', null, meta);
       }
     };
 
     const originalHandleMassBanLockdown = this.antiNuke.handleMassBanLockdown.bind(this.antiNuke);
     this.antiNuke.handleMassBanLockdown = async (guildId) => {
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
+      const meta = this.buildRollbackMeta({
+        triggerActionType: 'mass_ban_lockdown',
+        eventFamily: 'mass_ban'
+      });
       if (guild) {
-        this.rollback.recordPreActionState(guild, 'role_permissions', null);
+        this.rollback.recordPreActionState(guild, 'role_permissions', null, meta);
       }
 
       await originalHandleMassBanLockdown(guildId);
 
       if (guild) {
-        this.rollback.recordPostActionState(guild, 'role_permissions', null);
+        this.rollback.recordPostActionState(guild, 'role_permissions', null, meta);
       }
     };
 

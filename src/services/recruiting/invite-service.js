@@ -5,6 +5,11 @@ const analytics = require('../../lib/analytics');
 const { replyError } = require('../../lib/embeds');
 
 const inviteSystems = new Map();
+const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
+
+function isInteractionAckError(error) {
+  return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
+}
 
 function toGuildKey(guildId = null) {
   return guildId || 'GLOBAL';
@@ -36,13 +41,18 @@ function getCached(guildId = null) {
 }
 
 async function execute(interaction, _client, db) {
-  if (!interaction.guild) {
-    return replyError(interaction, 'This command can only be used in a server.', { flags: 64 });
-  }
-
-  const system = await initWithDb(interaction.guild.id, db || null);
-
   try {
+    if (!interaction.guild) {
+      return replyError(interaction, 'This command can only be used in a server.', { flags: 64 });
+    }
+
+    // Acknowledge quickly to avoid Unknown interaction (10062) on slow paths.
+    if (!interaction.deferred && !interaction.replied && typeof interaction.deferReply === 'function') {
+      await interaction.deferReply({ flags: 64 });
+    }
+
+    const system = await initWithDb(interaction.guild.id, db || null);
+
     const isAdmin = hasAdministrator(interaction.member);
     const isRecruiter = interaction.guild
       ? await system.isRecruiter(interaction.user.id, interaction.guild, interaction.member)
@@ -84,7 +94,7 @@ async function execute(interaction, _client, db) {
         .setFooter({ text: 'Right-click the link above and select "Copy Link"' })
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.editReply({ embeds: [embed] });
     }
 
     if (status.onCooldown) {
@@ -106,10 +116,8 @@ async function execute(interaction, _client, db) {
         })
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed], flags: 64 });
+      return interaction.editReply({ embeds: [embed] });
     }
-
-    await interaction.deferReply({ flags: 64 });
 
     const result = await system.createInvite(interaction.user.id, interaction.guild);
 
@@ -164,6 +172,7 @@ async function execute(interaction, _client, db) {
     }
 
   } catch (error) {
+    if (isInteractionAckError(error)) return;
     console.error('Invite command error:', error);
 
     const embed = new EmbedBuilder()
@@ -172,10 +181,15 @@ async function execute(interaction, _client, db) {
       .setDescription('An error occurred while processing your request. Please try again later.')
       .setTimestamp();
 
-    if (interaction.replied || interaction.deferred) {
-      await interaction.editReply({ embeds: [embed] });
-    } else {
-      await interaction.reply({ embeds: [embed], flags: 64 });
+    try {
+      if (interaction.replied || interaction.deferred) {
+        await interaction.editReply({ embeds: [embed] });
+      } else {
+        await interaction.reply({ embeds: [embed], flags: 64 });
+      }
+    } catch (responseError) {
+      if (isInteractionAckError(responseError)) return;
+      console.error('Failed to send invite command error response:', responseError);
     }
   }
 }

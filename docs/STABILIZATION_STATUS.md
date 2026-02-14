@@ -1,6 +1,6 @@
 # Stabilization Status (Post-Refactor)
 
-Last updated: 2026-02-13
+Last updated: 2026-02-14
 
 Phase 0 - Immediate Safety
 - [x] Feature freeze communicated.
@@ -49,6 +49,29 @@ Phase 2 - Stabilise Critical Flows
 - [x] Leaderboard message pointer persistence now logs DB write failures instead of silently swallowing them.
 - [x] Join invite attribution path now reuses cached invite system state instead of re-initializing per join.
 - [x] Anti-nuke rollback owner validation now supports owner fallback semantics through anti-nuke owner checks.
+- [x] Voice state analytics path now runs through a hardened handler with non-fatal error capture and traceable event telemetry (prevents shard crash on voice analytics exceptions).
+- [x] Anti-nuke audit lookup now uses adaptive fetch depth + 429-aware retry and dedupes audit-driven ban/kick tracking across audit event and gateway event paths.
+- [x] Anti-nuke whitelist now supports per-guild scoping and emergency bypass semantics aligned with `emergencyForceProtect` (removes cross-guild whitelist bleed risk).
+- [x] Rookie points increments now use atomic DB updates, nickname parsing rejects scientific notation, and read-path no longer seeds DB state from nickname strings.
+- [x] Rookie war log flow now requires structured evidence, writes with `guild_id`, and returns explicit cap feedback when the per-window limit is reached.
+- [x] Concurrency utility now preserves input ordering and captures worker failures without reordering outputs.
+- [x] Runtime singleton test hooks restored (`resetForTests`, explicit clear methods) and null/undefined overwrite attempts are ignored.
+- [x] Legacy multiplier table compatibility restored for schemas without `guild_id` column.
+- [x] Compatibility shim restored for legacy loader path `src/commands/recruiter.js` (fixes syntax/load failure in tooling expecting old command path).
+- [x] Rookie promotion role mutation now uses granular `roles.remove` + `roles.add` by default (avoids destructive `roles.set` wiping unrelated custom roles).
+- [x] Anti-nuke rollback history now enforces TTL/max-action pruning with bounded guild retention and atomic temp-file swap persistence (reduces stale state growth and JSON corruption risk).
+- [x] Permission checks now share centralized elevated-permission and role-match helpers (removes duplicated decision logic across admin/staff paths).
+- [x] i18n now preloads locale files asynchronously on startup (`preloadLocales`) with cached runtime access and sync fallback.
+- [x] Message-layer dynamic i18n requires removed and leaderboard pointer update failures are now logged instead of silently swallowed.
+- [x] Analytics flush path now emits slow-flush telemetry and caps requeue accounting after failed flushes to avoid unbounded pending growth.
+- [x] Shared command auth preflight helper added (`src/lib/command-auth.js`) and applied to high-risk admin commands for consistent fail-close replies and optional role-hierarchy enforcement.
+- [x] Anti-nuke rollback integration now records dynamic `actionType` tokens (`rapid_*`, `beast_mode`) with shard metadata and multi-shard integration coverage.
+- [x] Analytics role-change ingestion moved to buffered transactional queue with adaptive batch sizing and configurable flush windows.
+- [x] Retention computation now deduplicates recruits with `Set` semantics and short-TTL memoization to reduce repeated channel scans.
+- [x] Recruits hot-path indexes added (`idx_recruits_guild_recruiter_valid_created`, `idx_recruits_guild_valid_created`, `idx_recruits_recruited_valid`) plus `EXPLAIN` verifier script (`npm run db:verify-indexes`).
+- [x] Synthetic analytics stress gate added (`npm run test:synthetic:analytics`) to validate queue flush behavior and event-loop lag under burst load.
+- [x] Local SQLite integrity incident recovered by restoring `data/recruiter.db` from `data/recruiter.db.bak`; corrupted snapshot preserved as `data/recruiter.db.corrupt-20260214-141534`.
+- [x] Local quality gates are green (`npm test -- --runInBand`, `node scripts/verify_commands.js`, `npm run lint` with warnings only).
 - [ ] Antinuke event simulation in staging (role/channel delete).
 - [ ] Recruit flow end-to-end staging validation.
 - [ ] Leaderboard initialization check in staging.
@@ -59,6 +82,7 @@ Phase 3 - Harden and Automate
 - [x] CI gates include tests, lint, and `verify_commands`.
 - [x] Health check endpoint added (set `HEALTHCHECK_PORT`).
 - [x] Migration dry-run helper added (`npm run migration:dry`).
+- [x] Recruits index-plan verification helper added (`npm run db:verify-indexes`).
 - [x] Command registration deployment lock + robust token sanitization added (`src/register-commands.js`).
 - [x] DB backup snapshot and restore drill completed (`npm run backup:drill`).
 - [x] Local log rotation guard added for oversized operational logs (`LOG_ROTATE_MAX_BYTES`, `LOG_ROTATE_KEEP`).

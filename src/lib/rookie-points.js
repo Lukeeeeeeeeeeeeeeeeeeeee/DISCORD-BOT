@@ -16,6 +16,9 @@ function parseRookieNickname(rawName) {
   const parts = left.split(/\s+/);
   if (!parts.length) return { base: trimmed.trim() || trimmed, points: null };
   const maybePoints = parts[parts.length - 1];
+  if (!/^-?\d+(?:\.\d+)?$/.test(maybePoints)) {
+    return { base: trimmed.trim() || trimmed, points: null };
+  }
   const points = Number(maybePoints);
   if (!Number.isFinite(points)) return { base: trimmed.trim() || trimmed, points: null };
   const base = parts.slice(0, -1).join(' ').trim();
@@ -74,26 +77,6 @@ async function getLinkedPoints({ db, member, guild, guildId }) {
   }
 
   const parsed = parseRookieNickname(member.nickname || member.user.username);
-  if (parsed.points != null) {
-    const now = Date.now();
-    try {
-      await db.run(
-        `INSERT INTO rookie_points (guild_id, member_id, points, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(guild_id, member_id) DO UPDATE SET
-           points = excluded.points,
-           updated_at = excluded.updated_at`,
-        resolvedGuildId,
-        member.id,
-        parsed.points,
-        now
-      );
-    } catch (e) {
-      console.error('Failed to sync rookie points from nickname:', e);
-    }
-    return { points: parsed.points, updatedAt: now, baseName: parsed.base || member.user.username, source: 'nickname' };
-  }
-
   return { points: 0, updatedAt: null, baseName: parsed.base || member.user.username, source: 'none' };
 }
 
@@ -140,10 +123,57 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
 }
 
 async function addRookiePoints({ db, member, delta, guild, verifierId }) {
-  const current = await getLinkedPoints({ db, member });
-  const next = (current.points || 0) + delta;
-  const result = await setLinkedPoints({ db, member, points: next, guild, verifierId });
-  return { ...result, previousPoints: current.points || 0 };
+  if (!db || !member) return { points: 0, promoted: false, previousPoints: 0 };
+  const resolvedGuildId = resolveGuildId(guild || member.guild);
+  const numericDelta = Number(delta);
+  if (!Number.isFinite(numericDelta) || numericDelta === 0) {
+    const current = await getLinkedPoints({ db, member, guild: resolvedGuildId });
+    return { points: current.points || 0, promoted: false, previousPoints: current.points || 0 };
+  }
+
+  const seedPoints = Math.max(0, Math.min(10, numericDelta));
+  const now = Date.now();
+
+  try {
+    await db.run(
+      `INSERT INTO rookie_points (guild_id, member_id, points, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(guild_id, member_id) DO UPDATE SET
+         points = MIN(10, MAX(0, rookie_points.points + excluded.points)),
+         updated_at = excluded.updated_at`,
+      resolvedGuildId,
+      member.id,
+      seedPoints,
+      now
+    );
+  } catch (e) {
+    console.error('Failed to atomically update rookie points:', e);
+    const current = await getLinkedPoints({ db, member, guild: resolvedGuildId });
+    return { points: current.points || 0, promoted: false, previousPoints: current.points || 0 };
+  }
+
+  const row = await db.get(
+    'SELECT points FROM rookie_points WHERE guild_id = ? AND member_id = ?',
+    resolvedGuildId,
+    member.id
+  ).catch(() => null);
+  const points = row && Number.isFinite(Number(row.points))
+    ? Number(row.points)
+    : 0;
+  const previousPoints = Math.max(0, Math.min(10, points - numericDelta));
+
+  if (points >= 10) {
+    const promotion = await promoteMember({ member, db, guild, verifierId });
+    return { points: 10, promoted: true, teamName: promotion.teamName, previousPoints };
+  }
+
+  if (member.manageable) {
+    const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
+    const nickname = `${baseName} ${formatPoints(points)}/10`;
+    await retrySetNickname(member, nickname);
+  }
+
+  return { points, promoted: false, previousPoints };
 }
 
 module.exports = {

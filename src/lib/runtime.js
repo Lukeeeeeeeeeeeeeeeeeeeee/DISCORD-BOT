@@ -4,16 +4,38 @@ const runtime = {
   antiNuke: null,
   antiNukeRollback: null,
   setClient(client) {
-    this.client = client || null;
+    if (client == null) return;
+    this.client = client;
   },
   setDb(db) {
-    this.db = db || null;
+    if (db == null) return;
+    this.db = db;
   },
   setAntiNuke(antiNuke) {
-    this.antiNuke = antiNuke || null;
+    if (antiNuke == null) return;
+    this.antiNuke = antiNuke;
   },
   setAntiNukeRollback(antiNukeRollback) {
-    this.antiNukeRollback = antiNukeRollback || null;
+    if (antiNukeRollback == null) return;
+    this.antiNukeRollback = antiNukeRollback;
+  },
+  clearClient() {
+    this.client = null;
+  },
+  clearDb() {
+    this.db = null;
+  },
+  clearAntiNuke() {
+    this.antiNuke = null;
+  },
+  clearAntiNukeRollback() {
+    this.antiNukeRollback = null;
+  },
+  resetForTests() {
+    this.client = null;
+    this.db = null;
+    this.antiNuke = null;
+    this.antiNukeRollback = null;
   },
   getClient() {
     return this.client || null;

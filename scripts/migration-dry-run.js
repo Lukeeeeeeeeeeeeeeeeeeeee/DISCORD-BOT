@@ -37,9 +37,11 @@ async function main() {
   let db;
   try {
     db = require('../src/db_async');
+    const { runReferentialPreflight } = require('../src/lib/db-referential-preflight');
+    const preflight = await runReferentialPreflight(db, { fix: true, log: true });
     const result = await db.checkIntegrity('migration-dry-run');
     const ok = result && result.ok !== false;
-    console.log('Migration dry-run complete', { ok, dbPath: tempPath });
+    console.log('Migration dry-run complete', { ok, dbPath: tempPath, preflight });
     await db.close();
     try {
       fs.rmSync(tempPath, { force: true });

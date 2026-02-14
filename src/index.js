@@ -9,9 +9,11 @@ const AntiNukeSystem = require('./lib/antinuke-system');
 const { dispatchCommand } = require('./lib/command-dispatcher');
 const { trackRookieChatMessage } = require('./lib/rookie-chat');
 const { handleRookieWarLogMessage } = require('./lib/rookie-war');
+const { createVoiceStateUpdateHandler } = require('./events/voice-state-update');
 const analytics = require('./lib/analytics');
 const runtime = require('./lib/runtime');
 const { logUnexpectedError, getCommandCategory, getInteractionMeta } = require('./lib/logger');
+const { preloadLocales } = require('./lib/i18n');
 
 const enableMessageContent = (process.env.ENABLE_MESSAGE_CONTENT || '').toLowerCase() === 'true';
 const intents = [
@@ -37,6 +39,15 @@ const inviteTrackLocks = new Map();
 const invitePendingAttributions = new Map();
 const voiceSessions = new Map();
 const INVITE_SNAPSHOT_TTL_MS = Number.parseInt(process.env.INVITE_SNAPSHOT_TTL_MS || '900000', 10);
+const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
+
+function isInteractionAckError(error) {
+  return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
+}
+
+function createRuntimeTraceId() {
+  return `EV-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`.toUpperCase();
+}
 
 const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
   console.log('🛡️ Complete anti-nuke system with rollback ready!');
@@ -85,6 +96,9 @@ async function onReady() {
   if (_readyCalled) return;
   _readyCalled = true;
   console.log(`Logged in as ${client.user.tag}`);
+  await preloadLocales().catch((err) => {
+    console.error('Failed to preload locales:', err);
+  });
   await antiNukeInitPromise;
   scheduler.start(client, db);
 
@@ -155,8 +169,8 @@ client.on('interactionCreate', async interaction => {
     }
     await dispatchCommand(cmd, interaction, { client, db });
   } catch (err) {
-    // If the interaction itself failed because it's unknown/expired (10062), ignore silently
-    if (err && err.code === 10062) return;
+    // Ignore ack/expiry races (unknown interaction / already acknowledged).
+    if (isInteractionAckError(err)) return;
     const meta = getInteractionMeta(interaction);
     const category = getCommandCategory(meta.command);
     logUnexpectedError('command', err, { ...meta, category });
@@ -171,7 +185,7 @@ client.on('interactionCreate', async interaction => {
       }
     } catch (err2) {
       // If the interaction is expired, Discord returns code 10062 — ignore silently
-      if (err2 && err2.code === 10062) return;
+      if (isInteractionAckError(err2)) return;
       // otherwise log
       console.error('Failed to send error response for interaction:', err2);
     }
@@ -321,42 +335,16 @@ client.on('guildMemberRemove', async member => {
   }
 });
 
-client.on('voiceStateUpdate', async (oldState, newState) => {
-  const member = newState.member || oldState.member;
-  if (!member || !member.user || member.user.bot) return;
-  const guild = newState.guild || oldState.guild;
-  if (!guild) return;
-  const key = `${guild.id}:${member.id}`;
-  const now = Date.now();
-  const oldChannelId = oldState.channelId;
-  const newChannelId = newState.channelId;
-
-  if (!oldChannelId && newChannelId) {
-    voiceSessions.set(key, { joinedAt: now });
-    return;
-  }
-
-  if (oldChannelId && !newChannelId) {
-    const session = voiceSessions.get(key);
-    const joinedAt = session ? session.joinedAt : null;
-    if (joinedAt) {
-      const minutes = Math.max(1, Math.round((now - joinedAt) / 60000));
-      await analytics.recordVoiceMinutes({ guildId: guild.id, userId: member.id, minutes, timestamp: now });
-    }
-    voiceSessions.delete(key);
-    return;
-  }
-
-  if (oldChannelId && newChannelId && oldChannelId !== newChannelId) {
-    const session = voiceSessions.get(key);
-    const joinedAt = session ? session.joinedAt : null;
-    if (joinedAt) {
-      const minutes = Math.max(1, Math.round((now - joinedAt) / 60000));
-      await analytics.recordVoiceMinutes({ guildId: guild.id, userId: member.id, minutes, timestamp: now });
-    }
-    voiceSessions.set(key, { joinedAt: now });
+const onVoiceStateUpdate = createVoiceStateUpdateHandler({
+  analytics,
+  voiceSessions,
+  createTraceId: createRuntimeTraceId,
+  onError: (error, meta) => {
+    logUnexpectedError('event.voiceStateUpdate', error, meta);
   }
 });
+
+client.on('voiceStateUpdate', onVoiceStateUpdate);
 
 async function loadInviteSnapshotFromDb(guildId) {
   if (!guildId) return null;

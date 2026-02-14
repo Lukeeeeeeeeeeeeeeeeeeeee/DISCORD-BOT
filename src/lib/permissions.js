@@ -1,5 +1,13 @@
 const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 const { PermissionsBitField } = require('discord.js');
+const ELEVATED_PERMISSION_FLAGS = [
+  PermissionsBitField.Flags.ManageGuild,
+  PermissionsBitField.Flags.ModerateMembers,
+  PermissionsBitField.Flags.BanMembers,
+  PermissionsBitField.Flags.KickMembers,
+  PermissionsBitField.Flags.ManageRoles,
+  PermissionsBitField.Flags.ManageChannels
+];
 
 function getMemberPermissions(member) {
   if (!member || !member.permissions) return null;
@@ -33,6 +41,13 @@ function hasAdministrator(member) {
   return perms.has(PermissionsBitField.Flags.Administrator) || perms.has('Administrator');
 }
 
+function hasElevatedGuildPermissions(member) {
+  if (hasAdministrator(member)) return true;
+  const perms = getMemberPermissions(member);
+  if (!perms || typeof perms.has !== 'function') return false;
+  return ELEVATED_PERMISSION_FLAGS.some(flag => perms.has(flag));
+}
+
 function getStaffRoleIds() {
   const configured = ROLE_IDS && Array.isArray(ROLE_IDS.STAFF) ? ROLE_IDS.STAFF.filter(Boolean) : [];
   if (configured.length) return configured;
@@ -50,6 +65,14 @@ function getStaffRoleIds() {
   ].filter(Boolean);
 }
 
+function hasAnyRole(member, roleIds) {
+  const allowed = Array.isArray(roleIds) ? roleIds.filter(Boolean) : [];
+  if (!allowed.length) return false;
+  const memberRoleIds = getMemberRoleIds(member);
+  if (!memberRoleIds.length) return false;
+  return allowed.some(roleId => memberRoleIds.includes(roleId));
+}
+
 /**
  * Check if a user has recruiter or staff permissions
  * @param {GuildMember} member - Discord guild member
@@ -57,23 +80,7 @@ function getStaffRoleIds() {
  */
 function hasRecruiterOrStaffPermissions(member) {
   if (!member) return false;
-  const roleIds = getMemberRoleIds(member);
-
-  // Check Discord admin permission
-  if (hasAdministrator(member)) return true;
-
-  const perms = getMemberPermissions(member);
-  if (perms && typeof perms.has === 'function') {
-    const elevated = [
-      PermissionsBitField.Flags.ManageGuild,
-      PermissionsBitField.Flags.ModerateMembers,
-      PermissionsBitField.Flags.BanMembers,
-      PermissionsBitField.Flags.KickMembers,
-      PermissionsBitField.Flags.ManageRoles,
-      PermissionsBitField.Flags.ManageChannels
-    ];
-    if (elevated.some(flag => perms.has(flag))) return true;
-  }
+  if (hasElevatedGuildPermissions(member)) return true;
 
   // Check staff roles
   const staffRoles = getStaffRoleIds();
@@ -82,13 +89,11 @@ function hasRecruiterOrStaffPermissions(member) {
   const recruiterRoles = [
     ROLE_IDS.RECRUITER,
     ROLE_IDS.TRIAL_RECRUITER,
-    ...Object.values(RECRUITER_ROLE_IDS)
+    ...Object.values(RECRUITER_ROLE_IDS || {})
   ];
 
   const allAllowedRoles = [...staffRoles, ...recruiterRoles];
-
-  if (!roleIds.length) return false;
-  return allAllowedRoles.some(roleId => roleIds.includes(roleId));
+  return hasAnyRole(member, allAllowedRoles);
 }
 
 /**
@@ -98,36 +103,21 @@ function hasRecruiterOrStaffPermissions(member) {
  */
 function hasAdminOrStaffPermissions(member) {
   if (!member) return false;
-  const roleIds = getMemberRoleIds(member);
-
-  // Check Discord admin permission
-  if (hasAdministrator(member)) return true;
-
-  const perms = getMemberPermissions(member);
-  if (perms && typeof perms.has === 'function') {
-    const elevated = [
-      PermissionsBitField.Flags.ManageGuild,
-      PermissionsBitField.Flags.ModerateMembers,
-      PermissionsBitField.Flags.BanMembers,
-      PermissionsBitField.Flags.KickMembers,
-      PermissionsBitField.Flags.ManageRoles,
-      PermissionsBitField.Flags.ManageChannels
-    ];
-    if (elevated.some(flag => perms.has(flag))) return true;
-  }
+  if (hasElevatedGuildPermissions(member)) return true;
 
   // Check staff roles
   const staffRoles = getStaffRoleIds();
-
-  if (!roleIds.length) return false;
-  return staffRoles.some(roleId => roleIds.includes(roleId));
+  return hasAnyRole(member, staffRoles);
 }
 
 module.exports = {
   hasRecruiterOrStaffPermissions,
   hasAdminOrStaffPermissions,
   hasAdministrator,
+  hasElevatedGuildPermissions,
   getMemberPermissions,
   getMemberRoleIds,
-  memberHasRole
+  memberHasRole,
+  getStaffRoleIds,
+  hasAnyRole
 };

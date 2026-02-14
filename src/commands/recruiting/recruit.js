@@ -520,8 +520,6 @@ module.exports = {
     } catch (err) {
       console.error('Recruit command error:', err);
       return replyError(interaction, 'An error occurred while processing the recruit command. Please try again later.');
-
-      return null;
     }
   }
 };

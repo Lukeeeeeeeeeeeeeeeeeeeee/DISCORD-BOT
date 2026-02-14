@@ -76,6 +76,7 @@ async function ensureRecruitsTable(db) {
     await db.exec(`
       CREATE TABLE IF NOT EXISTS recruits (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL DEFAULT 'GLOBAL',
         recruiter_id TEXT NOT NULL,
         recruited_id TEXT NOT NULL,
         region TEXT NOT NULL,
@@ -84,8 +85,15 @@ async function ensureRecruitsTable(db) {
         valid INTEGER DEFAULT 1,
         points INTEGER DEFAULT 0
       );
+      CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_created ON recruits(guild_id, recruiter_id, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit_guild ON recruits(guild_id, recruited_id);
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(recruited_id);
     `);
+    try {
+      await db.run('ALTER TABLE recruits ADD COLUMN guild_id TEXT NOT NULL DEFAULT "GLOBAL"');
+    } catch (e) {
+      void e;
+    }
     recruitsEnsured = true;
   } catch (e) {
     recruitsEnsured = true;
@@ -539,6 +547,7 @@ async function recomputeLeaderboards(db, guild) {
 
 async function recomputeWarningsLeaderboardInternal(db, guild) {
   if (!db || !guild) return;
+  const guildId = guild.id || resolveGuildId();
   await ensureWeeklyCalculationsTable(db).catch(err => {
     console.error('Failed to ensure weekly calculations table:', err);
   });
@@ -553,13 +562,15 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
 
   try {
     const existing = await db.get(
-      'SELECT id FROM leaderboard_messages WHERE channel_id = ? AND region = ?',
+      'SELECT id FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?',
+      guildId,
       channel.id,
       'WARNINGS'
     );
     if (!existing) {
       const legacy = await db.get(
-        'SELECT id FROM leaderboard_messages WHERE channel_id = ? AND (region IS NULL OR region = "") ORDER BY id DESC LIMIT 1',
+        'SELECT id FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND (region IS NULL OR region = "") ORDER BY id DESC LIMIT 1',
+        guildId,
         channel.id
       );
       if (legacy && legacy.id) {
@@ -571,7 +582,8 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   }
 
   const warningRows = await db.all(
-    'SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id HAVING cnt >= 2 ORDER BY cnt DESC',
+    'SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE guild_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id HAVING cnt >= 2 ORDER BY cnt DESC',
+    guildId,
     Date.now()
   );
   const warningCountMap = new Map((warningRows || []).map(row => [row.recruiter_id, row.cnt]));
@@ -584,10 +596,10 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   }
 
   const weekStart = getWeekStartUtcTs();
-  const meta = await loadRecruiterMeta(db, recruiterIds);
-  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { weekStart, sinceTs: weekStart });
+  const meta = await loadRecruiterMeta(db, recruiterIds, { guildId });
+  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { guildId, weekStart, sinceTs: weekStart });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
-  const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
+  const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
   const memberMap = await fetchMembersByIds(guild, recruiterIds);
 
   const rows = [];

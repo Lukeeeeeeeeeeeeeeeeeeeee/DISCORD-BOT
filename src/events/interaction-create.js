@@ -11,6 +11,9 @@ function createInteractionCreateHandler({
   logUnexpectedError,
   buildErrorEmbed
 } = {}) {
+  const interactionAckErrorCodes = new Set([10062, 40060]);
+  const isInteractionAckError = (error) => Boolean(error && interactionAckErrorCodes.has(Number(error.code)));
+
   return async function onInteractionCreate(interaction) {
     if (!isSystemsReady || !isSystemsReady()) return;
     if (!interaction || typeof interaction.isChatInputCommand !== 'function' || !interaction.isChatInputCommand()) return;
@@ -28,7 +31,7 @@ function createInteractionCreateHandler({
       await dispatchCommand(cmd, interaction, { client, db });
       success = true;
     } catch (err) {
-      if (err && err.code === 10062) return;
+      if (isInteractionAckError(err)) return;
       const isKnown = isAppError ? isAppError(err) : false;
       if (!isKnown && logUnexpectedError) {
         logUnexpectedError('command', err, { ...meta, category });
@@ -45,7 +48,7 @@ function createInteractionCreateHandler({
           await interaction.reply({ embeds: [embed], flags: 64 });
         }
       } catch (err2) {
-        if (err2 && err2.code === 10062) return;
+        if (isInteractionAckError(err2)) return;
         console.error('Failed to send error response for interaction:', err2);
       }
     } finally {

@@ -1,10 +1,12 @@
 {
-  "whitelist": {
+  "whitelist": [
+    "USER_ONE"
+  ],
+  "whitelistByGuild": {
     "GUILD_ONE": [
       "USER_ONE"
     ]
   },
-  "legacyWhitelist": [],
   "logChannels": {},
   "beastModeActions": {},
   "beastModeTracker": {},

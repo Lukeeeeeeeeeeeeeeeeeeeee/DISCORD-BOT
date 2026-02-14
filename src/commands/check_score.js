@@ -1,6 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
-const { hasAdministrator } = require('../lib/permissions');
-const { buildErrorEmbed } = require('../lib/embeds');
+const { ensureCommandAccess } = require('../lib/command-auth');
+const { replyError } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
 
 module.exports = {
@@ -17,14 +17,15 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    // Check admin permissions
-    if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
-    }
+    const allowed = await ensureCommandAccess(interaction, {
+      allowStaff: false,
+      deniedMessage: 'Administrator permission required.'
+    });
+    if (!allowed) return null;
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
-      return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
+      return replyError(interaction, 'Anti-nuke system not initialized.', { flags: 64 });
     }
 
     if (typeof interaction.deferReply === 'function') {
@@ -48,7 +49,7 @@ module.exports = {
     const windowLabel = formatWindow(antiNuke.BEAST_MODE_WINDOW || (24 * 60 * 60 * 1000));
     const user = interaction.options.getUser('user');
     const score = antiNuke.getUserScore(interaction.guild.id, user.id);
-    const isWhitelisted = antiNuke.isWhitelisted(user.id);
+    const isWhitelisted = antiNuke.isWhitelisted(user.id, interaction.guild.id);
     const threshold = antiNuke.BEAST_MODE_THRESHOLD || 40;
     const level = typeof antiNuke.getScoreLevel === 'function'
       ? antiNuke.getScoreLevel(score)

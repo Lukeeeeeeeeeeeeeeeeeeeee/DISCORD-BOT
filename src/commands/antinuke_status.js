@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { hasAdministrator } = require('../lib/permissions');
+const { ensureCommandAccess } = require('../lib/command-auth');
 const { buildErrorEmbed } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
 
@@ -9,10 +9,11 @@ module.exports = {
     description: 'View full anti-nuke protection status (Admin only)'
   },
   async execute(interaction) {
-    // Check admin permissions
-    if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
-    }
+    const allowed = await ensureCommandAccess(interaction, {
+      allowStaff: false,
+      deniedMessage: 'Administrator permission required.'
+    });
+    if (!allowed) return null;
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
