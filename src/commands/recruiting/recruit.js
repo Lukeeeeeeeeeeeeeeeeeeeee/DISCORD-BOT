@@ -493,6 +493,9 @@ module.exports = {
         try {
           const scheduler = require('../../scheduler');
           await scheduler.recomputeLeaderboards(db, interaction.guild);
+          if (typeof scheduler.recomputeWarningsLeaderboard === 'function') {
+            await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
+          }
         } catch (e) {
           console.error('Failed updating leaderboards:', e);
         }

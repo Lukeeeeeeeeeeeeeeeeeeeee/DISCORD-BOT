@@ -582,13 +582,51 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   }
 
   const warningRows = await db.all(
-    'SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE guild_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id HAVING cnt >= 2 ORDER BY cnt DESC',
+    'SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE guild_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id ORDER BY cnt DESC',
     guildId,
     Date.now()
   );
   const warningCountMap = new Map((warningRows || []).map(row => [row.recruiter_id, row.cnt]));
 
-  const recruiterIds = (warningRows || []).map(r => r.recruiter_id);
+  const recruiterIdSet = new Set((warningRows || []).map((row) => row.recruiter_id).filter(Boolean));
+  try {
+    const recruiterRows = await db.all(
+      'SELECT id FROM recruiters WHERE guild_id = ?',
+      guildId
+    );
+    for (const row of recruiterRows || []) {
+      if (row && row.id) recruiterIdSet.add(row.id);
+    }
+  } catch (e) {
+    console.error('Failed to load recruiter profiles for warnings leaderboard:', e);
+  }
+
+  try {
+    const recruitRows = await db.all(
+      'SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ?',
+      guildId
+    );
+    for (const row of recruitRows || []) {
+      if (row && row.recruiter_id) recruiterIdSet.add(row.recruiter_id);
+    }
+  } catch (e) {
+    console.error('Failed to load recruit-derived recruiter IDs for warnings leaderboard:', e);
+  }
+
+  const recruiterRoleIds = [
+    ROLE_IDS.RECRUITER,
+    ROLE_IDS.TRIAL_RECRUITER,
+    ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
+  ].filter(Boolean);
+  for (const roleId of recruiterRoleIds) {
+    const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(roleId) : null;
+    if (!role || !role.members) continue;
+    for (const member of role.members.values()) {
+      recruiterIdSet.add(member.id);
+    }
+  }
+
+  const recruiterIds = Array.from(recruiterIdSet);
   if (!recruiterIds.length) {
     const text = makeDemotionWatchText([]);
     await upsertLeaderboardMessage(db, channel, 'WARNINGS', text, null, guild.id);
@@ -607,7 +645,6 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   for (const r of rowsBase || []) {
     const absence = meta.absences.has(r.recruiter_id);
     const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;
-    if (activeWarnings < 2) continue;
 
     const staffMember = (memberMap && memberMap.get(r.recruiter_id))
       || (guild && guild.members && guild.members.cache ? guild.members.cache.get(r.recruiter_id) : null);
@@ -616,7 +653,11 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
 
     const systemWarningRow = meta.systemWarnings.has(r.recruiter_id);
 
-    const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
+    const isTrialRecruiter = !!staffMember
+      && staffMember.roles
+      && staffMember.roles.cache
+      && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)
+      && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
     let minReq = Number.isFinite(r.min_req) ? Number(r.min_req) : null;
     let previousMinReq = null;
@@ -830,6 +871,7 @@ function start(client, db) {
     if (!guild) return;
     await reconcileTrialRecruiters(db, client).catch((e) => console.error('reconcileTrialRecruiters failed:', e));
     await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
+    await recomputeWarningsLeaderboard(db, guild).catch((e) => console.error('recomputeWarningsLeaderboard failed:', e));
 
     // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
     // Sanity Window: Only catch up if we are within 24 hours of the scheduled time.
@@ -928,7 +970,10 @@ function start(client, db) {
 
       // Recompute leaderboards to reflect any changes
       const guild = await resolveGuild(client);
-      if (guild) await module.exports.recomputeLeaderboards(db, guild);
+      if (guild) {
+        await module.exports.recomputeLeaderboards(db, guild);
+        await module.exports.recomputeWarningsLeaderboard(db, guild);
+      }
     } catch (e) {
       console.error('Daily maintenance failed', e);
     }

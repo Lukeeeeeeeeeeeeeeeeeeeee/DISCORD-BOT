@@ -71,6 +71,7 @@ function shouldIgnoreCommandModule(fullPath) {
   const normalized = fullPath.split(path.sep).join('/');
   if (normalized.includes('/recruiter-handlers/')) return true;
   const base = path.basename(fullPath).toLowerCase();
+  if (base === 'recruitment_report.js') return true;
   if (base.endsWith('-helpers.js')) return true;
   if (base === 'verify.js') return true;
   return false;

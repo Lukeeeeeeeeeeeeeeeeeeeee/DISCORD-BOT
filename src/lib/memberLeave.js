@@ -40,6 +40,9 @@ async function handleMemberLeave(db, guild, member) {
   try {
     if (guild) {
       await scheduler.recomputeLeaderboards(db, guild);
+      if (typeof scheduler.recomputeWarningsLeaderboard === 'function') {
+        await scheduler.recomputeWarningsLeaderboard(db, guild);
+      }
     }
   } catch (e) {
     console.error('Error running scheduler after member leave', e);

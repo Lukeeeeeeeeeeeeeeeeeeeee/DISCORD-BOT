@@ -12,6 +12,7 @@ function shouldIgnoreCommandModule(fullPath) {
     const normalized = fullPath.split(path.sep).join('/');
     if (normalized.includes('/recruiter-handlers/')) return true;
     const base = path.basename(fullPath).toLowerCase();
+    if (base === 'recruitment_report.js') return true;
     if (base.endsWith('-helpers.js')) return true;
     if (base === 'verify.js') return true;
     return false;
@@ -46,7 +47,7 @@ try {
     loadCommandsRecursively(commandsPath);
     console.log(`\nTotal commands loaded: ${client.commands.size}`);
 
-    const expectedCommands = ['recruit', 'recruiter', 'leaderboard', 'recruitment_report', 'rookie_promote', 'invite', 'info', 'absent'];
+    const expectedCommands = ['recruit', 'recruiter', 'leaderboard', 'rookiepoints', 'rookie_promote', 'invite', 'info', 'absent', 'status'];
     const missing = expectedCommands.filter(c => !client.commands.has(c));
 
     if (missing.length > 0) {

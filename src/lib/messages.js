@@ -123,24 +123,61 @@ function makeLeaderboardText(rows, regionLabel, lang = 'en') {
 function makeDemotionWatchText(rows, _lang = 'en') {
   const title = '# Demotion Watch';
   if (!rows || rows.length === 0) {
-    const msg = `${title}\nNo recruiters on demotion watch.`;
+    const msg = `${title}\nNo recruiter data available.`;
     return msg.length > 2000 ? msg.slice(0, 1997) + '...' : msg;
   }
 
   const sortedRows = sortDemotionRows(rows);
-  const lines = sortedRows.map((r, i) => formatLeaderboardLine(r, i));
-  const out = [title, ...lines];
-  let text = out.join('\n');
+  const warningCount = (row) => {
+    const raw = row && row.warningCount != null
+      ? Number(row.warningCount)
+      : (row && row.activeWarnings != null ? Number(row.activeWarnings) : 0);
+    return Number.isFinite(raw) ? raw : 0;
+  };
+
+  const criticalRows = sortedRows.filter((row) => warningCount(row) >= 2);
+  const warningRows = sortedRows.filter((row) => warningCount(row) === 1);
+  const safeRows = sortedRows.filter((row) => warningCount(row) <= 0);
+
+  const sections = [
+    { title: '🔴 Critical (2+ warnings)', rows: criticalRows },
+    { title: '⚠️ Warning (1 warning)', rows: warningRows },
+    { title: '✅ Safe (0 warnings)', rows: safeRows }
+  ];
+
+  const lines = [title];
+  for (const section of sections) {
+    lines.push('');
+    lines.push(section.title);
+    if (!section.rows.length) {
+      lines.push('None');
+      continue;
+    }
+    section.rows.forEach((row, index) => {
+      lines.push(formatLeaderboardLine(row, index));
+    });
+  }
+
+  let text = lines.join('\n');
   if (text.length <= 2000) return text;
 
-  const kept = [title];
+  const kept = [];
+  let remainingRows = 0;
   for (const line of lines) {
     const next = kept.concat(line).join('\n');
-    if (next.length > 1950) break;
+    if (next.length > 1950) {
+      break;
+    }
     kept.push(line);
   }
-  const remaining = lines.length - (kept.length - 1);
-  if (remaining > 0) kept.push(`...and ${remaining} more`);
+
+  for (const section of sections) {
+    remainingRows += section.rows.length;
+  }
+  const keptRows = kept.filter((line) => /^\d+\.\s/.test(line)).length;
+  const hiddenRows = Math.max(0, remainingRows - keptRows);
+  if (hiddenRows > 0) kept.push(`...and ${hiddenRows} more`);
+
   text = kept.join('\n');
   return text.length > 2000 ? text.slice(0, 1997) + '...' : text;
 }

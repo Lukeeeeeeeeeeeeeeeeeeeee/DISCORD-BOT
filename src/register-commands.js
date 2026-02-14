@@ -5,16 +5,6 @@ const { SlashCommandBuilder } = require('@discordjs/builders');
 
 const { REGIONS, REGION_INFO, PURCHASE_ITEMS } = require('./constants');
 const { ECONOMY_CONFIG, formatPointsValue } = require('./lib/economy');
-const TEAM_CHOICES = [
-  { name: 'All Teams', value: 'ALL' },
-  ...(REGIONS || []).map(code => {
-    const info = REGION_INFO && REGION_INFO[code] ? REGION_INFO[code] : null;
-    const label = info && info.name ? info.name : code;
-    const name = info && info.emoji ? `${info.emoji} ${label}` : label;
-    return { name, value: code };
-  })
-];
-
 const BUY_ITEM_CHOICES = [
   ...Object.entries(ECONOMY_CONFIG && ECONOMY_CONFIG.MULTIPLIERS ? ECONOMY_CONFIG.MULTIPLIERS : {})
     .map(([key, cfg]) => ({
@@ -60,7 +50,8 @@ const commands = [
       .addNumberOption(opt => opt.setName('points').setDescription('Points to add').setRequired(true).setMinValue(0.1)))
     .addSubcommand(s => s.setName('remove').setDescription('Remove rookie points')
       .addUserOption(opt => opt.setName('member').setDescription('Rookie member').setRequired(true))
-      .addNumberOption(opt => opt.setName('points').setDescription('Points to remove').setRequired(true).setMinValue(0.1))),
+      .addNumberOption(opt => opt.setName('points').setDescription('Points to remove').setRequired(true).setMinValue(0.1)))
+    .addSubcommand(s => s.setName('reset-all').setDescription('Reset all rookie points to 0 (admin only)')),
   new SlashCommandBuilder().setName('rookie_promote').setDescription('Verify and promote a rookie (MOD+ only)')
     .addUserOption(opt => opt.setName('member').setDescription('Rookie to promote').setRequired(true)),
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
@@ -74,9 +65,6 @@ const commands = [
     .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (caps apply)').setRequired(false).setMinValue(1).setMaxValue(1000))
     .addBooleanOption(opt => opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
   new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
-  new SlashCommandBuilder().setName('recruitment_report').setDescription('Admin: show recruiting performance by team')
-    .addStringOption(opt => opt.setName('team').setDescription('Team filter (default ALL)').setRequired(false)
-      .addChoices(...TEAM_CHOICES)),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
     .addSubcommand(s => s.setName('show').setDescription('Show leaderboard').addStringOption(opt => opt.setName('region').setDescription('Region or all').setRequired(false)
       .addChoices(

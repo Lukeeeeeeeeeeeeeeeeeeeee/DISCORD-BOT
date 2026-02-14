@@ -72,6 +72,9 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
   // Update leaderboards to reflect the change
   try {
     await scheduler.recomputeLeaderboards(db, interaction.guild);
+    if (typeof scheduler.recomputeWarningsLeaderboard === 'function') {
+      await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
+    }
   } catch (e) {
     console.error('Failed to update leaderboards after recruit revocation:', e);
   }
