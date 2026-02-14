@@ -1,0 +1,37 @@
+{
+  "whitelist": {
+    "GUILD_ONE": [
+      "USER_ONE"
+    ]
+  },
+  "legacyWhitelist": [],
+  "logChannels": {},
+  "beastModeActions": {},
+  "beastModeTracker": {},
+  "pendingWhitelist": {},
+  "backups": {},
+  "guildConfig": {
+    "GUILD_ONE": {
+      "strictMode": false,
+      "aggressiveBan": false,
+      "autoStrictUntil": 0,
+      "strictForce": false,
+      "emergencyForceProtect": true,
+      "pruneInstantBan": true,
+      "pruneThreshold": 1,
+      "autoActionThreshold": 0.8,
+      "quarantine": {
+        "mode": "quarantine",
+        "preserveView": false,
+        "durationMs": 86400000
+      },
+      "strictActive": false
+    }
+  },
+  "quarantineAssignments": {},
+  "recoveryMappings": {},
+  "emergencyLockdownUntil": {},
+  "emergencyMode": {
+    "GUILD_ONE": true
+  }
+}

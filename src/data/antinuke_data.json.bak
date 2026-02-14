@@ -1,0 +1,19 @@
+{
+  "whitelist": {
+    "GUILD_ONE": [
+      "USER_ONE"
+    ],
+    "GUILD_TWO": []
+  },
+  "legacyWhitelist": [],
+  "logChannels": {},
+  "beastModeActions": {},
+  "beastModeTracker": {},
+  "pendingWhitelist": {},
+  "backups": {},
+  "guildConfig": {},
+  "quarantineAssignments": {},
+  "recoveryMappings": {},
+  "emergencyLockdownUntil": {},
+  "emergencyMode": {}
+}
