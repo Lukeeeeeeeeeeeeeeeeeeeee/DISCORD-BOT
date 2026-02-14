@@ -6,18 +6,28 @@
  * @returns {Promise<Array>} - Array of results (order not guaranteed if using push, but here we can try to preserve it or just match existing behavior).
  */
 async function runWithConcurrency(items, limit, worker) {
-    const results = [];
-    let index = 0;
-    const runners = Array.from({ length: Math.max(1, limit) }, async () => {
-        while (index < items.length) {
-            const current = items[index++];
+    const queue = Array.isArray(items) ? items : [];
+    if (!queue.length) return [];
+
+    const maxWorkersRaw = Number.isFinite(limit) ? Math.floor(limit) : 1;
+    const maxWorkers = Math.max(1, Math.min(queue.length, maxWorkersRaw));
+    const results = new Array(queue.length);
+    let cursor = 0;
+
+    const runners = Array.from({ length: maxWorkers }, async () => {
+        while (cursor < queue.length) {
+            const currentIndex = cursor;
+            cursor += 1;
+            if (currentIndex >= queue.length) break;
+
             try {
-                results.push(await worker(current));
+                results[currentIndex] = await worker(queue[currentIndex], currentIndex);
             } catch (e) {
-                results.push({ ok: false, error: e });
+                results[currentIndex] = { ok: false, error: e };
             }
         }
     });
+
     await Promise.all(runners);
     return results;
 }

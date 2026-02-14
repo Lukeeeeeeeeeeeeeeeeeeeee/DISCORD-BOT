@@ -12,7 +12,7 @@ async function replyError(interaction, message, opts = {}) {
   if (!interaction) return null;
   const title = opts.title || 'Error';
   const embed = buildErrorEmbed(message, title);
-  const payload = { embeds: [embed] };
+  const payload = { embeds: [embed], allowedMentions: { parse: [] } };
   if (opts.flags !== undefined) payload.flags = opts.flags;
 
   if (interaction.deferred || interaction.replied) {

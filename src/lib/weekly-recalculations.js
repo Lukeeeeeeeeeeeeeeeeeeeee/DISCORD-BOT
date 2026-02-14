@@ -13,7 +13,7 @@ const {
 } = require('../lib/recruiting-system');
 const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 
-const WEEK_ROLLOVER_OFFSET_MS = 5 * 60 * 1000;
+const WEEK_ROLLOVER_OFFSET_MS = Number.parseInt(process.env.WEEK_ROLLOVER_OFFSET_MS || '0', 10);
 const DM_CONCURRENCY = 5;
 const CALC_CONCURRENCY = Number.parseInt(process.env.RECALC_CONCURRENCY || '4', 10);
 
@@ -53,9 +53,14 @@ async function sendWithRetries(sendFn, opts = {}) {
  */
 async function performWeeklyRecalculations(guild) {
   const database = db;
+  const guildId = guild ? guild.id : null;
+  if (!guildId) {
+    throw new Error('Weekly recalculation requires a guild.');
+  }
   console.log('Starting weekly recruiter recalculation...');
 
-  const weekStart = getWeekStartUtcTs(new Date(Date.now() + WEEK_ROLLOVER_OFFSET_MS));
+  const safeOffset = Number.isFinite(WEEK_ROLLOVER_OFFSET_MS) ? WEEK_ROLLOVER_OFFSET_MS : 0;
+  const weekStart = getWeekStartUtcTs(new Date(Date.now() + safeOffset));
   const weekWindowStart = weekStart - (7 * 24 * 60 * 60 * 1000);
   const statsWindow = { sinceTs: weekWindowStart, untilTs: weekStart };
 
@@ -82,17 +87,18 @@ async function performWeeklyRecalculations(guild) {
 
     const allRoleIds = [...staffRoleIds, ...recruiterRoleIds];
 
-    const allStaff = [];
+    const allStaffById = new Map();
     for (const roleId of allRoleIds) {
       const role = guild.roles.cache.get(roleId);
       if (role) {
         role.members.forEach(member => {
-          if (!allStaff.find(m => m.id === member.id)) {
-            allStaff.push(member);
+          if (!allStaffById.has(member.id)) {
+            allStaffById.set(member.id, member);
           }
         });
       }
     }
+    const allStaff = Array.from(allStaffById.values());
 
     console.log(`Found ${allStaff.length} staff members to recalculate`);
 
@@ -100,18 +106,21 @@ async function performWeeklyRecalculations(guild) {
       // Get 7-day stats
       const stats7d = await calculate7DayStats(database, staffMember.id, guild, statsWindow);
 
-      const previousMinReq = await getPreviousMinReq(database, staffMember.id);
+      const previousMinReq = await getPreviousMinReq(database, staffMember.id, { guildId });
 
       // Check for active absence
       const absence = await database.get(
-        'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+        'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+        guildId,
         staffMember.id
       );
 
       // Get active warnings count
       const warnings = await database.get(
-        'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-        staffMember.id, Date.now()
+        'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+        guildId,
+        staffMember.id,
+        Date.now()
       );
       const activeWarnings = warnings ? warnings.c : 0;
 
@@ -119,7 +128,7 @@ async function performWeeklyRecalculations(guild) {
       const roleBase = getBaseRequirement(staffMember);
 
       // Check if new staff (first 2 recalcs)
-      const newStaffCheck = await isNewStaff(database, staffMember.id);
+      const newStaffCheck = await isNewStaff(database, staffMember.id, { guildId });
 
       // Calculate new min req
       const newMinReq = calculateMinRecruitsFixed({
@@ -137,6 +146,7 @@ async function performWeeklyRecalculations(guild) {
 
       // Store calculation
       await storeWeeklyCalculation(database, {
+        guildId,
         recruiterId: staffMember.id,
         weekStart,
         recruits7d: stats7d.recruits7d,
@@ -182,6 +192,11 @@ async function performWeeklyRecalculations(guild) {
       : null;
     if (notifyQueue.length) {
       await runWithConcurrency(notifyQueue, DM_CONCURRENCY, (entry) => sendWeeklyRecalculationDM(entry, { logChannel }));
+    }
+
+    const postRetentionReports = (process.env.POST_RETENTION_REPORTS || '').toLowerCase() === 'true';
+    if (postRetentionReports && results.length) {
+      await runWithConcurrency(results, 2, (entry) => postRetentionToInviteChannels(guild, entry));
     }
 
     // Check for expired absences and post return messages
@@ -258,6 +273,7 @@ async function sendWeeklyRecalculationDM(result, options = {}) {
  */
 async function postRetentionToInviteChannels(guild, result) {
   const { staffMember, stats7d, newMinReq } = result;
+  const guildId = guild ? guild.id : null;
 
   try {
     const embed = new EmbedBuilder()
@@ -282,8 +298,10 @@ async function postRetentionToInviteChannels(guild, result) {
 
     // Post to regional invite channels based on staff member's recent recruits
     const recentRecruits = await db.all(
-      'SELECT DISTINCT region FROM recruits WHERE recruiter_id = ? AND created_at >= ? AND valid = 1 LIMIT 3',
-      staffMember.id, Date.now() - (7 * 24 * 60 * 60 * 1000)
+      'SELECT DISTINCT region FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND valid = 1 LIMIT 3',
+      guildId,
+      staffMember.id,
+      Date.now() - (7 * 24 * 60 * 60 * 1000)
     );
 
     for (const recruit of recentRecruits) {
@@ -311,13 +329,18 @@ async function postRetentionToInviteChannels(guild, result) {
  */
 async function handleExpiredAbsences(guild) {
   try {
+    const guildId = guild ? guild.id : null;
+    if (!guildId) {
+      return;
+    }
     const expiredAbsences = await db.all(
-      'SELECT * FROM absences WHERE active = 1 AND end_date < date("now")'
+      'SELECT * FROM absences WHERE guild_id = ? AND active = 1 AND end_date < date("now")',
+      guildId
     );
 
     for (const absence of expiredAbsences) {
       // Mark as inactive
-      await db.run('UPDATE absences SET active = 0 WHERE id = ?', absence.id);
+      await db.run('UPDATE absences SET active = 0 WHERE id = ? AND guild_id = ?', absence.id, guildId);
 
       // Get staff member
       const staffMember = await guild.members.fetch(absence.recruiter_id).catch(() => null);

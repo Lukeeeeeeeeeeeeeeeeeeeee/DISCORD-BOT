@@ -82,7 +82,7 @@ module.exports = {
             }
           }
 
-          if (antiNuke.isWhitelisted(targetUser.id)) {
+          if (antiNuke.isWhitelisted(targetUser.id, interaction.guild.id)) {
             const embed = new EmbedBuilder()
               .setColor('#FFFF00')
               .setTitle('⚠️ User Already Whitelisted')
@@ -157,7 +157,7 @@ module.exports = {
             return replyError(interaction, 'User parameter is required for remove action.', { flags: 64 });
           }
 
-          if (!antiNuke.isWhitelisted(targetUser.id)) {
+          if (!antiNuke.isWhitelisted(targetUser.id, interaction.guild.id)) {
             const cancelled = typeof antiNuke.cancelWhitelistRequest === 'function'
               ? antiNuke.cancelWhitelistRequest(interaction.guild.id, targetUser.id)
               : false;
@@ -189,7 +189,7 @@ module.exports = {
             return interaction.reply({ embeds: [pendingEmbed], flags: 64 });
           }
 
-          antiNuke.removeFromWhitelist(targetUser.id);
+          antiNuke.removeFromWhitelist(interaction.guild.id, targetUser.id);
 
           const removeEmbed = new EmbedBuilder()
             .setColor('#00FF00')
@@ -211,7 +211,7 @@ module.exports = {
         }
 
         case 'list': {
-          const whitelist = antiNuke.getWhitelist();
+          const whitelist = antiNuke.getWhitelist(interaction.guild.id);
           const pending = typeof antiNuke.getPendingWhitelist === 'function'
             ? antiNuke.getPendingWhitelist(interaction.guild.id)
             : [];
@@ -275,3 +275,4 @@ module.exports = {
     }
   }
 };
+

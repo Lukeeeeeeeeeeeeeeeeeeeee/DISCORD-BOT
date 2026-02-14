@@ -11,7 +11,8 @@ module.exports = {
   async execute(interaction, client) {
     const antiNuke = runtime.getAntiNuke();
     if (antiNuke && typeof antiNuke.isOwner === 'function') {
-      if (!antiNuke.isOwner(interaction.user.id)) {
+      const guildId = interaction && interaction.guild ? interaction.guild.id : null;
+      if (!antiNuke.isOwner(interaction.user.id, guildId)) {
         return replyError(interaction, 'This command can only be used by the bot owner.');
       }
     }
@@ -22,7 +23,7 @@ module.exports = {
       await rollback.init();
     }
 
-    if ((!antiNuke || typeof antiNuke.isOwner !== 'function') && !rollback.isOwner(interaction.user.id)) {
+    if ((!antiNuke || typeof antiNuke.isOwner !== 'function') && !rollback.isOwner(interaction.user.id, interaction.guild)) {
       return replyError(interaction, 'This command can only be used by the bot owner.');
     }
 

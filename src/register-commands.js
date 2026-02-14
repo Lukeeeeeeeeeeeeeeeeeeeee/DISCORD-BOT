@@ -1,9 +1,13 @@
 require('dotenv').config();
+const fs = require('fs/promises');
+const path = require('path');
 const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
 const { SlashCommandBuilder } = require('@discordjs/builders');
+const { PermissionFlagsBits } = require('discord.js');
+const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
 
-const { REGIONS, REGION_INFO, PURCHASE_ITEMS } = require('./constants');
+const { GUILD_ID, REGIONS, REGION_INFO, PURCHASE_ITEMS } = require('./constants');
 const { ECONOMY_CONFIG, formatPointsValue } = require('./lib/economy');
 const TEAM_CHOICES = [
   { name: 'All Teams', value: 'ALL' },
@@ -27,6 +31,45 @@ const BUY_ITEM_CHOICES = [
       value: key
     }))
 ];
+
+const ADMIN_PERMS = PermissionFlagsBits.Administrator;
+const REGISTER_LOCK_FILE = path.join(__dirname, '..', 'data', 'register-commands.lock');
+
+async function withRegistrationLock(run) {
+  await fs.mkdir(path.dirname(REGISTER_LOCK_FILE), { recursive: true });
+  const staleMs = 15 * 60 * 1000;
+
+  let lockHandle = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      lockHandle = await fs.open(REGISTER_LOCK_FILE, 'wx');
+      break;
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') throw e;
+      try {
+        const stat = await fs.stat(REGISTER_LOCK_FILE);
+        if ((Date.now() - stat.mtimeMs) > staleMs) {
+          await fs.unlink(REGISTER_LOCK_FILE);
+          continue;
+        }
+      } catch (statErr) {
+        if (statErr && statErr.code === 'ENOENT') continue;
+      }
+      throw new Error('Command registration already running (lock active). Try again shortly.');
+    }
+  }
+
+  if (!lockHandle) {
+    throw new Error('Failed to acquire command registration lock.');
+  }
+
+  try {
+    return await run();
+  } finally {
+    try { await lockHandle.close(); } catch (e) { void e; }
+    try { await fs.unlink(REGISTER_LOCK_FILE); } catch (e) { void e; }
+  }
+}
 
 const commands = [
   new SlashCommandBuilder().setName('recruit').setDescription('Register a recruit')
@@ -68,6 +111,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('dm')
     .setDescription('DM members of a role or everyone (admin only). Use preview to test.')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addStringOption(opt => opt.setName('message').setDescription('Message to send to matching members').setRequired(true))
     .addRoleOption(opt => opt.setName('role').setDescription('Role to DM (optional if using everyone)').setRequired(false))
     .addBooleanOption(opt => opt.setName('everyone').setDescription('DM all server members (overrides role)').setRequired(false))
@@ -75,6 +119,7 @@ const commands = [
     .addBooleanOption(opt => opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
   new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
   new SlashCommandBuilder().setName('recruitment_report').setDescription('Admin: show recruiting performance by team')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addStringOption(opt => opt.setName('team').setDescription('Team filter (default ALL)').setRequired(false)
       .addChoices(...TEAM_CHOICES)),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
@@ -89,27 +134,38 @@ const commands = [
         })
       )))
     .addSubcommand(s => s.setName('init').setDescription('Initialize leaderboard messages (admin only)')),
-  new SlashCommandBuilder().setName('status').setDescription('Admin: show bot status'),
-  new SlashCommandBuilder().setName('antinuke_rollback').setDescription('Rollback all anti-nuke actions (Owner only)'),
+  new SlashCommandBuilder().setName('status').setDescription('Admin: show bot status')
+    .setDefaultMemberPermissions(ADMIN_PERMS),
+  new SlashCommandBuilder().setName('antinuke_rollback').setDescription('Rollback all anti-nuke actions (Owner only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS),
 
   // Anti-nuke commands
-  new SlashCommandBuilder().setName('antinuke_status').setDescription('View full anti-nuke protection status (Admin only)'),
+  new SlashCommandBuilder().setName('antinuke_status').setDescription('View full anti-nuke protection status (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS),
   new SlashCommandBuilder().setName('check_score').setDescription("Check user's beast mode score (Admin only)")
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addUserOption(opt => opt.setName('user').setDescription('User to check').setRequired(true)),
   new SlashCommandBuilder().setName('reset_scores').setDescription('Reset beast mode scores (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addUserOption(opt => opt.setName('user').setDescription('User to reset (optional - resets all if not provided)')),
   new SlashCommandBuilder().setName('whitelist').setDescription('Manage anti-nuke whitelist (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addStringOption(opt => opt.setName('action').setDescription('Action to perform').setRequired(true)
       .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }))
     .addUserOption(opt => opt.setName('user').setDescription('User to add/remove (not required for list)')),
   new SlashCommandBuilder().setName('set_log_channel').setDescription('Configure anti-nuke log channel (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addChannelOption(opt => opt.setName('channel').setDescription('Channel to set as log channel').setRequired(true)),
   new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover from emergency lockdown (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addStringOption(opt => opt.setName('backup_id').setDescription('Backup ID to restore (optional)').setRequired(false))
     .addBooleanOption(opt => opt.setName('force').setDescription('Force recovery even if not in emergency mode (owner only)').setRequired(false)),
-  new SlashCommandBuilder().setName('force_backup').setDescription('Create manual backup of server (Admin only)'),
-  new SlashCommandBuilder().setName('view_backups').setDescription('View backup information (Admin only)'),
+  new SlashCommandBuilder().setName('force_backup').setDescription('Create manual backup of server (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS),
+  new SlashCommandBuilder().setName('view_backups').setDescription('View backup information (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS),
   new SlashCommandBuilder().setName('simulate_attack').setDescription('Simulate anti-nuke triggers (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addStringOption(opt => opt.setName('type').setDescription('Action type to simulate').setRequired(true)
       .addChoices(
         { name: 'ban', value: 'ban' },
@@ -123,9 +179,11 @@ const commands = [
     .addIntegerOption(opt => opt.setName('count').setDescription('Number of simulated actions').setRequired(true))
     .addIntegerOption(opt => opt.setName('window_seconds').setDescription('Window in seconds').setRequired(true)),
   new SlashCommandBuilder().setName('toggle_strict_mode').setDescription('Enable or disable anti-nuke strict mode (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addBooleanOption(opt => opt.setName('enabled').setDescription('Enable strict mode').setRequired(true))
     .addIntegerOption(opt => opt.setName('duration_minutes').setDescription('Optional auto-disable duration in minutes').setRequired(false)),
   new SlashCommandBuilder().setName('set_quarantine_options').setDescription('Configure anti-nuke quarantine options (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addStringOption(opt => opt.setName('mode').setDescription('Quarantine mode').setRequired(true)
       .addChoices(
         { name: 'quarantine', value: 'quarantine' },
@@ -135,8 +193,10 @@ const commands = [
     .addBooleanOption(opt => opt.setName('preserve_view').setDescription('Preserve view/read permissions during quarantine').setRequired(false))
     .addIntegerOption(opt => opt.setName('duration_hours').setDescription('Quarantine duration in hours').setRequired(false)),
   new SlashCommandBuilder().setName('toggle_aggressive_ban').setDescription('Enable or disable aggressive anti-nuke bans (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addBooleanOption(opt => opt.setName('enabled').setDescription('Enable aggressive bans').setRequired(true)),
   new SlashCommandBuilder().setName('export_logs').setDescription('Export recent anti-nuke logs (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
     .addIntegerOption(opt => opt.setName('limit').setDescription('Number of log entries to export (max 200)').setRequired(false))
     .addStringOption(opt => opt.setName('format').setDescription('Export format').setRequired(false)
       .addChoices(
@@ -148,34 +208,36 @@ const commands = [
 ];
 
 async function registerCommands({ guildId = null, global = false } = {}) {
-  const rawToken = process.env.DISCORD_TOKEN;
-  const token = rawToken ? rawToken.trim().replace(/^"(.+)"$/, '$1') : null;
+  validateRuntimeEnvironment({ minNodeMajor: 18 });
+  const token = sanitizeEnvToken(process.env.DISCORD_TOKEN);
   if (!token) throw new Error('DISCORD_TOKEN missing — cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
 
   const rest = new REST({ version: '10' }).setToken(token);
   const clientId = process.env.CLIENT_ID;
   if (!clientId) throw new Error('CLIENT_ID missing — set CLIENT_ID in .env');
 
-  console.log('Started refreshing application (/) commands.');
-  if (global) {
-    await rest.put(
-      Routes.applicationCommands(clientId),
-      { body: commands.map(c => c.toJSON()) },
-    );
-    console.log('Successfully reloaded global application (/) commands.');
-    return;
-  }
+  return withRegistrationLock(async () => {
+    console.log('Started refreshing application (/) commands.');
+    if (global) {
+      await rest.put(
+        Routes.applicationCommands(clientId),
+        { body: commands.map(c => c.toJSON()) },
+      );
+      console.log('Successfully reloaded global application (/) commands.');
+      return;
+    }
 
-  if (guildId) {
-    await rest.put(
-      Routes.applicationGuildCommands(clientId, guildId),
-      { body: commands.map(c => c.toJSON()) },
-    );
-    console.log(`Successfully reloaded application (/) commands for guild ${guildId}.`);
-    return;
-  }
+    if (guildId) {
+      await rest.put(
+        Routes.applicationGuildCommands(clientId, guildId),
+        { body: commands.map(c => c.toJSON()) },
+      );
+      console.log(`Successfully reloaded application (/) commands for guild ${guildId}.`);
+      return;
+    }
 
-  throw new Error('No target specified. Provide --global or set GUILD_ID or pass --guild <id>.');
+    throw new Error('No target specified. Provide --global or set GUILD_ID or pass --guild <id>.');
+  });
 }
 
 module.exports = { registerCommands };
@@ -186,7 +248,6 @@ if (require.main === module) {
       const rawArgs = process.argv.slice(2);
       const useGlobal = rawArgs.includes('--global');
       const guildArgIndex = rawArgs.findIndex(a => a === '--guild');
-      const { GUILD_ID } = require('./constants');
       const guildId = guildArgIndex !== -1 ? rawArgs[guildArgIndex + 1] : (process.env.GUILD_ID || GUILD_ID || null);
       await registerCommands({ guildId, global: useGlobal });
     } catch (error) {

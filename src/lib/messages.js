@@ -1,9 +1,19 @@
 const { EmbedBuilder } = require('discord.js');
 const { formatPointsValue } = require('./economy');
 const { getRegionInfo } = require('./regions');
+const { t } = require('./i18n');
+const { acquireJobLock } = require('./job-locks');
+
+const PENDING_MESSAGE_ID = '__PENDING__';
+const PENDING_WAIT_MS = Number.parseInt(process.env.LEADERBOARD_PENDING_WAIT_MS || '2000', 10);
+const PENDING_POLL_INTERVAL_MS = 100;
+const LEADERBOARD_UPSERT_LOCK_MS = Number.parseInt(process.env.LEADERBOARD_UPSERT_LOCK_MS || '10000', 10);
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function makeRecruitEmbed(recruiter, recruited, region, ign, lang = 'en', meta = {}) {
-  const { t } = require('./i18n');
   const info = getRegionInfo(region);
   const title = `${info.emoji} ${t('recruit.title', lang)}`;
   const embed = new EmbedBuilder()
@@ -36,36 +46,41 @@ function getRecruitCount(row) {
 }
 
 function sortLeaderboardRows(rows) {
-  return [...rows].sort((a, b) => {
-    const aCount = getRecruitCount(a);
-    const bCount = getRecruitCount(b);
-    if (bCount !== aCount) return bCount - aCount;
-    const aPoints = Number(a && a.points != null ? a.points : 0);
-    const bPoints = Number(b && b.points != null ? b.points : 0);
-    if (bPoints !== aPoints) return bPoints - aPoints;
-    const aMinReq = normalizeMinReq(a);
-    const bMinReq = normalizeMinReq(b);
-    if (aMinReq !== bMinReq) return aMinReq - bMinReq;
+  const keyed = (rows || []).map((row) => ({
+    row,
+    count: getRecruitCount(row),
+    points: Number(row && row.points != null ? row.points : 0),
+    minReq: normalizeMinReq(row)
+  }));
+  keyed.sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    if (b.points !== a.points) return b.points - a.points;
+    if (a.minReq !== b.minReq) return a.minReq - b.minReq;
     return 0;
   });
+  return keyed.map(item => item.row);
 }
 
 function sortDemotionRows(rows) {
-  return [...rows].sort((a, b) => {
-    const aWarnings = Number(a && a.warningCount != null ? a.warningCount : (a && a.activeWarnings != null ? a.activeWarnings : 0)) || 0;
-    const bWarnings = Number(b && b.warningCount != null ? b.warningCount : (b && b.activeWarnings != null ? b.activeWarnings : 0)) || 0;
-    if (bWarnings !== aWarnings) return bWarnings - aWarnings;
-    const aCount = getRecruitCount(a);
-    const bCount = getRecruitCount(b);
-    if (bCount !== aCount) return bCount - aCount;
-    const aPoints = Number(a && a.points != null ? a.points : 0);
-    const bPoints = Number(b && b.points != null ? b.points : 0);
-    if (bPoints !== aPoints) return bPoints - aPoints;
-    const aMinReq = normalizeMinReq(a);
-    const bMinReq = normalizeMinReq(b);
-    if (aMinReq !== bMinReq) return aMinReq - bMinReq;
+  const keyed = (rows || []).map((row) => ({
+    row,
+    warnings: Number(
+      row && row.warningCount != null
+        ? row.warningCount
+        : (row && row.activeWarnings != null ? row.activeWarnings : 0)
+    ) || 0,
+    count: getRecruitCount(row),
+    points: Number(row && row.points != null ? row.points : 0),
+    minReq: normalizeMinReq(row)
+  }));
+  keyed.sort((a, b) => {
+    if (b.warnings !== a.warnings) return b.warnings - a.warnings;
+    if (b.count !== a.count) return b.count - a.count;
+    if (b.points !== a.points) return b.points - a.points;
+    if (a.minReq !== b.minReq) return a.minReq - b.minReq;
     return 0;
   });
+  return keyed.map(item => item.row);
 }
 
 function formatLeaderboardLine(row, index) {
@@ -83,8 +98,6 @@ function formatLeaderboardLine(row, index) {
 }
 
 function makeLeaderboardText(rows, regionLabel, lang = 'en') {
-  const { t } = require('./i18n');
-
   // Map region codes to team names
   let info;
   if (regionLabel === 'GLOBAL') {
@@ -155,41 +168,206 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed, gui
     console.error('upsertLeaderboardMessage: Missing guildId', { channelId: channel && channel.id, region });
     return null;
   }
+  const payload = embed && typeof embed === 'object' && typeof embed.toJSON === 'function'
+    ? { content: content || null, embeds: [embed], allowedMentions: { parse: [] } }
+    : { content: content || null, allowedMentions: { parse: [] } };
+  const upsertLockKey = `leaderboard_msg_${channel && channel.id ? channel.id : 'unknown'}_${region || 'default'}`;
+
+  const tryEditById = async (messageId) => {
+    if (!messageId || !channel || !channel.messages) return null;
+    if (typeof channel.messages.edit === 'function') {
+      return channel.messages.edit(messageId, payload).catch(() => null);
+    }
+    return null;
+  };
+
+  const tryFetch = async (messageId) => {
+    if (!messageId || !channel || !channel.messages) return null;
+    if (typeof channel.messages.fetch === 'function') {
+      return channel.messages.fetch(messageId).catch(() => null);
+    }
+    return null;
+  };
+
+  const waitForResolvedRecord = async () => {
+    const deadline = Date.now() + Math.max(0, PENDING_WAIT_MS);
+    while (Date.now() <= deadline) {
+      const row = await db.get(
+        'SELECT * FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?',
+        resolvedGuildId,
+        channel.id,
+        region
+      );
+      if (row && row.message_id && row.message_id !== PENDING_MESSAGE_ID) return row;
+      await sleep(PENDING_POLL_INTERVAL_MS);
+    }
+    return db.get(
+      'SELECT * FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?',
+      resolvedGuildId,
+      channel.id,
+      region
+    );
+  };
+
+  // Cross-shard/process guard: only one writer should own a leaderboard upsert at a time.
+  // Fail-closed to prevent duplicate message creation when lock state is uncertain.
+  let ownsUpsertLock = true;
+  if (db && resolvedGuildId && Number.isFinite(LEADERBOARD_UPSERT_LOCK_MS) && LEADERBOARD_UPSERT_LOCK_MS > 0) {
+    ownsUpsertLock = await acquireJobLock(db, {
+      guildId: resolvedGuildId,
+      key: upsertLockKey,
+      ttlMs: LEADERBOARD_UPSERT_LOCK_MS,
+      failOpen: false
+    });
+  }
+
+  if (!ownsUpsertLock) {
+    const resolved = await waitForResolvedRecord();
+    if (resolved && resolved.message_id && resolved.message_id !== PENDING_MESSAGE_ID) {
+      let msg = await tryEditById(resolved.message_id);
+      if (!msg) {
+        const fetched = await tryFetch(resolved.message_id);
+        if (fetched) {
+          await fetched.edit(payload);
+          msg = fetched;
+        }
+      }
+      if (msg) {
+        await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), resolved.id);
+        return msg;
+      }
+    }
+    // If the owner did not resolve the row in time, continue with normal flow.
+  }
+
   // record keyed by channel_id + region (and guild_id for correctness)
   const record = await db.get('SELECT * FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?', resolvedGuildId, channel.id, region);
-  if (record) {
-    const msg = await channel.messages.fetch(record.message_id).catch(() => null);
-    if (msg) {
-      if (embed && typeof embed === 'object' && typeof embed.toJSON === 'function') {
-        await msg.edit({ content: content || null, embeds: [embed] });
-      } else {
-        await msg.edit(content);
+  if (record && record.message_id !== PENDING_MESSAGE_ID) {
+    let msg = await tryEditById(record.message_id);
+    if (!msg) {
+      const fetched = await tryFetch(record.message_id);
+      if (fetched) {
+        await fetched.edit(payload);
+        msg = fetched;
       }
+    }
+    if (msg) {
       await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), record.id);
       return msg;
     } else {
-      const m = embed && typeof embed === 'object' && typeof embed.toJSON === 'function' ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
+      const m = await channel.send(payload);
       try {
         await db.run('UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE id = ?', m.id, Date.now(), record.id);
       } catch (e) {
-        // best-effort: ignore DB problems
+        console.error('Failed to persist leaderboard message pointer after send', {
+          guildId: resolvedGuildId,
+          channelId: channel.id,
+          region,
+          error: e
+        });
       }
       return m;
     }
+  } else if (record && record.message_id === PENDING_MESSAGE_ID) {
+    const resolved = await waitForResolvedRecord();
+    if (resolved && resolved.message_id && resolved.message_id !== PENDING_MESSAGE_ID) {
+      let msg = await tryEditById(resolved.message_id);
+      if (!msg) {
+        const fetched = await tryFetch(resolved.message_id);
+        if (fetched) {
+          await fetched.edit(payload);
+          msg = fetched;
+        }
+      }
+      if (msg) {
+        await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), resolved.id);
+        return msg;
+      }
+    }
+    // If pending never resolves (writer crash), continue and attempt ownership below.
   } else {
-    const m = embed && typeof embed === 'object' && typeof embed.toJSON === 'function' ? await channel.send({ content: content || null, embeds: [embed] }) : await channel.send(content);
+    let ownsCreate = false;
     try {
-      await db.run('INSERT INTO leaderboard_messages (guild_id, channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?, ?)', resolvedGuildId, channel.id, m.id, region, Date.now());
+      await db.run(
+        'INSERT INTO leaderboard_messages (guild_id, channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?, ?)',
+        resolvedGuildId,
+        channel.id,
+        PENDING_MESSAGE_ID,
+        region,
+        Date.now()
+      );
+      ownsCreate = true;
     } catch (e) {
-      console.error('Failed to insert leaderboard message record:', e);
+      const msg = String((e && e.message) || '').toLowerCase();
+      const conflict = msg.includes('unique') || msg.includes('constraint');
+      if (!conflict) {
+        console.error('Failed to insert leaderboard message record:', e);
+      }
+    }
+
+    if (ownsCreate) {
+      try {
+        const m = await channel.send(payload);
+        await db.run(
+          'UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE guild_id = ? AND channel_id = ? AND region = ?',
+          m.id,
+          Date.now(),
+          resolvedGuildId,
+          channel.id,
+          region
+        );
+        return m;
+      } catch (sendErr) {
+        try {
+          await db.run(
+            'DELETE FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ? AND message_id = ?',
+            resolvedGuildId,
+            channel.id,
+            region,
+            PENDING_MESSAGE_ID
+          );
+        } catch (cleanupErr) {
+          void cleanupErr;
+        }
+        throw sendErr;
+      }
+    }
+
+    const resolved = await waitForResolvedRecord();
+    if (resolved && resolved.message_id && resolved.message_id !== PENDING_MESSAGE_ID) {
+      let msg = await tryEditById(resolved.message_id);
+      if (!msg) {
+        const fetched = await tryFetch(resolved.message_id);
+        if (fetched) {
+          await fetched.edit(payload);
+          msg = fetched;
+        }
+      }
+      if (msg) {
+        await db.run('UPDATE leaderboard_messages SET updated_at = ? WHERE id = ?', Date.now(), resolved.id);
+        return msg;
+      }
+    }
+
+    // Last resort fallback if pending owner never completed and no editable row exists.
+    const m = await channel.send(payload);
+    try {
+      await db.run(
+        'UPDATE leaderboard_messages SET message_id = ?, updated_at = ? WHERE guild_id = ? AND channel_id = ? AND region = ?',
+        m.id,
+        Date.now(),
+        resolvedGuildId,
+        channel.id,
+        region
+      );
+    } catch (e) {
+      console.error('Failed to upsert fallback leaderboard message record:', e);
     }
     return m;
   }
 }
 
 function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
-  const { t } = require('./i18n');
-
   let info;
   if (regionLabel === 'GLOBAL') {
     info = { emoji: '🌍', color: 0xFFD700, name: 'Global' };
@@ -228,11 +406,17 @@ function makeLeaderboardEmbed(rows, regionLabel, lang = 'en') {
     const name = i === 0 ? fieldName : `${fieldName} (${i + 1})`;
     embed.addFields({ name, value: toRender[i] });
   }
+  if (chunks.length > maxFields) {
+    embed.addFields({
+      name: 'More Recruiters',
+      value: `...and ${chunks.length - maxFields} more section(s).`,
+      inline: false
+    });
+  }
   return embed;
 }
 
 function makeWarningsEmbed(rows, _lang = 'en') {
-  const { t } = require('./i18n');
   const title = '⚠️ Warnings Leaderboard';
 
   const embed = new EmbedBuilder().setTitle(title).setColor(0xffaa00).setTimestamp();
@@ -244,7 +428,6 @@ function makeWarningsEmbed(rows, _lang = 'en') {
 
   const lines = rows.map((r, i) => `${i + 1}. <@${r.recruiter_id}> — **${r.cnt}** warnings`).join('\n');
   embed.addFields({ name: 'Warnings', value: lines });
-  void t;
   return embed;
 }
 

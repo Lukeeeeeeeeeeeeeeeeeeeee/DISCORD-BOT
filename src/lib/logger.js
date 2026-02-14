@@ -11,6 +11,11 @@ function formatErrorForLog(error) {
   return { message: String(error) };
 }
 
+const VERBOSE_LOGGING = (() => {
+  const raw = String(process.env.VERBOSE_LOGGING || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+})();
+
 function logUnexpectedError(scope, error, meta = {}) {
   const payload = {
     scope,
@@ -18,6 +23,16 @@ function logUnexpectedError(scope, error, meta = {}) {
     error: formatErrorForLog(error)
   };
   console.error('Unexpected error', payload);
+}
+
+function logVerbose(scope, message, meta = {}) {
+  if (!VERBOSE_LOGGING) return;
+  const payload = {
+    scope,
+    message,
+    ...meta
+  };
+  console.log('Verbose', payload);
 }
 
 const ANTINUKE_COMMANDS = new Set([
@@ -68,6 +83,7 @@ function getInteractionMeta(interaction) {
 
 module.exports = {
   logUnexpectedError,
+  logVerbose,
   getCommandCategory,
   getInteractionMeta
 };

@@ -9,9 +9,32 @@ const AntiNukeSystem = require('./lib/antinuke-system');
 const { dispatchCommand } = require('./lib/command-dispatcher');
 const { trackRookieChatMessage } = require('./lib/rookie-chat');
 const { handleRookieWarLogMessage } = require('./lib/rookie-war');
+const { handleMemberLeave } = require('./lib/memberLeave');
 const analytics = require('./lib/analytics');
 const runtime = require('./lib/runtime');
-const { logUnexpectedError, getCommandCategory, getInteractionMeta } = require('./lib/logger');
+const { logUnexpectedError, logVerbose, getCommandCategory, getInteractionMeta } = require('./lib/logger');
+const { startHealthServer } = require('./lib/health-server');
+const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
+const { acquireJobLock } = require('./lib/job-locks');
+const { withTransaction } = require('./lib/transactions');
+const { registerCommands } = require('./register-commands');
+const { isAppError } = require('./lib/errors');
+const { buildErrorEmbed } = require('./lib/embeds');
+const { createInviteTables } = require('./lib/create-invite-tables');
+const { createInteractionCreateHandler } = require('./events/interaction-create');
+const { createGuildMemberRemoveHandler } = require('./events/guild-member-remove');
+const { createVoiceStateUpdateHandler } = require('./events/voice-state-update');
+const { createGuildMemberUpdateHandler } = require('./events/guild-member-update');
+const { createMessageCreateHandler } = require('./events/message-create');
+const { createGuildMemberAddHandler } = require('./events/guild-member-add');
+const { createGuildDeleteHandler } = require('./events/guild-delete');
+const { createGuildBanAddHandler } = require('./events/guild-ban-add');
+const {
+  initWithDb: initInviteSystem,
+  dispose: disposeInviteSystem,
+  getCached: getCachedInviteSystem
+} = require('./services/recruiting/invite-service');
+const { initI18n } = require('./lib/i18n');
 
 const enableMessageContent = (process.env.ENABLE_MESSAGE_CONTENT || '').toLowerCase() === 'true';
 const intents = [
@@ -30,13 +53,121 @@ client.commands = new Collection();
 runtime.setClient(client);
 runtime.setDb(db);
 
+const healthPort = Number.parseInt(process.env.HEALTHCHECK_PORT || '', 10);
+if (Number.isFinite(healthPort)) {
+  startHealthServer({ db, port: healthPort });
+}
+
 // Create anti-nuke system instance
 const antiNukeSystem = new AntiNukeSystem();
 const inviteSnapshots = new Map();
 const inviteTrackLocks = new Map();
 const invitePendingAttributions = new Map();
+const invitePendingUpdatedAt = new Map();
 const voiceSessions = new Map();
 const INVITE_SNAPSHOT_TTL_MS = Number.parseInt(process.env.INVITE_SNAPSHOT_TTL_MS || '900000', 10);
+const INVITE_PENDING_TTL_MS = Number.parseInt(process.env.INVITE_PENDING_TTL_MS || '60000', 10);
+const VOICE_SESSION_STALE_MS = Number.parseInt(process.env.VOICE_SESSION_STALE_MS || String(12 * 60 * 60 * 1000), 10);
+const LOG_ROTATE_MAX_BYTES = Number.parseInt(process.env.LOG_ROTATE_MAX_BYTES || String(10 * 1024 * 1024), 10);
+const LOG_ROTATE_KEEP = Number.parseInt(process.env.LOG_ROTATE_KEEP || '5', 10);
+const LOCAL_LOG_FILES = [
+  'error.log',
+  'failures.txt',
+  'final_test_results.txt',
+  'jest_failures.txt',
+  'verify_output.txt'
+];
+
+async function rotateLogFileIfNeeded(fileName) {
+  if (!fileName) return;
+  const maxBytes = Number.isFinite(LOG_ROTATE_MAX_BYTES) && LOG_ROTATE_MAX_BYTES > 0
+    ? LOG_ROTATE_MAX_BYTES
+    : (10 * 1024 * 1024);
+  const keep = Number.isFinite(LOG_ROTATE_KEEP) && LOG_ROTATE_KEEP > 0 ? LOG_ROTATE_KEEP : 5;
+  const fullPath = path.join(__dirname, '..', fileName);
+
+  let stat = null;
+  try {
+    stat = await fs.promises.stat(fullPath);
+  } catch (e) {
+    return;
+  }
+  if (!stat || !Number.isFinite(stat.size) || stat.size < maxBytes) return;
+
+  try {
+    for (let i = keep; i >= 1; i--) {
+      const src = `${fullPath}.${i}`;
+      const dest = `${fullPath}.${i + 1}`;
+      if (i === keep) {
+        await fs.promises.unlink(src).catch(() => {});
+      } else {
+        await fs.promises.rename(src, dest).catch(() => {});
+      }
+    }
+    await fs.promises.rename(fullPath, `${fullPath}.1`);
+    console.log(`Rotated oversized log file: ${fileName}`);
+  } catch (e) {
+    console.error(`Failed rotating log file ${fileName}:`, e);
+  }
+}
+
+async function rotateLocalLogsIfNeeded() {
+  await Promise.all(LOCAL_LOG_FILES.map(file => rotateLogFileIfNeeded(file)));
+}
+
+async function ensureRuntimeStateTables() {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS runtime_voice_sessions (
+      guild_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      joined_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (guild_id, user_id)
+    );
+  `);
+}
+
+async function loadVoiceSessionsFromDb() {
+  const now = Date.now();
+  const staleCutoff = now - (Number.isFinite(VOICE_SESSION_STALE_MS) && VOICE_SESSION_STALE_MS > 0
+    ? VOICE_SESSION_STALE_MS
+    : (12 * 60 * 60 * 1000));
+  try {
+    await db.run('DELETE FROM runtime_voice_sessions WHERE updated_at < ?', staleCutoff);
+  } catch (e) {
+    console.error('Failed to prune stale runtime voice sessions:', e);
+  }
+
+  try {
+    const rows = await db.all('SELECT guild_id, user_id, joined_at FROM runtime_voice_sessions');
+    for (const row of rows || []) {
+      if (!row || !row.guild_id || !row.user_id) continue;
+      voiceSessions.set(`${row.guild_id}:${row.user_id}`, { joinedAt: Number(row.joined_at) || now });
+    }
+  } catch (e) {
+    console.error('Failed to load runtime voice sessions:', e);
+  }
+}
+
+async function upsertVoiceSession(guildId, userId, joinedAt) {
+  if (!guildId || !userId || !Number.isFinite(joinedAt)) return;
+  await db.run(
+    `INSERT INTO runtime_voice_sessions (guild_id, user_id, joined_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(guild_id, user_id) DO UPDATE SET
+       joined_at = excluded.joined_at,
+       updated_at = excluded.updated_at`,
+    guildId,
+    userId,
+    joinedAt,
+    Date.now()
+  );
+}
+
+async function deleteVoiceSession(guildId, userId) {
+  if (!guildId || !userId) return;
+  await db.run('DELETE FROM runtime_voice_sessions WHERE guild_id = ? AND user_id = ?', guildId, userId);
+}
 
 const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
   console.log('🛡️ Complete anti-nuke system with rollback ready!');
@@ -45,25 +176,31 @@ const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
 });
 
 const inviteInitPromise = (async () => {
-  const { createInviteTables } = require('./lib/create-invite-tables');
-  const inviteCommand = require('./commands/recruiting/invite');
   await createInviteTables();
-  await inviteCommand.init();
+  await initInviteSystem(GUILD_ID, db);
   console.log('🔗 Invite system ready!');
 })().catch(err => {
   console.error('❌ Failed to initialize invite system:', err);
 });
 
 const commandsPath = path.join(__dirname, 'commands');
+const IGNORE_COMMAND_DIRS = new Set(['recruiter-handlers']);
+const IGNORE_COMMAND_FILES = new Set(['verify.js', 'recruiter-helpers.js']);
 
 function loadCommandsRecursively(dir) {
-  const files = fs.readdirSync(dir);
-  for (const file of files) {
-    const fullPath = path.join(dir, file);
-    const stat = fs.statSync(fullPath);
-    if (stat.isDirectory()) {
-      loadCommandsRecursively(fullPath);
-    } else if (file.endsWith('.js') && file !== 'verify.js') {
+  return fs.promises.readdir(dir, { withFileTypes: true }).then(async (entries) => {
+    for (const entry of entries) {
+      if (!entry) continue;
+      const file = entry.name;
+      const fullPath = path.join(dir, file);
+
+      if (entry.isDirectory()) {
+        if (IGNORE_COMMAND_DIRS.has(file)) continue;
+        await loadCommandsRecursively(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile() || !file.endsWith('.js') || IGNORE_COMMAND_FILES.has(file)) continue;
       try {
         const cmd = require(fullPath);
         if (cmd && cmd.data && cmd.data.name && typeof cmd.execute === 'function') {
@@ -75,49 +212,88 @@ function loadCommandsRecursively(dir) {
         console.error(`Failed to load command ${file}:`, e);
       }
     }
-  }
+  });
 }
 
-loadCommandsRecursively(commandsPath);
+const commandLoadPromise = loadCommandsRecursively(commandsPath).catch((err) => {
+  console.error('Failed while loading command modules:', err);
+});
 
 let _readyCalled = false;
+let systemsReady = false;
 async function onReady() {
   if (_readyCalled) return;
   _readyCalled = true;
-  console.log(`Logged in as ${client.user.tag}`);
-  await antiNukeInitPromise;
-  scheduler.start(client, db);
-
-  await inviteInitPromise;
-  const guildId = GUILD_ID;
-  const guild = guildId ? client.guilds.cache.get(guildId) : null;
-  if (guild) {
-    cacheGuildInvites(guild).catch(err => {
-      console.error('Failed to cache guild invites on startup:', err);
-    });
-  }
-
-  // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
-  if (guildId) {
-    try {
-      const { registerCommands } = require('./register-commands');
-      registerCommands({ guildId }).then(() => {
-        console.log(`Auto-synced commands to guild ${guildId}.`);
-      }).catch(err => {
-        console.error('Failed to auto-sync commands on startup:', err);
-      });
-    } catch (err) {
-      console.error('Failed to require register-commands for auto-sync:', err);
+  try {
+    console.log(`Logged in as ${client.user.tag}`);
+    await rotateLocalLogsIfNeeded();
+    await commandLoadPromise;
+    await initI18n();
+    if (analytics && typeof analytics.restorePendingFromDisk === 'function') {
+      const restoredEntries = await analytics.restorePendingFromDisk();
+      if (restoredEntries > 0) {
+        console.log(`Restored ${restoredEntries} pending analytics entries from disk.`);
+      }
     }
+    await ensureRuntimeStateTables();
+    await loadVoiceSessionsFromDb();
+    await antiNukeInitPromise;
+    scheduler.start(client, db);
+
+    await inviteInitPromise;
+    for (const cachedGuild of client.guilds.cache.values()) {
+      const snapshot = await loadInviteSnapshotFromDb(cachedGuild.id).catch(() => null);
+      if (snapshot && snapshot.size) {
+        inviteSnapshots.set(cachedGuild.id, snapshot);
+      }
+    }
+    const guildId = GUILD_ID;
+    const guild = guildId ? client.guilds.cache.get(guildId) : null;
+    if (guild) {
+      cacheGuildInvites(guild).catch(err => {
+        console.error('Failed to cache guild invites on startup:', err);
+      });
+    }
+
+    // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
+    if (guildId) {
+      try {
+        registerCommands({ guildId }).then(() => {
+          console.log(`Auto-synced commands to guild ${guildId}.`);
+        }).catch(err => {
+          console.error('Failed to auto-sync commands on startup:', err);
+        });
+      } catch (err) {
+        console.error('Failed to require register-commands for auto-sync:', err);
+      }
+    }
+    systemsReady = true;
+  } catch (err) {
+    systemsReady = false;
+    console.error('Startup initialization failed; bot will remain in guarded mode.', err);
   }
 }
-// Use the ready event to start schedulers and subsystems once the client is online.
+// Start schedulers/subsystems once the client is online (support both event names for compatibility).
 client.once('ready', onReady);
+client.once('clientReady', onReady);
 
 async function flushShutdown(signal) {
   try {
-    if (analytics && typeof analytics.flushAll === 'function') {
-      await analytics.flushAll();
+    if (analytics) {
+      if (typeof analytics.flushAll === 'function') {
+        try {
+          await analytics.flushAll();
+        } catch (flushErr) {
+          console.error('Failed to flush analytics during shutdown:', flushErr);
+        }
+      }
+      if (typeof analytics.spillPendingToDisk === 'function') {
+        try {
+          await analytics.spillPendingToDisk();
+        } catch (spillErr) {
+          console.error('Failed to spill pending analytics during shutdown:', spillErr);
+        }
+      }
     }
     const antiNuke = runtime.getAntiNuke();
     if (antiNuke && typeof antiNuke.saveData === 'function') {
@@ -130,12 +306,37 @@ async function flushShutdown(signal) {
   } catch (e) {
     console.error('Failed to flush anti-nuke data on shutdown:', e);
   } finally {
+    try {
+      if (db && typeof db.close === 'function') {
+        await db.close();
+      }
+    } catch (closeErr) {
+      console.error('Failed to close DB on shutdown:', closeErr);
+    }
+    try {
+      runtime.clearAntiNukeRollback();
+      runtime.clearAntiNuke();
+      runtime.clearDb();
+      runtime.clearClient();
+    } catch (stateErr) {
+      void stateErr;
+    }
     if (signal) process.exit(0);
   }
 }
 
 process.on('SIGINT', () => void flushShutdown('SIGINT'));
 process.on('SIGTERM', () => void flushShutdown('SIGTERM'));
+process.on('message', async (msg) => {
+  if (msg === 'shutdown') {
+    await flushShutdown('SHARD_MANAGER');
+    return;
+  }
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.type === 'shutdown') {
+    await flushShutdown(msg.signal || 'SHARD_MANAGER');
+  }
+});
 process.on('uncaughtException', async (err) => {
   console.error('Uncaught exception:', err);
   await flushShutdown('uncaughtException');
@@ -145,218 +346,96 @@ process.on('unhandledRejection', async (reason) => {
   await flushShutdown('unhandledRejection');
 });
 
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-  const cmd = client.commands.get(interaction.commandName);
-  if (!cmd) return;
-  try {
-    if (interaction.guild) {
-      await analytics.recordCommand({ guildId: interaction.guild.id, commandName: interaction.commandName });
-    }
-    await dispatchCommand(cmd, interaction, { client, db });
-  } catch (err) {
-    // If the interaction itself failed because it's unknown/expired (10062), ignore silently
-    if (err && err.code === 10062) return;
-    const meta = getInteractionMeta(interaction);
-    const category = getCommandCategory(meta.command);
-    logUnexpectedError('command', err, { ...meta, category });
-    // Safely notify the user (use editReply if deferred/replied)
-    try {
-      const { buildErrorEmbed } = require('./lib/embeds');
-      const embed = buildErrorEmbed('Command failed.');
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.reply({ embeds: [embed], flags: 64 });
-      }
-    } catch (err2) {
-      // If the interaction is expired, Discord returns code 10062 — ignore silently
-      if (err2 && err2.code === 10062) return;
-      // otherwise log
-      console.error('Failed to send error response for interaction:', err2);
-    }
-  }
-});
+client.on('interactionCreate', createInteractionCreateHandler({
+  isSystemsReady: () => systemsReady,
+  client,
+  db,
+  analytics,
+  dispatchCommand,
+  logVerbose,
+  getCommandCategory,
+  getInteractionMeta,
+  isAppError,
+  logUnexpectedError,
+  buildErrorEmbed
+}));
 
-client.on('guildMemberUpdate', async (oldMember, newMember) => {
-  try {
-    if (!oldMember || !newMember) return;
-    if (!newMember.user || newMember.user.bot) return;
-    if (!oldMember.roles || !oldMember.roles.cache || !newMember.roles || !newMember.roles.cache) return;
+client.on('guildMemberUpdate', createGuildMemberUpdateHandler({
+  isSystemsReady: () => systemsReady,
+  ROLE_IDS,
+  RECRUITER_ROLE_IDS,
+  analytics
+}));
 
-    const staffRoles = Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
-      ? ROLE_IDS.STAFF.filter(Boolean)
-      : [
-        ROLE_IDS.HELPER,
-        ROLE_IDS.HELPER_PLUS,
-        ROLE_IDS.HIGH_STAFF,
-        ROLE_IDS.MOD,
-        ROLE_IDS.CHIEF,
-        ROLE_IDS.CHIEF_OF_WAR,
-        ROLE_IDS.CHIEF_OF_COMMUNITY,
-        ROLE_IDS.CHIEF_OF_RECRUITMENT,
-        ROLE_IDS.CO_LEADER,
-        ROLE_IDS.LEADER
-      ].filter(Boolean);
+client.on('messageCreate', createMessageCreateHandler({
+  isSystemsReady: () => systemsReady,
+  enableMessageContent,
+  analytics,
+  db,
+  client,
+  trackRookieChatMessage,
+  handleRookieWarLogMessage
+}));
 
-    const recruiterRoles = [
-      ROLE_IDS.RECRUITER,
-      ROLE_IDS.TRIAL_RECRUITER,
-      ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
-    ].filter(Boolean);
-
-    const teamRoles = ROLE_IDS.TEAM_MEMBER ? Object.values(ROLE_IDS.TEAM_MEMBER).filter(Boolean) : [];
-    const trackedRoleIds = new Set([...staffRoles, ...recruiterRoles, ...teamRoles, ROLE_IDS.AUTO_PROMOTE_ROLE]);
-
-    const added = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id) && trackedRoleIds.has(role.id));
-    const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id) && trackedRoleIds.has(role.id));
-
-    for (const role of added.values()) {
-      await analytics.recordRoleChange({
-        guildId: newMember.guild.id,
-        userId: newMember.id,
-        roleId: role.id,
-        roleName: role.name,
-        action: 'added',
-        timestamp: Date.now()
-      });
-    }
-
-    for (const role of removed.values()) {
-      await analytics.recordRoleChange({
-        guildId: newMember.guild.id,
-        userId: newMember.id,
-        roleId: role.id,
-        roleName: role.name,
-        action: 'removed',
-        timestamp: Date.now()
-      });
-    }
-  } catch (e) {
-    console.error('Failed to record role change analytics:', e);
-  }
-});
-
-client.on('messageCreate', async message => {
-  if (!message || !message.guild) return;
-  if (!message.author || message.author.bot) return;
-
-  const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
-  if (!member) return;
-
-  try {
-    await analytics.recordMessage({
-      guildId: message.guild.id,
-      channelId: message.channelId,
-      userId: message.author.id,
-      timestamp: message.createdTimestamp || Date.now()
-    });
-  } catch (e) {
-    console.error('Failed to record analytics message:', e);
-  }
-
-  try {
-    await trackRookieChatMessage({ db, member, guild: message.guild, client });
-  } catch (e) {
-    console.error('Failed to track rookie chat message:', e);
-  }
-
-  if (enableMessageContent) {
-    try {
-      await handleRookieWarLogMessage({ db, message, member, guild: message.guild, client });
-    } catch (e) {
-      console.error('Failed to track rookie war log:', e);
-    }
-  }
-});
-
-// Track invite usage when members join
-client.on('guildMemberAdd', async (member) => {
-  try {
-    await analytics.recordJoin({ guildId: member.guild.id, userId: member.id, joinedAt: member.joinedAt ? member.joinedAt.getTime() : Date.now() });
-  } catch (e) {
-    console.error('Failed to record join analytics:', e);
-  }
-
-  try {
-    // Get invite system instance
-    const inviteCommand = require('./commands/invite');
-    const inviteSystem = await inviteCommand.init();
-
-    if (!inviteSystem) return;
-
-    console.log(` Member ${member.user.tag} joined the server`);
-    await trackInviteUsage(member.guild, inviteSystem, member.id).catch(err => {
-      console.error('Invite usage tracking failed:', err);
-    });
-
-  } catch (error) {
-    console.error('Error tracking invite usage:', error);
-  }
-});
+client.on('guildMemberAdd', createGuildMemberAddHandler({
+  isSystemsReady: () => systemsReady,
+  analytics,
+  inviteInitPromise,
+  getCachedInviteSystem,
+  initInviteSystem,
+  trackInviteUsage,
+  db
+}));
 
 client.on('error', err => {
   console.error('Discord client error:', err);
 });
 
+client.on('guildDelete', createGuildDeleteHandler({
+  inviteSnapshots,
+  inviteTrackLocks,
+  invitePendingAttributions,
+  invitePendingUpdatedAt,
+  voiceSessions,
+  db,
+  disposeInviteSystem
+}));
+
 // When a member leaves, mark their recruit(s) invalid and recompute flags/leaderboards immediately
-client.on('guildMemberRemove', async member => {
-  try {
-    await analytics.recordLeave({ guildId: member.guild.id, userId: member.id, leftAt: Date.now() });
-  } catch (e) {
-    console.error('Failed to record leave analytics:', e);
-  }
+client.on('guildMemberRemove', createGuildMemberRemoveHandler({
+  isSystemsReady: () => systemsReady,
+  analytics,
+  voiceSessions,
+  deleteVoiceSession,
+  handleMemberLeave,
+  db
+}));
 
-  try {
-    voiceSessions.delete(`${member.guild.id}:${member.id}`);
-  } catch (e) {
-    void e;
-  }
+client.on('guildBanAdd', createGuildBanAddHandler({
+  voiceSessions,
+  deleteVoiceSession
+}));
 
-  try {
-    const { handleMemberLeave } = require('./lib/memberLeave');
-    await handleMemberLeave(db, member.guild, member);
-  } catch (err) {
-    console.error('Error handling member leave:', err);
-  }
-});
+client.on('voiceStateUpdate', createVoiceStateUpdateHandler({
+  isSystemsReady: () => systemsReady,
+  analytics,
+  voiceSessions,
+  upsertVoiceSession,
+  deleteVoiceSession
+}));
 
-client.on('voiceStateUpdate', async (oldState, newState) => {
-  const member = newState.member || oldState.member;
-  if (!member || !member.user || member.user.bot) return;
-  const guild = newState.guild || oldState.guild;
-  if (!guild) return;
-  const key = `${guild.id}:${member.id}`;
-  const now = Date.now();
-  const oldChannelId = oldState.channelId;
-  const newChannelId = newState.channelId;
-
-  if (!oldChannelId && newChannelId) {
-    voiceSessions.set(key, { joinedAt: now });
-    return;
-  }
-
-  if (oldChannelId && !newChannelId) {
-    const session = voiceSessions.get(key);
-    const joinedAt = session ? session.joinedAt : null;
-    if (joinedAt) {
-      const minutes = Math.max(1, Math.round((now - joinedAt) / 60000));
-      await analytics.recordVoiceMinutes({ guildId: guild.id, userId: member.id, minutes, timestamp: now });
+if (typeof process.send === 'function') {
+  const heartbeatMs = Number.parseInt(process.env.SHARD_HEARTBEAT_MS || '30000', 10);
+  const safeHeartbeatMs = Number.isFinite(heartbeatMs) && heartbeatMs > 0 ? heartbeatMs : 30000;
+  const timer = setInterval(() => {
+    try {
+      process.send({ type: 'heartbeat', timestamp: Date.now(), pid: process.pid });
+    } catch (e) {
+      void e;
     }
-    voiceSessions.delete(key);
-    return;
-  }
-
-  if (oldChannelId && newChannelId && oldChannelId !== newChannelId) {
-    const session = voiceSessions.get(key);
-    const joinedAt = session ? session.joinedAt : null;
-    if (joinedAt) {
-      const minutes = Math.max(1, Math.round((now - joinedAt) / 60000));
-      await analytics.recordVoiceMinutes({ guildId: guild.id, userId: member.id, minutes, timestamp: now });
-    }
-    voiceSessions.set(key, { joinedAt: now });
-  }
-});
+  }, safeHeartbeatMs);
+  if (typeof timer.unref === 'function') timer.unref();
+}
 
 async function loadInviteSnapshotFromDb(guildId) {
   if (!guildId) return null;
@@ -386,33 +465,32 @@ async function persistInviteSnapshot(guildId, snapshot) {
   if (!guildId || !snapshot) return;
   const codes = Array.from(snapshot.keys());
   try {
-    await db.exec('BEGIN');
-    const now = Date.now();
-    for (const code of codes) {
-      const uses = Number(snapshot.get(code) || 0);
-      await db.run(
-        `INSERT INTO invite_snapshots (guild_id, invite_code, uses, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(guild_id, invite_code) DO UPDATE SET uses = excluded.uses, updated_at = excluded.updated_at`,
-        guildId,
-        code,
-        uses,
-        now
-      );
-    }
-    if (codes.length) {
-      const placeholders = codes.map(() => '?').join(', ');
-      await db.run(
-        `DELETE FROM invite_snapshots WHERE guild_id = ? AND invite_code NOT IN (${placeholders})`,
-        guildId,
-        ...codes
-      );
-    } else {
-      await db.run('DELETE FROM invite_snapshots WHERE guild_id = ?', guildId);
-    }
-    await db.exec('COMMIT');
+    await withTransaction(db, async (tx) => {
+      const now = Date.now();
+      for (const code of codes) {
+        const uses = Number(snapshot.get(code) || 0);
+        await tx.run(
+          `INSERT INTO invite_snapshots (guild_id, invite_code, uses, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(guild_id, invite_code) DO UPDATE SET uses = excluded.uses, updated_at = excluded.updated_at`,
+          guildId,
+          code,
+          uses,
+          now
+        );
+      }
+      if (codes.length) {
+        const placeholders = codes.map(() => '?').join(', ');
+        await tx.run(
+          `DELETE FROM invite_snapshots WHERE guild_id = ? AND invite_code NOT IN (${placeholders})`,
+          guildId,
+          ...codes
+        );
+      } else {
+        await tx.run('DELETE FROM invite_snapshots WHERE guild_id = ?', guildId);
+      }
+    });
   } catch (e) {
-    try { await db.exec('ROLLBACK'); } catch (err) { void err; }
     console.error('Failed to persist invite snapshot:', e);
   }
 }
@@ -435,6 +513,22 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
   if (!guild || typeof guild.invites?.fetch !== 'function') return;
   const lock = inviteTrackLocks.get(guild.id) || Promise.resolve();
   const run = lock.then(async () => {
+    // Cross-process/shard safety: only one process should diff invite snapshots per guild per second bucket.
+    // This reduces duplicate/misattributed usage when multiple shards/processes observe the same join burst.
+    try {
+      const bucket = Math.floor(Date.now() / 1000);
+      const lockOk = await acquireJobLock(db, {
+        guildId: guild.id,
+        key: `invite_track_${bucket}`,
+        ttlMs: 5000,
+        failOpen: false
+      });
+      if (!lockOk) return;
+    } catch (e) {
+      // Best effort only; continue with local lock behavior when lock acquisition fails unexpectedly.
+      console.error('Invite attribution distributed lock check failed:', e);
+    }
+
     let previous = inviteSnapshots.get(guild.id);
     let coldStart = !previous || previous.size === 0;
     if (coldStart) {
@@ -463,15 +557,19 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     inviteSnapshots.set(guild.id, updated);
     await persistInviteSnapshot(guild.id, updated);
     const pendingMap = invitePendingAttributions.get(guild.id) || new Map();
+    const lastPendingAt = invitePendingUpdatedAt.get(guild.id) || 0;
+    if (pendingMap.size && INVITE_PENDING_TTL_MS > 0 && (Date.now() - lastPendingAt) > INVITE_PENDING_TTL_MS) {
+      pendingMap.clear();
+    }
 
     if (coldStart) {
       // With no pre-join snapshot, avoid guessing from total uses.
       try {
         const canFallback = invites && invites.size === 1;
         if (canFallback && inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
-          const candidates = await inviteSystem.getActiveInviteCodeCandidates();
+          const candidates = await inviteSystem.getActiveInviteCodeCandidates(guild.id);
           if (candidates && candidates.length === 1 && invites.has(candidates[0])) {
-            await inviteSystem.markInviteUsed(candidates[0], joinedUserId);
+            await inviteSystem.markInviteUsed(candidates[0], joinedUserId, guild.id);
             await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
           }
         }
@@ -521,13 +619,15 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
 
     if (pendingMap.size) {
       invitePendingAttributions.set(guild.id, pendingMap);
+      invitePendingUpdatedAt.set(guild.id, Date.now());
     } else {
       invitePendingAttributions.delete(guild.id);
+      invitePendingUpdatedAt.delete(guild.id);
     }
 
     // If this invite code belongs to our tracked recruiter_invites, mark it used
     if (usedCode && inviteSystem && typeof inviteSystem.markInviteUsed === 'function') {
-      await inviteSystem.markInviteUsed(usedCode, joinedUserId);
+      await inviteSystem.markInviteUsed(usedCode, joinedUserId, guild.id);
       await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
       return;
     }
@@ -536,9 +636,9 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     try {
       const canFallback = invites && invites.size === 1;
       if (!usedCode && canFallback && inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
-        const candidates = await inviteSystem.getActiveInviteCodeCandidates();
+        const candidates = await inviteSystem.getActiveInviteCodeCandidates(guild.id);
         if (candidates && candidates.length === 1 && invites.has(candidates[0])) {
-          await inviteSystem.markInviteUsed(candidates[0], joinedUserId);
+          await inviteSystem.markInviteUsed(candidates[0], joinedUserId, guild.id);
           await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
         }
       }
@@ -560,9 +660,17 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
 }
 
 (async () => {
-  // sanitize token from .env (trim, remove surrounding quotes)
-  const rawToken = process.env.DISCORD_TOKEN;
-  const token = rawToken ? rawToken.trim().replace(/^"(.+)"$/, '$1') : null;
+  try {
+    const warnings = validateRuntimeEnvironment({ minNodeMajor: 18 });
+    for (const warning of warnings) {
+      console.warn(`ENV WARNING: ${warning}`);
+    }
+  } catch (e) {
+    console.error(`FATAL: ${e.message}`);
+    process.exit(1);
+  }
+
+  const token = sanitizeEnvToken(process.env.DISCORD_TOKEN);
   if (!token) {
     console.error('FATAL: DISCORD_TOKEN is missing from environment. Create a .env with DISCORD_TOKEN=<your token> and restart.');
     process.exit(1);

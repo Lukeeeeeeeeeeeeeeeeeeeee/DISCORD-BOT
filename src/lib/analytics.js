@@ -1,7 +1,10 @@
 const db = require('../db_async');
+const fs = require('fs').promises;
+const path = require('path');
 
 const FLUSH_INTERVAL_MS = Number.parseInt(process.env.ANALYTICS_FLUSH_MS || '10000', 10);
 const MAX_BUFFER_SIZE = Number.parseInt(process.env.ANALYTICS_BUFFER_MAX || '5000', 10);
+const ANALYTICS_PENDING_FILE = path.join(__dirname, '../data/analytics_pending.json');
 
 function toDayKey(ts = Date.now()) {
   return new Date(ts).toISOString().slice(0, 10);
@@ -30,6 +33,28 @@ let voiceDaily = new Map();
 let pendingWrites = 0;
 let flushTimer = null;
 let flushInFlight = null;
+
+const DAILY_GUILD_COUNTER_SQL = {
+  joins: `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+          VALUES (?, ?, ?, 0, 0, 1, 0, 0, 0)
+          ON CONFLICT(day, guild_id) DO UPDATE SET joins = joins + 1`,
+  leaves: `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+           VALUES (?, ?, ?, 0, 0, 0, 1, 0, 0)
+           ON CONFLICT(day, guild_id) DO UPDATE SET leaves = leaves + 1`,
+  invites_created: `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+                    VALUES (?, ?, ?, 0, 0, 0, 0, 1, 0)
+                    ON CONFLICT(day, guild_id) DO UPDATE SET invites_created = invites_created + 1`,
+  invites_used: `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+                 VALUES (?, ?, ?, 0, 0, 0, 0, 0, 1)
+                 ON CONFLICT(day, guild_id) DO UPDATE SET invites_used = invites_used + 1`
+};
+
+async function bumpDailyGuildCounter(guildId, timestamp, field) {
+  const sql = DAILY_GUILD_COUNTER_SQL[field];
+  if (!sql || !guildId) return;
+  const ts = timestamp || Date.now();
+  await db.run(sql, toDayKey(ts), toDayTs(ts), guildId);
+}
 
 function scheduleFlush() {
   if (!FLUSH_INTERVAL_MS || FLUSH_INTERVAL_MS <= 0) return;
@@ -158,6 +183,85 @@ function countSnapshotEntries(snapshot) {
     + snapshot.userActivity.size
     + snapshot.commandUsage.size
     + snapshot.voiceDaily.size;
+}
+
+function serializeSnapshot(snapshot) {
+  if (!snapshot) return null;
+  return {
+    channelCounts: Array.from(snapshot.channelCounts.entries()),
+    channelSpeakers: Array.from(snapshot.channelSpeakers.entries()).map(([k, speakers]) => [k, Array.from(speakers || [])]),
+    guildCounts: Array.from(snapshot.guildCounts.entries()),
+    guildSpeakers: Array.from(snapshot.guildSpeakers.entries()).map(([k, speakers]) => [k, Array.from(speakers || [])]),
+    userDailyMessages: Array.from(snapshot.userDailyMessages.entries()),
+    userActivity: Array.from(snapshot.userActivity.entries()),
+    commandUsage: Array.from(snapshot.commandUsage.entries()),
+    voiceDaily: Array.from(snapshot.voiceDaily.entries())
+  };
+}
+
+function deserializeSnapshot(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    channelCounts: new Map(Array.isArray(raw.channelCounts) ? raw.channelCounts : []),
+    channelSpeakers: new Map(
+      Array.isArray(raw.channelSpeakers)
+        ? raw.channelSpeakers.map(([k, speakers]) => [k, new Set(Array.isArray(speakers) ? speakers : [])])
+        : []
+    ),
+    guildCounts: new Map(Array.isArray(raw.guildCounts) ? raw.guildCounts : []),
+    guildSpeakers: new Map(
+      Array.isArray(raw.guildSpeakers)
+        ? raw.guildSpeakers.map(([k, speakers]) => [k, new Set(Array.isArray(speakers) ? speakers : [])])
+        : []
+    ),
+    userDailyMessages: new Map(Array.isArray(raw.userDailyMessages) ? raw.userDailyMessages : []),
+    userActivity: new Map(Array.isArray(raw.userActivity) ? raw.userActivity : []),
+    commandUsage: new Map(Array.isArray(raw.commandUsage) ? raw.commandUsage : []),
+    voiceDaily: new Map(Array.isArray(raw.voiceDaily) ? raw.voiceDaily : [])
+  };
+}
+
+async function spillPendingToDisk() {
+  const snapshot = drainBuffers();
+  if (!hasPending(snapshot)) return false;
+  try {
+    await fs.mkdir(path.dirname(ANALYTICS_PENDING_FILE), { recursive: true });
+    const tmpPath = `${ANALYTICS_PENDING_FILE}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify({
+      createdAt: Date.now(),
+      snapshot: serializeSnapshot(snapshot)
+    }), 'utf8');
+    await fs.rename(tmpPath, ANALYTICS_PENDING_FILE);
+    return true;
+  } catch (e) {
+    console.error('Failed to spill analytics pending buffer to disk:', e);
+    mergeSnapshot(snapshot);
+    pendingWrites = Math.min(MAX_BUFFER_SIZE, pendingWrites + countSnapshotEntries(snapshot));
+    scheduleFlush();
+    return false;
+  }
+}
+
+async function restorePendingFromDisk() {
+  try {
+    const content = await fs.readFile(ANALYTICS_PENDING_FILE, 'utf8');
+    const parsed = JSON.parse(content);
+    const snapshot = deserializeSnapshot(parsed && parsed.snapshot ? parsed.snapshot : parsed);
+    if (!snapshot || !hasPending(snapshot)) {
+      try { await fs.unlink(ANALYTICS_PENDING_FILE); } catch (e) { void e; }
+      return 0;
+    }
+    const entryCount = countSnapshotEntries(snapshot);
+    mergeSnapshot(snapshot);
+    pendingWrites = Math.min(MAX_BUFFER_SIZE, pendingWrites + entryCount);
+    try { await fs.unlink(ANALYTICS_PENDING_FILE); } catch (e) { void e; }
+    scheduleFlush();
+    return entryCount;
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return 0;
+    console.error('Failed to restore analytics pending buffer:', e);
+    return 0;
+  }
 }
 
 async function flushAll() {
@@ -422,19 +526,7 @@ async function recordCommand({ guildId, commandName, timestamp = Date.now() }) {
 async function recordJoin({ guildId, userId, joinedAt }) {
   if (!guildId || !userId) return;
   const ts = joinedAt || Date.now();
-  const day = toDayKey(ts);
-
-  await db.run(
-    'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
-    day,
-    toDayTs(ts),
-    guildId
-  );
-  await db.run(
-    'UPDATE analytics_daily_guild SET joins = joins + 1 WHERE day = ? AND guild_id = ?',
-    day,
-    guildId
-  );
+  await bumpDailyGuildCounter(guildId, ts, 'joins');
   await db.run(
     'INSERT OR REPLACE INTO analytics_members (guild_id, user_id, joined_at, left_at) VALUES (?, ?, ?, NULL)',
     guildId,
@@ -446,19 +538,7 @@ async function recordJoin({ guildId, userId, joinedAt }) {
 async function recordLeave({ guildId, userId, leftAt }) {
   if (!guildId || !userId) return;
   const ts = leftAt || Date.now();
-  const day = toDayKey(ts);
-
-  await db.run(
-    'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
-    day,
-    toDayTs(ts),
-    guildId
-  );
-  await db.run(
-    'UPDATE analytics_daily_guild SET leaves = leaves + 1 WHERE day = ? AND guild_id = ?',
-    day,
-    guildId
-  );
+  await bumpDailyGuildCounter(guildId, ts, 'leaves');
   await db.run(
     'INSERT OR REPLACE INTO analytics_members (guild_id, user_id, joined_at, left_at) VALUES (?, ?, COALESCE((SELECT joined_at FROM analytics_members WHERE guild_id = ? AND user_id = ?), NULL), ?)',
     guildId,
@@ -471,34 +551,12 @@ async function recordLeave({ guildId, userId, leftAt }) {
 
 async function recordInviteCreated({ guildId, timestamp = Date.now() }) {
   if (!guildId) return;
-  const day = toDayKey(timestamp);
-  await db.run(
-    'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
-    day,
-    toDayTs(timestamp),
-    guildId
-  );
-  await db.run(
-    'UPDATE analytics_daily_guild SET invites_created = invites_created + 1 WHERE day = ? AND guild_id = ?',
-    day,
-    guildId
-  );
+  await bumpDailyGuildCounter(guildId, timestamp, 'invites_created');
 }
 
 async function recordInviteUsed({ guildId, timestamp = Date.now() }) {
   if (!guildId) return;
-  const day = toDayKey(timestamp);
-  await db.run(
-    'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
-    day,
-    toDayTs(timestamp),
-    guildId
-  );
-  await db.run(
-    'UPDATE analytics_daily_guild SET invites_used = invites_used + 1 WHERE day = ? AND guild_id = ?',
-    day,
-    guildId
-  );
+  await bumpDailyGuildCounter(guildId, timestamp, 'invites_used');
 }
 
 async function recordVoiceMinutes({ guildId, userId, minutes, timestamp = Date.now() }) {
@@ -541,5 +599,7 @@ module.exports = {
   recordInviteUsed,
   recordVoiceMinutes,
   recordRoleChange,
-  flushAll
+  flushAll,
+  spillPendingToDisk,
+  restorePendingFromDisk
 };

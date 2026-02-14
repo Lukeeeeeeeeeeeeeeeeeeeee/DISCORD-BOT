@@ -1,5 +1,8 @@
 jest.setTimeout(15000);
 
+process.env.OWNER_ID = process.env.OWNER_ID || 'TEST_OWNER';
+process.env.ANTINUKE_ENCRYPTION_KEY = process.env.ANTINUKE_ENCRYPTION_KEY || 'test-encryption-key';
+
 const AntiNukeSystem = require('../src/lib/antinuke-system');
 
 describe('integration: anti-nuke -> rollback recording', () => {
@@ -39,7 +42,7 @@ describe('integration: anti-nuke -> rollback recording', () => {
 
     // Wire anti-nuke to our client + guild
     system.antiNuke.client = client;
-    system.antiNuke.whitelist = new Set();
+    system.antiNuke.whitelist = new Map();
 
     // Enable integration wrapping
     system.setupIntegration();

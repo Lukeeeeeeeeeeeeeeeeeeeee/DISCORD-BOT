@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
 const { buildErrorEmbed } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
 
 module.exports = {
@@ -17,7 +18,6 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
       return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
     }
@@ -27,17 +27,8 @@ module.exports = {
       return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
 
-    if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
-
-    const respond = (payload) => {
-      if (interaction.deferred || interaction.replied) {
-        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
-        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
-      }
-      return interaction.reply(payload);
-    };
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const formatWindow = (ms) => {
       if (!ms && ms !== 0) return 'unknown';
@@ -48,7 +39,7 @@ module.exports = {
     const windowLabel = formatWindow(antiNuke.BEAST_MODE_WINDOW || (24 * 60 * 60 * 1000));
     const user = interaction.options.getUser('user');
     const score = antiNuke.getUserScore(interaction.guild.id, user.id);
-    const isWhitelisted = antiNuke.isWhitelisted(user.id);
+    const isWhitelisted = antiNuke.isWhitelisted(user.id, interaction.guild.id);
     const threshold = antiNuke.BEAST_MODE_THRESHOLD || 40;
     const level = typeof antiNuke.getScoreLevel === 'function'
       ? antiNuke.getScoreLevel(score)
@@ -61,10 +52,10 @@ module.exports = {
             : 'safe';
 
     const statusMap = {
-      safe: { label: 'Safe', color: 0x00FF00, emoji: '🟢' },
-      warning: { label: 'Warning', color: 0xFFFF00, emoji: '🟡' },
-      danger: { label: 'Danger', color: 0xFFA500, emoji: '🟠' },
-      critical: { label: 'Critical', color: 0x992D22, emoji: '�' }
+      safe: { label: 'Safe', color: 0x00FF00 },
+      warning: { label: 'Warning', color: 0xFFFF00 },
+      danger: { label: 'Danger', color: 0xFFA500 },
+      critical: { label: 'Critical', color: 0x992D22 }
     };
     const statusInfo = statusMap[level] || statusMap.safe;
     const pointsUntilBan = Math.max(0, threshold - score);
@@ -77,51 +68,51 @@ module.exports = {
         const label = typeof antiNuke.formatActionLabel === 'function'
           ? antiNuke.formatActionLabel(action.type)
           : action.type;
-        return `• ${label} (+${action.points}) — <t:${Math.floor(action.timestamp / 1000)}:R>`;
+        return `- ${label} (+${action.points}) - <t:${Math.floor(action.timestamp / 1000)}:R>`;
       })
       : ['No recent actions'];
-    
+
     const embed = new EmbedBuilder()
       .setColor(statusInfo.color)
-      .setTitle(`${statusInfo.emoji} Beast Mode Score Check`)
+      .setTitle('Beast Mode Score Check')
       .setThumbnail(user.displayAvatarURL())
       .addFields(
-        { 
-          name: '👤 User', 
-          value: `${user.tag}\n${user.id}`, 
-          inline: true 
+        {
+          name: 'User',
+          value: `${user.tag}\n${user.id}`,
+          inline: true
         },
         {
-          name: '📊 Score',
+          name: 'Score',
           value: `${score} / ${threshold}`,
           inline: true
         },
         {
-          name: '🛡️ Status',
-          value: `${statusInfo.label} ${pointsUntilBan === 0 ? '(BAN THRESHOLD)' : `(${pointsUntilBan} points until ban)`}`,
+          name: 'Status',
+          value: `${statusInfo.label}${pointsUntilBan === 0 ? ' (BAN THRESHOLD)' : ` (${pointsUntilBan} points until ban)`}`,
           inline: true
         }
       )
       .addFields(
         {
-          name: '⚖️ Whitelist Status',
-          value: isWhitelisted ? '✅ Whitelisted (Immune)' : '❌ Not Whitelisted',
+          name: 'Whitelist Status',
+          value: isWhitelisted ? 'Whitelisted (immune)' : 'Not whitelisted',
           inline: true
         },
         {
-          name: '📈 Points Until Ban',
+          name: 'Points Until Ban',
           value: pointsUntilBan.toString(),
           inline: true
         },
         {
-          name: '🕒 Window',
+          name: 'Window',
           value: `Last ${windowLabel}`,
           inline: true
         }
       )
       .addFields(
         {
-          name: `📋 Recent Actions (${windowLabel})`,
+          name: `Recent Actions (${windowLabel})`,
           value: recentLines.join('\n'),
           inline: false
         }

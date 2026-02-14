@@ -7,6 +7,10 @@ const { getWeekStartUtcTs } = require('./lib/week');
 const { formatUtcDateOnly, formatUtcDate } = require('./lib/time');
 const { fetchMembersByIds } = require('./lib/member-fetch');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('./lib/leaderboard-utils');
+const { upsertLeaderboardMessage, makeLeaderboardText, makeDemotionWatchText } = require('./lib/messages');
+const { acquireJobLock } = require('./lib/job-locks');
+const { withTransaction } = require('./lib/transactions');
+const { changeRecruiterPoints } = require('./services/recruiting/ledger-service');
 
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
 
@@ -14,9 +18,17 @@ const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, g
 
 const DEBUG_SCHEDULER = process.env.DEBUG_SCHEDULER === '1';
 const ALLOW_FULL_MEMBER_FETCH = (process.env.SCHEDULER_ALLOW_FULL_FETCH || process.env.ALLOW_FULL_MEMBER_FETCH || '').toLowerCase() === 'true';
-const FORCE_FULL_FETCH_ON_EMPTY = (process.env.SCHEDULER_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
-const FULL_FETCH_MAX = Number.parseInt(process.env.SCHEDULER_FULL_FETCH_MAX || '5000', 10);
+const FORCE_FULL_FETCH_ON_EMPTY = (process.env.SCHEDULER_FORCE_FULL_FETCH_ON_EMPTY || 'false').toLowerCase() === 'true';
 const MEMBER_CACHE_WARM_COOLDOWN_MS = Number.parseInt(process.env.MEMBER_CACHE_WARM_COOLDOWN_MS || '600000', 10);
+const WARNING_ENFORCE_CONCURRENCY = Number.parseInt(process.env.WARNING_ENFORCE_CONCURRENCY || '3', 10);
+const INVALID_RECRUIT_UPDATE_BATCH_SIZE = Number.parseInt(process.env.INVALID_RECRUIT_UPDATE_BATCH_SIZE || '150', 10);
+const PENDING_RECRUIT_RECONCILE_AGE_MS = Number.parseInt(process.env.PENDING_RECRUIT_RECONCILE_AGE_MS || '300000', 10);
+const PENDING_RECRUIT_RECONCILE_LIMIT = Number.parseInt(process.env.PENDING_RECRUIT_RECONCILE_LIMIT || '300', 10);
+const PENDING_RECRUIT_RECONCILE_CONCURRENCY = Number.parseInt(process.env.PENDING_RECRUIT_RECONCILE_CONCURRENCY || '3', 10);
+const LEADERBOARD_REGION_CONCURRENCY = Number.parseInt(process.env.LEADERBOARD_REGION_CONCURRENCY || '2', 10);
+const WEEKLY_CALCULATIONS_RETENTION_DAYS = Number.parseInt(process.env.WEEKLY_CALCULATIONS_RETENTION_DAYS || '180', 10);
+const LEDGER_RETENTION_DAYS = Number.parseInt(process.env.RECRUITER_LEDGER_RETENTION_DAYS || '365', 10);
+const PURCHASE_RETENTION_DAYS = Number.parseInt(process.env.PURCHASE_RETENTION_DAYS || '365', 10);
 let lastMemberCacheWarmAt = 0;
 
 function debugLog(...args) {
@@ -26,79 +38,32 @@ function debugLog(...args) {
 const SNAPSHOT_CONCURRENCY = Number.parseInt(process.env.SNAPSHOT_CONCURRENCY || '3', 10);
 
 const { runWithConcurrency } = require('./lib/concurrency');
+const { initWithDb: initInviteSystem } = require('./services/recruiting/invite-service');
 
-let weeklyCalcEnsured = false;
-let recruitsEnsured = false;
-async function ensureWeeklyCalculationsTable(db) {
-  if (weeklyCalcEnsured || !db) return;
-  try {
-    if (typeof db.exec !== 'function') {
-      weeklyCalcEnsured = true;
-      return;
-    }
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS weekly_calculations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id TEXT NOT NULL DEFAULT 'GLOBAL',
-        recruiter_id TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        week_start INTEGER,
-        recruits7d INTEGER DEFAULT 0,
-        activity_rate REAL DEFAULT 0,
-        verify_rate REAL DEFAULT 0,
-        retention REAL DEFAULT 0,
-        warnings INTEGER DEFAULT 0,
-        absent INTEGER DEFAULT 0,
-        previous_min_req INTEGER,
-        calculated_min_req INTEGER NOT NULL,
-        role_base INTEGER NOT NULL
-      );
-    `);
-    try {
-      await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(recruiter_id, week_start)');
-    } catch (e) {
-      void e;
-    }
-    weeklyCalcEnsured = true;
-  } catch (e) {
-    // best-effort, fallback to runtime calculation if schema can't be ensured
-    weeklyCalcEnsured = true;
-  }
+async function ensureWeeklyCalculationsTable(_db) {
+  // Schema creation is centralized in db_async.js.
 }
 
-async function ensureRecruitsTable(db) {
-  if (recruitsEnsured || !db) return;
-  try {
-    if (typeof db.exec !== 'function') {
-      recruitsEnsured = true;
-      return;
-    }
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS recruits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        recruiter_id TEXT NOT NULL,
-        recruited_id TEXT NOT NULL,
-        region TEXT NOT NULL,
-        ign TEXT,
-        created_at INTEGER NOT NULL,
-        valid INTEGER DEFAULT 1,
-        points INTEGER DEFAULT 0
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(recruited_id);
-    `);
-    recruitsEnsured = true;
-  } catch (e) {
-    recruitsEnsured = true;
-  }
+async function ensureRecruitsTable(_db) {
+  // Schema creation is centralized in db_async.js.
 }
 
-async function seedRecruiters(db, ids, contextLabel) {
+async function seedRecruiters(db, ids, contextLabel, guildIdOverride) {
   if (!db || !ids || !ids.length) return;
   try {
-    for (const id of ids) {
+    const guildId = guildIdOverride || resolveGuildId();
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    const batchSize = 200;
+    for (let i = 0; i < uniqueIds.length; i += batchSize) {
+      const batch = uniqueIds.slice(i, i + batchSize);
+      const values = batch.map(() => '(?, ?, 0, 0, 0, 4)').join(', ');
+      const params = [];
+      for (const id of batch) {
+        params.push(guildId, id);
+      }
       await db.run(
-        'INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)',
-        id
+        `INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES ${values}`,
+        ...params
       );
     }
   } catch (e) {
@@ -106,8 +71,8 @@ async function seedRecruiters(db, ids, contextLabel) {
   }
 }
 
-function resolveGuildId() {
-  return process.env.GUILD_ID || GUILD_ID;
+function resolveGuildId(guild) {
+  return process.env.GUILD_ID || GUILD_ID || (guild && guild.id) || 'GLOBAL';
 }
 
 function ownsGuild(client, guildId) {
@@ -126,9 +91,7 @@ async function primeMemberCache(guild, contextLabel, options = {}) {
   if (!guild || !guild.members || typeof guild.members.fetch !== 'function') return false;
   const force = options && options.force === true;
   if (force && !FORCE_FULL_FETCH_ON_EMPTY) return false;
-  const memberCount = Number(guild.memberCount || 0);
-  const allowAuto = Number.isFinite(memberCount) && memberCount > 0 && memberCount <= FULL_FETCH_MAX;
-  if (!force && !ALLOW_FULL_MEMBER_FETCH && !allowAuto) return false;
+  if (!force && !ALLOW_FULL_MEMBER_FETCH) return false;
   const now = Date.now();
   if (now - lastMemberCacheWarmAt < MEMBER_CACHE_WARM_COOLDOWN_MS) return false;
   lastMemberCacheWarmAt = now;
@@ -155,8 +118,52 @@ async function resolveGuild(client) {
   return null;
 }
 
+async function cleanupLeaderboardGhostPointers(db, guild) {
+  if (!db || !guild || !guild.id) return { removed: 0 };
+  let removed = 0;
+  try {
+    const rows = await db.all(
+      'SELECT id, channel_id, message_id FROM leaderboard_messages WHERE guild_id = ?',
+      guild.id
+    );
+    for (const row of rows || []) {
+      if (!row || !row.id || !row.channel_id || !row.message_id) continue;
+      let channel = guild.channels.cache.get(row.channel_id) || null;
+      if (!channel && guild.channels && typeof guild.channels.fetch === 'function') {
+        channel = await guild.channels.fetch(row.channel_id).catch(() => null);
+      }
+      if (!channel || !channel.messages || typeof channel.messages.fetch !== 'function') {
+        await db.run('DELETE FROM leaderboard_messages WHERE id = ?', row.id);
+        removed++;
+        continue;
+      }
+      const msg = await channel.messages.fetch(row.message_id).catch(() => null);
+      if (!msg) {
+        await db.run('DELETE FROM leaderboard_messages WHERE id = ?', row.id);
+        removed++;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to clean leaderboard ghost pointers:', e);
+  }
+  return { removed };
+}
+
+async function cleanupRetentionData(db, guildId) {
+  if (!db || !guildId) return;
+  const now = Date.now();
+  const weeklyCutoff = now - (Math.max(1, WEEKLY_CALCULATIONS_RETENTION_DAYS) * 24 * 60 * 60 * 1000);
+  const ledgerCutoff = now - (Math.max(1, LEDGER_RETENTION_DAYS) * 24 * 60 * 60 * 1000);
+  const purchasesCutoff = now - (Math.max(1, PURCHASE_RETENTION_DAYS) * 24 * 60 * 60 * 1000);
+
+  await db.run('DELETE FROM weekly_calculations WHERE guild_id = ? AND week_start < ?', guildId, weeklyCutoff).catch(() => {});
+  await db.run('DELETE FROM recruiter_points_ledger WHERE guild_id = ? AND created_at < ?', guildId, ledgerCutoff).catch(() => {});
+  await db.run('DELETE FROM purchases WHERE guild_id = ? AND created_at < ?', guildId, purchasesCutoff).catch(() => {});
+}
+
 async function resolveAllRecruiterIds(guild, db) {
   if (!guild) return [];
+  const guildId = resolveGuildId(guild);
   const staffRoleIds = Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
     ? ROLE_IDS.STAFF.filter(Boolean)
     : [
@@ -184,7 +191,7 @@ async function resolveAllRecruiterIds(guild, db) {
   let dbRecruiterRows = [];
   if (db) {
     try {
-      dbRecruiterRows = await db.all('SELECT id FROM recruiters');
+      dbRecruiterRows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
     } catch (e) {
       console.error('Failed to load recruiter IDs from DB', e);
     }
@@ -218,7 +225,7 @@ async function resolveAllRecruiterIds(guild, db) {
   });
   if (ids.size === 0 && db) {
     try {
-      const recRows = await db.all('SELECT DISTINCT recruiter_id FROM recruits');
+      const recRows = await db.all('SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ?', guildId);
       (recRows || []).forEach(r => {
         if (r && r.recruiter_id) ids.add(r.recruiter_id);
       });
@@ -232,15 +239,24 @@ async function resolveAllRecruiterIds(guild, db) {
 
 async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
   if (!db || !guild || !weekStart || !recruiters) return;
-  for (const recruiter of recruiters) {
+  const guildId = resolveGuildId(guild);
+  const warningChannel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
+    ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL)
+    : null;
+  const safeConcurrency = Number.isFinite(WARNING_ENFORCE_CONCURRENCY) && WARNING_ENFORCE_CONCURRENCY > 0
+    ? WARNING_ENFORCE_CONCURRENCY
+    : 3;
+
+  const results = await runWithConcurrency(recruiters, safeConcurrency, async (recruiter) => {
     const recruiterId = recruiter.id;
     const snapshots = await db.all(
-      'SELECT week_start, recruits7d, calculated_min_req, previous_min_req, absent FROM weekly_calculations WHERE recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 3',
+      'SELECT week_start, recruits7d, calculated_min_req, previous_min_req, absent FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 3',
+      guildId,
       recruiterId
     );
 
     if (!snapshots || snapshots.length < 3) {
-      continue;
+      return { ok: true, skipped: true };
     }
 
     const eligible = snapshots.filter(row => !row.absent);
@@ -255,7 +271,7 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
     });
 
     if (misses.length < 2) {
-      continue;
+      return { ok: true, skipped: true };
     }
 
     const latest = eligible[0] || snapshots[0];
@@ -269,34 +285,34 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
     const note = `Quota warning week_start=${effectiveWeekStart}`;
 
     const existing = await db.get(
-      'SELECT id FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND note = ? LIMIT 1',
+      'SELECT id FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND note = ? LIMIT 1',
+      guildId,
       recruiterId,
       note
     );
-    if (existing) continue;
+    if (existing) return { ok: true, skipped: true };
 
     await db.run(
-      'INSERT INTO warnings (recruiter_id, created_at, note, expired_at, revoked) VALUES (?, ?, ?, NULL, 0)',
+      'INSERT INTO warnings (guild_id, recruiter_id, created_at, note, expired_at, revoked) VALUES (?, ?, ?, ?, NULL, 0)',
+      guildId,
       recruiterId,
       Date.now(),
       note
     );
-    await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', recruiterId);
-    await db.run('UPDATE recruiters SET warnings = warnings + 1 WHERE id = ?', recruiterId);
+    await db.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)', guildId, recruiterId);
+    await db.run('UPDATE recruiters SET warnings = warnings + 1 WHERE guild_id = ? AND id = ?', guildId, recruiterId);
 
     const warningCountRow = await db.get(
-      'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+      'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+      guildId,
       recruiterId,
       Date.now()
     );
     const activeWarnings = warningCountRow ? warningCountRow.c : 0;
     const demotionTag = activeWarnings >= 2 ? ' They are now on demotion watch.' : '';
 
-    const ch = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
-      ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL)
-      : null;
-    if (ch && typeof ch.send === 'function') {
-      await ch.send(`⚠️ <@${recruiterId}> missed quota in ${misses.length} of the last 3 weeks (${recruits7d}/${minReq}). Warning issued.${demotionTag}`).catch(err => {
+    if (warningChannel && typeof warningChannel.send === 'function') {
+      await warningChannel.send(`[WARN] <@${recruiterId}> missed quota in ${misses.length} of the last 3 weeks (${recruits7d}/${minReq}). Warning issued.${demotionTag}`).catch(err => {
         console.error('Failed to post quota warning:', err);
       });
     }
@@ -315,7 +331,162 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
     } catch (e) {
       console.error('Failed to DM auto-warning recruiter', { recruiterId, error: e });
     }
+    return { ok: true };
+  });
+
+  for (const entry of results) {
+    if (entry && entry.ok === false && entry.error) {
+      console.error('Quota warning enforcement failed for recruiter:', entry.error);
+    }
   }
+}
+
+async function markRecruitsInvalidInBatches(db, guildId, recruitIds) {
+  if (!db || !guildId || !Array.isArray(recruitIds) || recruitIds.length === 0) return;
+  const chunkSize = Number.isFinite(INVALID_RECRUIT_UPDATE_BATCH_SIZE) && INVALID_RECRUIT_UPDATE_BATCH_SIZE > 0
+    ? INVALID_RECRUIT_UPDATE_BATCH_SIZE
+    : 150;
+  for (let i = 0; i < recruitIds.length; i += chunkSize) {
+    const chunk = recruitIds.slice(i, i + chunkSize);
+    if (!chunk.length) continue;
+    const placeholders = chunk.map(() => '?').join(', ');
+    await db.run(
+      `UPDATE recruits SET valid = 0 WHERE guild_id = ? AND id IN (${placeholders})`,
+      guildId,
+      ...chunk
+    );
+  }
+}
+
+async function reconcilePendingRecruits(db, guild, opts = {}) {
+  if (!db || !guild) return { scanned: 0, finalized: 0, removed: 0 };
+
+  const guildId = resolveGuildId(guild);
+  const ageMsRaw = Number.isFinite(opts.ageMs) ? opts.ageMs : PENDING_RECRUIT_RECONCILE_AGE_MS;
+  const ageMs = Math.max(0, ageMsRaw);
+  const limitRaw = Number.isFinite(opts.limit) ? opts.limit : PENDING_RECRUIT_RECONCILE_LIMIT;
+  const limit = Math.max(1, Math.floor(limitRaw));
+  const concurrencyRaw = Number.isFinite(opts.concurrency) ? opts.concurrency : PENDING_RECRUIT_RECONCILE_CONCURRENCY;
+  const concurrency = Math.max(1, Math.floor(concurrencyRaw));
+  const cutoffTs = Date.now() - ageMs;
+  const rookieRoleId = ROLE_IDS && ROLE_IDS.ROOKIE ? ROLE_IDS.ROOKIE : null;
+  if (!rookieRoleId) {
+    console.warn('Pending recruit reconciliation skipped: ROLE_IDS.ROOKIE is not configured.');
+    return { scanned: 0, finalized: 0, removed: 0 };
+  }
+
+  let pendingRows = [];
+  try {
+    pendingRows = await db.all(
+      `SELECT id, recruiter_id, recruited_id, points, created_at
+       FROM recruits
+       WHERE guild_id = ? AND valid = 0 AND created_at <= ?
+       ORDER BY created_at ASC
+       LIMIT ?`,
+      guildId,
+      cutoffTs,
+      limit
+    );
+  } catch (e) {
+    console.error('Failed to load pending recruits for reconciliation:', e);
+    return { scanned: 0, finalized: 0, removed: 0 };
+  }
+
+  if (!pendingRows.length) return { scanned: 0, finalized: 0, removed: 0 };
+
+  let memberMap = new Map();
+  try {
+    memberMap = await fetchMembersByIds(guild, pendingRows.map(r => r.recruited_id));
+  } catch (e) {
+    console.error('Failed to fetch pending recruit members during reconciliation:', e);
+    memberMap = new Map();
+  }
+
+  let finalized = 0;
+  let removed = 0;
+
+  await runWithConcurrency(pendingRows, concurrency, async (row) => {
+    const member = memberMap && typeof memberMap.get === 'function' ? memberMap.get(row.recruited_id) : null;
+    const hasRookieRole = !!(
+      rookieRoleId
+      && member
+      && member.roles
+      && member.roles.cache
+      && typeof member.roles.cache.has === 'function'
+      && member.roles.cache.has(rookieRoleId)
+    );
+
+    if (!hasRookieRole) {
+      await db.run(
+        'DELETE FROM recruits WHERE guild_id = ? AND id = ? AND valid = 0',
+        guildId,
+        row.id
+      );
+      removed += 1;
+      return { ok: true };
+    }
+
+    await withTransaction(db, async (tx) => {
+      const current = await tx.get(
+        'SELECT id, valid FROM recruits WHERE guild_id = ? AND id = ?',
+        guildId,
+        row.id
+      );
+      if (!current || Number(current.valid) !== 0) return;
+
+      const existingLedger = await tx.get(
+        `SELECT id FROM recruiter_points_ledger
+         WHERE guild_id = ?
+           AND recruiter_id = ?
+           AND reason = ?
+           AND ref_type = ?
+           AND ref_id = ?
+         LIMIT 1`,
+        guildId,
+        row.recruiter_id,
+        'recruit_award',
+        'recruit',
+        String(row.id)
+      );
+
+      if (!existingLedger) {
+        const pointsDelta = Number.isFinite(Number(row.points)) ? Number(row.points) : 0;
+        await changeRecruiterPoints(tx, {
+          guildId,
+          recruiterId: row.recruiter_id,
+          delta: pointsDelta,
+          reason: 'recruit_award',
+          refType: 'recruit',
+          refId: String(row.id),
+          minPoints: 0
+        });
+      }
+
+      await tx.run(
+        'UPDATE recruits SET valid = 1 WHERE guild_id = ? AND id = ?',
+        guildId,
+        row.id
+      );
+    });
+
+    finalized += 1;
+    return { ok: true };
+  });
+
+  if (finalized > 0 || removed > 0) {
+    console.log('Pending recruit reconciliation complete', {
+      guildId,
+      scanned: pendingRows.length,
+      finalized,
+      removed
+    });
+  }
+
+  return {
+    scanned: pendingRows.length,
+    finalized,
+    removed
+  };
 }
 
 function formatLeaderboardMessage(rows, regionLabel) {
@@ -342,18 +513,18 @@ async function recomputeLeaderboardsInternal(db, guild) {
   await ensureRecruitsTable(db).catch(err => {
     console.error('Failed to ensure recruits table:', err);
   });
+  const guildId = resolveGuildId(guild);
   const regions = [
     { key: 'EU', channel: CHANNELS.INVITES_EU },
     { key: 'NA', channel: CHANNELS.INVITES_NA },
     { key: 'AS', channel: CHANNELS.INVITES_AS }
   ];
   const weekStart = getWeekStartUtcTs();
-  const { upsertLeaderboardMessage, makeLeaderboardText } = require('./lib/messages');
   let memberMap = new Map();
   let dbRecruiterIds = [];
   let hasDbRecruiters = false;
   try {
-    const dbRecruiterRows = await db.all('SELECT id FROM recruiters');
+    const dbRecruiterRows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
     dbRecruiterIds = (dbRecruiterRows || []).map(r => r.id).filter(Boolean);
     hasDbRecruiters = dbRecruiterIds.length > 0;
   } catch (e) {
@@ -386,7 +557,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
     }
   }
 
-  for (const rg of regions) {
+  const processRegion = async (rg) => {
     debugLog(`Processing region ${rg.key}...`);
     debugLog(`Channel ID for ${rg.key}: ${rg.channel}`);
 
@@ -421,7 +592,8 @@ async function recomputeLeaderboardsInternal(db, guild) {
     if (allRecruiterIds.size === 0) {
       // Test-mode / minimal guild mock: fall back to anyone who has recruited in this region in-window.
       const ids = await db.all(
-        'SELECT DISTINCT recruiter_id FROM recruits WHERE region = ? AND valid = 1 AND created_at >= ?',
+        'SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
+        guildId,
         rg.key,
         weekStart
       );
@@ -433,7 +605,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
     let leaderboardText;
 
     const recruiterMembers = Array.from(allRecruiterIds);
-    await seedRecruiters(db, recruiterMembers, `leaderboard:${rg.key}`);
+    await seedRecruiters(db, recruiterMembers, `leaderboard:${rg.key}`, guildId);
 
     if (recruiterMembers.length === 0) {
       debugLog(`No recruiters found for region ${rg.key}`);
@@ -442,22 +614,21 @@ async function recomputeLeaderboardsInternal(db, guild) {
 
     let rows = [];
     if (!leaderboardText) {
-      const meta = await loadRecruiterMeta(db, recruiterMembers);
-      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: weekStart });
+      const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
+      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: weekStart, guildId });
       const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
-      const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
+      const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
       const enriched = [];
       const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
-
-      for (const r of (rowsBase || [])) {
+      const enrichedResults = await runWithConcurrency(rowsBase || [], SNAPSHOT_CONCURRENCY, async (r) => {
         const absence = meta.absences.has(r.recruiter_id);
         const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;
 
         const staffMember = (memberMap && memberMap.get(r.recruiter_id))
           || (guild && guild.members && guild.members.cache ? guild.members.cache.get(r.recruiter_id) : null);
         const roleBase = getBaseRequirement(staffMember);
-        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
+        const newStaffCheck = await isNewStaff(db, r.recruiter_id, { guildId }).catch(() => false);
 
         const isTrialRecruiter = !!staffMember
           && staffMember.roles
@@ -472,7 +643,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
           minReq = previousMinReq;
         }
         if (minReq == null) {
-          const stats7d = await calculate7DayStats(db, r.recruiter_id, guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+          const stats7d = await calculate7DayStats(db, r.recruiter_id, guild, { ...statsWindow, guildId }).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
           minReq = calculateMinRecruitsFixed({
             roleBase,
             member: staffMember,
@@ -492,18 +663,29 @@ async function recomputeLeaderboardsInternal(db, guild) {
         if (!Number.isFinite(minReq)) minReq = 2;
 
         const systemWarningRow = meta.systemWarnings.has(r.recruiter_id);
+        return {
+          ok: true,
+          row: {
+            ...r,
+            recruits7d: Number(r.cnt || 0),
+            minReq,
+            absence: !!absence,
+            systemWarning: !!systemWarningRow,
+            activeWarnings,
+            displayName: staffMember && staffMember.user
+              ? `${staffMember.user.tag || staffMember.user.username} | ${getRegionInfo(rg.key).name || rg.key}`
+              : `<@${r.recruiter_id}>`
+          }
+        };
+      });
 
-        enriched.push({
-          ...r,
-          recruits7d: Number(r.cnt || 0),
-          minReq,
-          absence: !!absence,
-          systemWarning: !!systemWarningRow,
-          activeWarnings,
-          displayName: staffMember && staffMember.user
-            ? `${staffMember.user.tag || staffMember.user.username} | ${getRegionInfo(rg.key).name || rg.key}`
-            : `<@${r.recruiter_id}>`
-        });
+      for (const entry of enrichedResults) {
+        if (!entry) continue;
+        if (entry.ok === false && entry.error) {
+          console.error('Leaderboard enrichment failed:', entry.error);
+          continue;
+        }
+        if (entry.row) enriched.push(entry.row);
       }
 
       rows = enriched;
@@ -524,6 +706,22 @@ async function recomputeLeaderboardsInternal(db, guild) {
       debugLog(`Cross-posting to central leaderboard for ${rg.key}...`);
       await upsertLeaderboardMessage(db, central, rg.key, leaderboardText, null, guild.id);
     }
+    return { ok: true };
+  };
+
+  const regionResults = await runWithConcurrency(
+    regions,
+    Number.isFinite(LEADERBOARD_REGION_CONCURRENCY) && LEADERBOARD_REGION_CONCURRENCY > 0
+      ? LEADERBOARD_REGION_CONCURRENCY
+      : 2,
+    processRegion
+  );
+
+  for (const entry of regionResults) {
+    if (!entry) continue;
+    if (entry.ok === false && entry.error) {
+      console.error('Leaderboard region recompute failed:', entry.error);
+    }
   }
 }
 
@@ -539,13 +737,13 @@ async function recomputeLeaderboards(db, guild) {
 
 async function recomputeWarningsLeaderboardInternal(db, guild) {
   if (!db || !guild) return;
+  const guildId = resolveGuildId(guild);
   await ensureWeeklyCalculationsTable(db).catch(err => {
     console.error('Failed to ensure weekly calculations table:', err);
   });
   await ensureRecruitsTable(db).catch(err => {
     console.error('Failed to ensure recruits table:', err);
   });
-  const { upsertLeaderboardMessage, makeDemotionWatchText } = require('./lib/messages');
   const channel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
     ? guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS)
     : null;
@@ -553,13 +751,15 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
 
   try {
     const existing = await db.get(
-      'SELECT id FROM leaderboard_messages WHERE channel_id = ? AND region = ?',
+      'SELECT id FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?',
+      guildId,
       channel.id,
       'WARNINGS'
     );
     if (!existing) {
       const legacy = await db.get(
-        'SELECT id FROM leaderboard_messages WHERE channel_id = ? AND (region IS NULL OR region = "") ORDER BY id DESC LIMIT 1',
+        'SELECT id FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND (region IS NULL OR region = "") ORDER BY id DESC LIMIT 1',
+        guildId,
         channel.id
       );
       if (legacy && legacy.id) {
@@ -571,7 +771,8 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   }
 
   const warningRows = await db.all(
-    'SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id HAVING cnt >= 2 ORDER BY cnt DESC',
+    'SELECT recruiter_id, COUNT(*) as cnt FROM warnings WHERE guild_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?) GROUP BY recruiter_id HAVING cnt >= 2 ORDER BY cnt DESC',
+    guildId,
     Date.now()
   );
   const warningCountMap = new Map((warningRows || []).map(row => [row.recruiter_id, row.cnt]));
@@ -584,26 +785,25 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   }
 
   const weekStart = getWeekStartUtcTs();
-  const meta = await loadRecruiterMeta(db, recruiterIds);
-  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { weekStart, sinceTs: weekStart });
+  const meta = await loadRecruiterMeta(db, recruiterIds, { guildId });
+  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { weekStart, sinceTs: weekStart, guildId });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
-  const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
+  const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
   const memberMap = await fetchMembersByIds(guild, recruiterIds);
 
   const rows = [];
   const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
-  for (const r of rowsBase || []) {
+  const warningRowsEnriched = await runWithConcurrency(rowsBase || [], SNAPSHOT_CONCURRENCY, async (r) => {
     const absence = meta.absences.has(r.recruiter_id);
     const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;
-    if (activeWarnings < 2) continue;
+    if (activeWarnings < 2) return { ok: true, row: null };
 
     const staffMember = (memberMap && memberMap.get(r.recruiter_id))
       || (guild && guild.members && guild.members.cache ? guild.members.cache.get(r.recruiter_id) : null);
     const roleBase = getBaseRequirement(staffMember);
-    const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
+    const newStaffCheck = await isNewStaff(db, r.recruiter_id, { guildId }).catch(() => false);
 
     const systemWarningRow = meta.systemWarnings.has(r.recruiter_id);
-
     const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
     let minReq = Number.isFinite(r.min_req) ? Number(r.min_req) : null;
@@ -613,7 +813,7 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
       minReq = previousMinReq;
     }
     if (minReq == null) {
-      const stats7d = await calculate7DayStats(db, r.recruiter_id, guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+      const stats7d = await calculate7DayStats(db, r.recruiter_id, guild, { ...statsWindow, guildId }).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
       minReq = calculateMinRecruitsFixed({
         roleBase,
         member: staffMember,
@@ -633,16 +833,27 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
     if (!Number.isFinite(minReq)) minReq = 2;
 
     const warningCount = warningCountMap.get(r.recruiter_id) || activeWarnings;
+    return {
+      ok: true,
+      row: {
+        ...r,
+        recruits7d: Number(r.cnt || 0),
+        minReq,
+        absence: !!absence,
+        systemWarning: !!systemWarningRow,
+        activeWarnings,
+        warningCount
+      }
+    };
+  });
 
-    rows.push({
-      ...r,
-      recruits7d: Number(r.cnt || 0),
-      minReq,
-      absence: !!absence,
-      systemWarning: !!systemWarningRow,
-      activeWarnings,
-      warningCount
-    });
+  for (const entry of warningRowsEnriched) {
+    if (!entry) continue;
+    if (entry.ok === false && entry.error) {
+      console.error('Warnings leaderboard enrichment failed:', entry.error);
+      continue;
+    }
+    if (entry.row) rows.push(entry.row);
   }
 
   const text = makeDemotionWatchText(rows);
@@ -669,15 +880,28 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
   try {
     const weekStart = getWeekStartUtcTs();
     const weekStartIso = formatUtcDateOnly(weekStart);
+    const guild = await resolveGuild(client);
+    const guildId = resolveGuildId(guild);
+
+    const lockKey = `weekly_snapshot_lock_${weekStart}`;
+    const lockOk = await acquireJobLock(db, {
+      guildId,
+      key: lockKey,
+      ttlMs: 2 * 60 * 60 * 1000,
+      failOpen: false
+    });
+    if (!lockOk) {
+      debugLog('Weekly snapshot skipped; lock already held.');
+      return;
+    }
 
     // One-time announcement per week in the overall invites channel (scheduled runs only)
     if (announce) {
       try {
         const announceKey = `weekly_reset_announce_${weekStart}`;
-        const existing = await db.get('SELECT key FROM system_events WHERE key = ?', announceKey);
+        const existing = await db.get('SELECT key FROM system_events WHERE guild_id = ? AND key = ?', guildId, announceKey);
         if (!existing) {
-          await db.run('INSERT OR REPLACE INTO system_events (key, "timestamp") VALUES (?, ?)', announceKey, Date.now());
-          const guild = await resolveGuild(client);
+          await db.run('INSERT OR REPLACE INTO system_events (guild_id, key, "timestamp") VALUES (?, ?, ?)', guildId, announceKey, Date.now());
           const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
           if (ch) {
             await ch.send(`@everyone Weekly invite/recruit snapshot captured (week start ${weekStartIso} UTC).`).catch(err => {
@@ -690,22 +914,22 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
       }
     }
 
-    const guild = await resolveGuild(client);
     const cacheReady = guild ? await primeMemberCache(guild, 'weekly_snapshot') : false;
     let recruiterIds = guild ? await resolveAllRecruiterIds(guild, db) : [];
     if (!recruiterIds.length) {
-      const rows = await db.all('SELECT id FROM recruiters');
+      const rows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
       recruiterIds = (rows || []).map(r => r.id);
     }
     const recruiters = Array.from(new Set(recruiterIds)).map(id => ({ id }));
     const lastWeekStart = weekStart - (7 * 24 * 60 * 60 * 1000);
     const statsWindow = { sinceTs: lastWeekStart, untilTs: weekStart };
+    await seedRecruiters(db, recruiters.map(r => r.id), 'weekly_snapshot', guildId);
 
     const calcResults = await runWithConcurrency(recruiters, SNAPSHOT_CONCURRENCY, async (recruiter) => {
-      await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', recruiter.id);
-      const currentStats = await calculate7DayStats(db, recruiter.id, guild || null, statsWindow);
+      const currentStats = await calculate7DayStats(db, recruiter.id, guild || null, { ...statsWindow, guildId });
       const prevMinRow = await db.get(
-        'SELECT calculated_min_req FROM weekly_calculations WHERE recruiter_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
+        'SELECT calculated_min_req FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
+        guildId,
         recruiter.id,
         weekStart
       );
@@ -713,19 +937,22 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
 
       let newStaffCheck = false;
       try {
-        newStaffCheck = await isNewStaff(db, recruiter.id);
+        newStaffCheck = await isNewStaff(db, recruiter.id, { guildId });
       } catch (e) {
         newStaffCheck = false;
       }
 
       const warnings = await db.get(
-        'SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-        recruiter.id, Date.now()
+        'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+        guildId,
+        recruiter.id,
+        Date.now()
       );
       const activeWarnings = warnings ? warnings.c : 0;
 
       const absence = await db.get(
-        'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+        'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+        guildId,
         recruiter.id
       );
 
@@ -750,6 +977,7 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
       });
 
       await storeWeeklyCalculation(db, {
+        guildId,
         recruiterId: recruiter.id,
         weekStart,
         recruits7d: currentStats.recruits7d,
@@ -787,7 +1015,7 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
     // Mark weekly snapshot complete so we can catch up if the bot was down
     try {
       const snapKey = `weekly_snapshot_${weekStart}`;
-      await db.run('INSERT OR REPLACE INTO system_events (key, timestamp) VALUES (?, ?)', snapKey, Date.now());
+      await db.run('INSERT OR REPLACE INTO system_events (guild_id, key, timestamp) VALUES (?, ?, ?)', guildId, snapKey, Date.now());
     } catch (e) {
       console.error('Failed to persist weekly snapshot marker:', e);
     }
@@ -807,6 +1035,10 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
 
 function start(client, db) {
   const guildId = resolveGuildId();
+  if (!guildId || guildId === 'GLOBAL') {
+    console.warn('Scheduler disabled: GUILD_ID is not configured.');
+    return;
+  }
   if (guildId && !ownsGuild(client, guildId)) {
     console.log(`Scheduler disabled on this shard (guild ${guildId} not owned).`);
     return;
@@ -816,6 +1048,7 @@ function start(client, db) {
   (async () => {
     const guild = await resolveGuild(client);
     if (!guild) return;
+    await reconcilePendingRecruits(db, guild).catch((e) => console.error('reconcilePendingRecruits failed:', e));
     await reconcileTrialRecruiters(db, client).catch((e) => console.error('reconcileTrialRecruiters failed:', e));
     await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
 
@@ -825,7 +1058,8 @@ function start(client, db) {
     try {
       const weekStart = getWeekStartUtcTs();
       const snapKey = `weekly_snapshot_${weekStart}`;
-      const existing = await db.get('SELECT key FROM system_events WHERE key = ?', snapKey);
+      const guildId = resolveGuildId(guild);
+      const existing = await db.get('SELECT key FROM system_events WHERE guild_id = ? AND key = ?', guildId, snapKey);
 
       const now = Date.now();
       const sanityWindow = 24 * 60 * 60 * 1000; // 24 hours
@@ -846,6 +1080,18 @@ function start(client, db) {
     const guild = await resolveGuild(client);
     if (!guild) return;
     try {
+      const weekStart = getWeekStartUtcTs();
+      const lockKey = `weekly_recalc_lock_${weekStart}`;
+      const lockOk = await acquireJobLock(db, {
+        guildId: resolveGuildId(guild),
+        key: lockKey,
+        ttlMs: 2 * 60 * 60 * 1000,
+        failOpen: false
+      });
+      if (!lockOk) {
+        debugLog('Weekly recalculation skipped; lock already held.');
+        return;
+      }
       await performWeeklyRecalculations(guild);
       debugLog('Weekly recruiter recalculation completed successfully');
     } catch (error) {
@@ -868,10 +1114,11 @@ function start(client, db) {
   cron.schedule('0 12 * * 0', async () => {
     const guild = await resolveGuild(client);
     if (!guild) return;
+    const guildId = resolveGuildId(guild);
 
     // Recompute statistics, check for members who left and mark recruits invalid
     // Remove recruits where member left
-    const recruits = await db.all('SELECT id, recruited_id FROM recruits WHERE valid = 1');
+    const recruits = await db.all('SELECT id, recruited_id FROM recruits WHERE guild_id = ? AND valid = 1', guildId);
     const cached = guild.members && guild.members.cache ? guild.members.cache : null;
     const missingIds = [];
     const presentIds = new Set();
@@ -884,12 +1131,19 @@ function start(client, db) {
     }
 
     const fetchedMap = await fetchMembersByIds(guild, missingIds);
+    const invalidRecruitIds = [];
     for (const r of recruits) {
       if (presentIds.has(r.recruited_id)) continue;
       if (fetchedMap && fetchedMap.has(r.recruited_id)) continue;
-      await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', r.id).catch(err => {
-        console.error('Failed to mark recruit invalid during weekly check:', err);
-      });
+      invalidRecruitIds.push(r.id);
+    }
+
+    if (invalidRecruitIds.length) {
+      try {
+        await markRecruitsInvalidInBatches(db, guildId, invalidRecruitIds);
+      } catch (err) {
+        console.error('Failed to mark recruits invalid during weekly check:', err);
+      }
     }
 
     await recomputeLeaderboards(db, guild).catch(err => {
@@ -906,16 +1160,39 @@ function start(client, db) {
       // remove expired multipliers (cleanup)
       await db.run('DELETE FROM multipliers WHERE expires_at <= ?', Date.now());
 
+      const inviteSnapshotTtlMs = Number.parseInt(process.env.INVITE_SNAPSHOT_TTL_MS || '900000', 10);
+      if (Number.isFinite(inviteSnapshotTtlMs) && inviteSnapshotTtlMs > 0) {
+        const cutoff = Date.now() - inviteSnapshotTtlMs;
+        await db.run('DELETE FROM invite_snapshots WHERE updated_at < ?', cutoff);
+      }
+
       // recompute warnings per recruiter (active = not revoked AND (expired_at IS NULL OR expired_at > now))
-      const rows = await db.all('SELECT DISTINCT recruiter_id FROM warnings');
-      for (const r of rows) {
-        const cntRow = await db.get('SELECT COUNT(*) as c FROM warnings WHERE recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)', r.recruiter_id, Date.now());
-        const active = cntRow ? cntRow.c : 0;
-        await db.run('UPDATE recruiters SET warnings = ? WHERE id = ?', active, r.recruiter_id);
+      const guild = await resolveGuild(client);
+      const guildId = resolveGuildId(guild);
+      await cleanupRetentionData(db, guildId);
+      await db.run(
+        `UPDATE recruiters
+         SET warnings = (
+           SELECT COUNT(*)
+           FROM warnings w
+           WHERE w.guild_id = recruiters.guild_id
+             AND w.recruiter_id = recruiters.id
+             AND w.revoked = 0
+             AND (w.expired_at IS NULL OR w.expired_at > ?)
+         )
+         WHERE guild_id = ?`,
+        Date.now(),
+        guildId
+      );
+
+      if (guild) {
+        const pointerCleanup = await cleanupLeaderboardGhostPointers(db, guild);
+        if (pointerCleanup.removed > 0) {
+          console.log(`Removed ${pointerCleanup.removed} stale leaderboard pointers.`);
+        }
       }
 
       // Recompute leaderboards to reflect any changes
-      const guild = await resolveGuild(client);
       if (guild) await module.exports.recomputeLeaderboards(db, guild);
     } catch (e) {
       console.error('Daily maintenance failed', e);
@@ -928,11 +1205,12 @@ function start(client, db) {
   // Hourly cleanup: expired invites
   cron.schedule('0 * * * *', async () => {
     try {
-      const inviteCommand = require('./commands/invite');
-      const inviteSystem = await inviteCommand.init();
+      const guild = await resolveGuild(client);
+      const guildId = resolveGuildId(guild);
+      const inviteSystem = await initInviteSystem(guildId, db);
 
       if (inviteSystem) {
-        await inviteSystem.cleanupExpiredInvites();
+        await inviteSystem.cleanupExpiredInvites(guildId);
         debugLog('Hourly invite cleanup completed');
       }
     } catch (error) {

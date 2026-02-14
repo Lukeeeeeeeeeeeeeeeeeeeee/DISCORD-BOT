@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
 const { buildErrorEmbed } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
 
 const ACTION_MAP = {
@@ -66,17 +67,8 @@ module.exports = {
       return interaction.reply({ embeds: [buildErrorEmbed('Invalid simulation parameters.')], flags: 64 });
     }
 
-    if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
-
-    const respond = (payload) => {
-      if (interaction.deferred || interaction.replied) {
-        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
-        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
-      }
-      return interaction.reply(payload);
-    };
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const now = Date.now();
     const spacing = Math.max(1, Math.floor((windowSeconds * 1000) / count));
@@ -115,7 +107,7 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setColor('#00AAFF')
-      .setTitle('🧪 Simulation Complete')
+      .setTitle('Simulation Complete')
       .setDescription(`Simulated ${count} ${type} actions over ${windowSeconds}s.`)
       .addFields(
         { name: 'Executor', value: interaction.user.tag, inline: true },

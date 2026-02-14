@@ -2,6 +2,7 @@ const { PermissionsBitField } = require('discord.js');
 const { CHANNELS } = require('../constants');
 const { hasAdministrator } = require('../lib/permissions');
 const { replyError } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 
 // Tunables
 const DEFAULT_MAX = 30; // default recipients cap
@@ -16,7 +17,6 @@ const cooldowns = new Map();
 module.exports = {
   data: { name: 'dm' },
   async execute(interaction, _client, _db) {
-    // admin only
     if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin only.');
 
     const perms = interaction.member.permissions || interaction.member.permissionsIn?.(interaction.channel);
@@ -29,12 +29,10 @@ module.exports = {
     const preview = interaction.options.getBoolean('preview') || false;
     const dmEveryone = interaction.options.getBoolean('everyone') || false;
 
-    // Validate inputs
     if (!message) {
       return replyError(interaction, 'Missing required message parameter.');
     }
 
-    // Must specify either role or everyone
     if (!role && !dmEveryone) {
       return replyError(interaction, 'You must specify a role OR set everyone to true.');
     }
@@ -43,9 +41,9 @@ module.exports = {
       return replyError(interaction, `Limit must be between 1 and ${HARD_MAX}.`);
     }
 
-    await interaction.deferReply({ flags: 64 });
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
-    // cooldown check (only applies to actual sends, not previews)
     if (!preview) {
       const last = cooldowns.get(interaction.user.id) || 0;
       const now = Date.now();
@@ -56,24 +54,15 @@ module.exports = {
       cooldowns.set(interaction.user.id, now);
     }
 
-    const allowFullFetch = (process.env.DM_ALLOW_FULL_FETCH || '').toLowerCase() === 'true';
     let membersCol = null;
     if (dmEveryone) {
-      if (allowFullFetch && interaction.guild.members && typeof interaction.guild.members.fetch === 'function') {
-        membersCol = await interaction.guild.members.fetch().catch(() => null);
-      }
-      if (!membersCol) membersCol = interaction.guild.members.cache;
+      membersCol = interaction.guild.members.cache;
     } else if (role && role.members) {
       membersCol = role.members;
-      if (allowFullFetch && membersCol.size === 0 && interaction.guild.members && typeof interaction.guild.members.fetch === 'function') {
-        const all = await interaction.guild.members.fetch().catch(() => null);
-        membersCol = all || membersCol;
-      }
     } else {
       membersCol = interaction.guild.members.cache;
     }
 
-    // Filter targets based on role or everyone
     let targets;
     if (dmEveryone) {
       targets = membersCol.filter(m => !m.user.bot);
@@ -89,14 +78,12 @@ module.exports = {
 
     if (preview) {
       const sample = recipients.slice(0, 10).map(m => `<@${m.id}>`).join(', ');
-      return interaction.editReply({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}` });
+      return respond({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}` });
     }
 
-    // Queue the job and return immediately to avoid interaction timeouts
     const batches = [];
     for (let i = 0; i < recipients.length; i += BATCH_SIZE) batches.push(recipients.slice(i, i + BATCH_SIZE));
 
-    // Fire-and-forget async job with retries and enhanced metrics
     (async () => {
       let totalSent = 0;
       let totalFailed = 0;
@@ -124,11 +111,11 @@ module.exports = {
         return fallbackMs;
       };
 
-      const sendWithRetries = async (member, message, maxRetries = 2) => {
+      const sendWithRetries = async (member, dmMessage, maxRetries = 2) => {
         let attempts = 0;
         while (attempts <= maxRetries) {
           try {
-            await member.send(message);
+            await member.send(dmMessage);
             return { ok: true, attempts };
           } catch (err) {
             attempts++;
@@ -160,18 +147,15 @@ module.exports = {
         totalFailed += batchFailed;
         totalRetries += batchRetries;
 
-        // log batch results
         if (auditCh && auditCh.send) {
           await auditCh.send(`DM batch ${b + 1}/${batches.length} by <@${interaction.user.id}> to **${targetLabel}**: attempted ${batch.length}, sent ${batchSent}, failed ${batchFailed}, retries ${batchRetries}. Total so far: sent ${totalSent}, failed ${totalFailed}, retries ${totalRetries}.`).catch(err => {
             console.error('Failed to post DM batch audit:', err);
           });
         }
 
-        // delay between batches
         if (b < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
       }
 
-      // final audit
       if (auditCh && auditCh.send) {
         await auditCh.send(`DM broadcast completed by <@${interaction.user.id}> to **${targetLabel}**: attempted ${recipients.length}, sent ${totalSent}, failed ${totalFailed}, total retries ${totalRetries}.`).catch(err => {
           console.error('Failed to post DM completion audit:', err);
@@ -179,6 +163,6 @@ module.exports = {
       }
     })();
 
-    return interaction.editReply({ content: `Queued DM broadcast to ${recipients.length} recipient(s) in ${batches.length} batch(es). Progress will be posted to the audit channel.`, flags: 64 });
+    return respond({ content: `Queued DM broadcast to ${recipients.length} recipient(s) in ${batches.length} batch(es). Progress will be posted to the audit channel.` });
   }
 };

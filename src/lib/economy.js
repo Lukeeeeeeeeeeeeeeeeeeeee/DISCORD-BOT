@@ -33,6 +33,16 @@ const ECONOMY_CONFIG = {
 
 const { logUnexpectedError } = require('./logger');
 const { resolveGuildId } = require('./guild');
+const { withTransaction } = require('./transactions');
+const {
+  RECRUITING_RULES,
+  calculateRecruitPoints: calculateRecruitPointsFromRules
+} = require('../services/recruiting/rules-service');
+
+function hasMissingGuildColumn(err) {
+  const msg = String((err && err.message) || '').toLowerCase();
+  return msg.includes('no such column: guild_id') || msg.includes('has no column named guild_id');
+}
 
 function calculateMinRecruitsRequired({
   channelBase = ECONOMY_CONFIG.BASE_VALUE,
@@ -63,13 +73,11 @@ function calculateMinRecruitsRequired({
   const M = Math.max(1.0, activeMultiplierValue);
   const raw = (B * R * S * Q * W * I) / Math.sqrt(M);
   const minReq = Math.ceil(raw);
-  return Math.max(2, Math.min(8, minReq));
+  return Math.max(RECRUITING_RULES.MIN_MIN_REQ, Math.min(RECRUITING_RULES.MAX_MIN_REQ, minReq));
 }
 
 function calculateRecruitPoints({ recruiterRole: _recruiterRole = 'NONE', multiplierValue = 1.0 } = {}) {
-  const base = 1; // Base 1 point for every recruit
-  const raw = base * (Number.isFinite(multiplierValue) ? multiplierValue : 1.0);
-  return Math.round(raw * 100) / 100;
+  return calculateRecruitPointsFromRules({ multiplierValue });
 }
 
 function formatPointsValue(value) {
@@ -83,16 +91,6 @@ async function getActiveMultiplier(db, recruiterId, opts = {}) {
   try {
     const guildId = resolveGuildId(opts.guild || opts.guildId);
     const now = Date.now();
-    try {
-      await db.run(
-        'DELETE FROM multipliers WHERE guild_id = ? AND recruiter_id = ? AND expires_at <= ?',
-        guildId,
-        recruiterId,
-        now
-      );
-    } catch (e) {
-      console.error('Failed to purge expired multipliers', { recruiterId, error: e });
-    }
     const row = await db.get(
       'SELECT * FROM multipliers WHERE guild_id = ? AND recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1',
       guildId,
@@ -101,8 +99,22 @@ async function getActiveMultiplier(db, recruiterId, opts = {}) {
     );
     return row ? { value: row.value, expiresAt: row.expires_at, type: row.type } : { value: 1.0, expiresAt: 0, type: null };
   } catch (e) {
-    // If the multipliers table doesn't exist or other DB error, fall back to no multiplier
     const msg = (e && e.message ? String(e.message) : '').toLowerCase();
+    if (hasMissingGuildColumn(e)) {
+      try {
+        const now = Date.now();
+        const row = await db.get(
+          'SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1',
+          recruiterId,
+          now
+        );
+        return row ? { value: row.value, expiresAt: row.expires_at, type: row.type } : { value: 1.0, expiresAt: 0, type: null };
+      } catch (legacyErr) {
+        logUnexpectedError('economy.getActiveMultiplier.legacy', legacyErr, { recruiterId });
+        return { value: 1.0, expiresAt: 0, type: null };
+      }
+    }
+    // If the multipliers table doesn't exist or other DB error, fall back to no multiplier
     if (!msg.includes('no such table')) {
       logUnexpectedError('economy.getActiveMultiplier', e, { recruiterId });
     }
@@ -126,6 +138,17 @@ async function applyMultiplier(db, recruiterId, multiplierKey, opts = {}) {
       expiresAt
     );
   } catch (e) {
+    if (hasMissingGuildColumn(e)) {
+      await db.run(
+        'INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+        recruiterId,
+        cfg.value,
+        multiplierKey,
+        Date.now(),
+        expiresAt
+      );
+      return cfg;
+    }
     logUnexpectedError('economy.applyMultiplier', e, { recruiterId, multiplierKey });
     throw e;
   }
@@ -135,12 +158,17 @@ async function applyMultiplier(db, recruiterId, multiplierKey, opts = {}) {
 async function resetMultipliers(db, recruiterId, opts = {}) {
   if (!db) return;
   const guildId = resolveGuildId(opts.guild || opts.guildId);
-  await db.run('BEGIN TRANSACTION');
   try {
-    await db.run('DELETE FROM multipliers WHERE guild_id = ? AND recruiter_id = ?', guildId, recruiterId);
-    await db.run('COMMIT');
+    await withTransaction(db, async (tx) => {
+      await tx.run('DELETE FROM multipliers WHERE guild_id = ? AND recruiter_id = ?', guildId, recruiterId);
+    });
   } catch (e) {
-    await db.run('ROLLBACK');
+    if (hasMissingGuildColumn(e)) {
+      await withTransaction(db, async (tx) => {
+        await tx.run('DELETE FROM multipliers WHERE recruiter_id = ?', recruiterId);
+      });
+      return;
+    }
     logUnexpectedError('economy.resetMultipliers', e, { recruiterId });
     throw e;
   }
@@ -154,6 +182,7 @@ async function resetMultipliers(db, recruiterId, opts = {}) {
  */
 async function computeRetentionFromGuild(guild, recruitedIds = [], daysWindow = 7, minMsgs = 15, opts = {}) {
   if (!recruitedIds || recruitedIds.length === 0) return 0.0;
+  const recruitedSet = new Set(recruitedIds);
   const maxChannels = opts.maxChannels || 8;
   const perChannelLimit = opts.perChannelLimit || 100;
   const sinceTs = Date.now() - daysWindow * 24 * 60 * 60 * 1000;
@@ -177,7 +206,7 @@ const counts = Object.create(null);
         if (!authorId) continue;
         const time = (m.createdTimestamp || (m.createdAt ? new Date(m.createdAt).getTime() : 0));
         if (time < sinceTs) continue;
-        if (recruitedIds.includes(authorId)) {
+        if (recruitedSet.has(authorId)) {
           counts[authorId] = (counts[authorId] || 0) + 1;
           if (counts[authorId] >= minMsgs) activeSet.add(authorId);
         }

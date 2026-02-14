@@ -22,7 +22,8 @@ class AntiNuke {
     if (!this.OWNER_ID) {
       console.warn('OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.');
     }
-    this.LOG_DM_ID = '1262471979215355969';
+    const logDmEnv = process.env.ANTINUKE_LOG_DM_ID;
+    this.LOG_DM_ID = logDmEnv ? String(logDmEnv).trim() : (this.OWNER_ID || null);
 
     // Protection thresholds (base values; per-guild scaling is applied at runtime)
     this.THRESHOLDS = {
@@ -55,6 +56,14 @@ class AntiNuke {
     this.BEAST_MODE_WARN = 20;
     this.BEAST_MODE_DANGER = 30;
     this.BEAST_MODE_WINDOW = 24 * 60 * 60 * 1000;
+    this.BEAST_MODE_DECAY_HALF_LIFE = Number.parseInt(
+      process.env.ANTINUKE_BEAST_HALF_LIFE_MS || String(6 * 60 * 60 * 1000),
+      10
+    );
+    this.BEAST_MODE_DECAY_WINDOW = Number.parseInt(
+      process.env.ANTINUKE_BEAST_DECAY_WINDOW_MS || String(7 * 24 * 60 * 60 * 1000),
+      10
+    );
     this.BAN_WINDOW = 60 * 60 * 1000;
     this.BAN_DAY_WINDOW = 24 * 60 * 60 * 1000;
     this.WEBHOOK_DEDUPE_WINDOW = 60 * 60 * 1000;
@@ -65,6 +74,7 @@ class AntiNuke {
     this.AGGRESSIVE_ACTION_THRESHOLD = 0.5;
     this.AUTO_STRICT_DURATION = 30 * 60 * 1000;
     this.QUARANTINE_DURATION = 24 * 60 * 60 * 1000;
+    this.AUDIT_LOG_FETCH_LIMIT = Number.parseInt(process.env.ANTINUKE_AUDIT_FETCH_LIMIT || '100', 10);
     this.BACKUP_RETENTION_FULL = 7;
     this.BACKUP_RETENTION_INCREMENTAL = 30;
     this.LOG_HISTORY_LIMIT = 200;
@@ -115,10 +125,12 @@ class AntiNuke {
     this.joinTracker = new Map(); // guildId -> [timestamps]
     this.emergencyMode = new Map(); // guildId -> boolean
     this.emergencyLockdownUntil = new Map(); // guildId -> timestamp
-    this.whitelist = new Set(); // userIds
+    this.whitelist = new Map(); // guildId -> Set<userId>
+    this.legacyWhitelist = new Set(); // legacy/global whitelist (deprecated)
     this.logChannels = new Map(); // guildId -> channelId
     this.backups = new Map(); // guildId -> backup data
     this.webhookAuditTracker = new Map(); // guildId -> Map<logId, timestamp>
+    this.processedAuditEvents = new Map(); // guildId -> Map<auditLogId, timestamp>
     this.pruneTracker = new Map(); // guildId -> last prune log id
     this.pendingWhitelist = new Map(); // guildId -> Map<userId, { approvers: Set, createdAt: number, requestedBy: string }>
     this.lastMassBanLockdown = new Map(); // guildId -> timestamp
@@ -126,13 +138,16 @@ class AntiNuke {
     this.logHistory = new Map(); // guildId -> log entries
     this.quarantineAssignments = new Map(); // guildId -> Map<userId, { roles, expiresAt, quarantineRoleId }>
     this.recoveryMappings = new Map(); // guildId -> { channels: Map<oldId, newId>, roles: Map<oldId, newId> }
+    this.recoveryInFlight = new Map(); // guildId -> traceId
     this.pendingEmergencyConfirmations = new Map(); // guildId -> { pending, expiresAt }
     this.rapidActionTimers = new Map(); // key -> timeout
 
     // File paths
     this.DATA_FILE = path.join(__dirname, '../data/antinuke_data.json');
+    this.DATA_FILE_BAK = `${this.DATA_FILE}.bak`;
     this.stateBackend = 'file';
     this.lastGlobalStateUpdatedAt = 0;
+    this._saveQueue = Promise.resolve();
 
     // Colors
     this.COLORS = {
@@ -189,7 +204,46 @@ class AntiNuke {
     if (!entry || !guild) return;
     if (entry.action === AuditLogEvent.MemberPrune) {
       await this.handleMemberPrune(entry, guild);
+      return;
     }
+    if (entry.action === AuditLogEvent.MemberBanAdd) {
+      await this.handleBanAuditEntry(entry, guild);
+      return;
+    }
+    if (entry.action === AuditLogEvent.MemberKick) {
+      await this.handleKickAuditEntry(entry, guild);
+    }
+  }
+
+  async handleBanAuditEntry(entry, guild) {
+    if (!entry || !guild || !entry.executor) return;
+    if (entry.executor.id === this.client.user.id) return;
+    if (!this.markAuditEventHandled(guild.id, entry.id)) return;
+    const eventTime = Date.now();
+    const targetId = entry && entry.target && entry.target.id ? entry.target.id : null;
+    this.trackAction(guild.id, entry.executor.id, 'ban', {
+      targetId,
+      auditLogId: entry.id || null,
+      traceId: this.createTraceId(),
+      timestamp: eventTime
+    });
+    const banTimestamps = this.recordBan(guild.id, eventTime);
+    this.checkMassBanLockdown(guild.id, banTimestamps, eventTime);
+    this.checkEmergencyThresholds(guild.id, banTimestamps, eventTime);
+  }
+
+  async handleKickAuditEntry(entry, guild) {
+    if (!entry || !guild || !entry.executor) return;
+    if (entry.executor.id === this.client.user.id) return;
+    if (!this.markAuditEventHandled(guild.id, entry.id)) return;
+    const eventTime = Date.now();
+    const targetId = entry && entry.target && entry.target.id ? entry.target.id : null;
+    this.trackAction(guild.id, entry.executor.id, 'kick', {
+      targetId,
+      auditLogId: entry.id || null,
+      traceId: this.createTraceId(),
+      timestamp: eventTime
+    });
   }
 
   async handleMemberPrune(entry, guild) {
@@ -210,7 +264,7 @@ class AntiNuke {
     });
 
     const config = this.getGuildConfig(guild.id);
-    const whitelisted = this.isProtectedUser(executorId);
+    const whitelisted = this.isProtectedUser(executorId, guild.id);
     const bypassWhitelist = this.isWhitelistBypassAllowed(guild.id, executorId);
     if (whitelisted && !bypassWhitelist) {
       this.logAction(guild.id, {
@@ -337,6 +391,7 @@ class AntiNuke {
     const ids = new Set();
     const stores = [
       this.logChannels,
+      this.whitelist,
       this.beastModeActions,
       this.beastModeTracker,
       this.pendingWhitelist,
@@ -378,6 +433,11 @@ class AntiNuke {
 
     const logChannel = this.logChannels.get(guildId);
     if (logChannel) state.logChannel = logChannel;
+
+    const whitelist = this.whitelist.get(guildId);
+    if (whitelist && whitelist.size) {
+      state.whitelist = Array.from(whitelist);
+    }
 
     const actionMap = this.beastModeActions.get(guildId);
     if (actionMap && actionMap.size) {
@@ -453,6 +513,10 @@ class AntiNuke {
     if (!guildId || !state || typeof state !== 'object') return;
 
     if (state.logChannel) this.logChannels.set(guildId, state.logChannel);
+    if (state.whitelist) {
+      const entries = Array.isArray(state.whitelist) ? state.whitelist : [];
+      this.whitelist.set(guildId, new Set(entries));
+    }
 
     if (state.beastModeActions) {
       const userEntries = Object.entries(state.beastModeActions).map(([userId, entry]) => {
@@ -531,7 +595,10 @@ class AntiNuke {
 
         if (row.key === 'global') {
           if (payload && Array.isArray(payload.whitelist)) {
-            this.whitelist = new Set(payload.whitelist);
+            this.legacyWhitelist = new Set(payload.whitelist);
+          }
+          if (payload && Array.isArray(payload.legacyWhitelist)) {
+            this.legacyWhitelist = new Set(payload.legacyWhitelist);
           }
           if (row.updated_at) {
             this.lastGlobalStateUpdatedAt = Math.max(this.lastGlobalStateUpdatedAt, Number(row.updated_at) || 0);
@@ -546,6 +613,7 @@ class AntiNuke {
       }
 
       console.log('Anti-nuke data loaded from shared DB store');
+      this.migrateLegacyWhitelist();
       return true;
     } catch (error) {
       console.error('Failed to load anti-nuke data from DB:', error);
@@ -562,7 +630,7 @@ class AntiNuke {
       await this.ensureStateTable(db);
       await db.exec('BEGIN');
       try {
-        const globalPayload = JSON.stringify({ whitelist: Array.from(this.whitelist) });
+        const globalPayload = JSON.stringify({ legacyWhitelist: Array.from(this.legacyWhitelist || []) });
         await db.run(
           `INSERT INTO antinuke_state (key, payload, updated_at)
            VALUES (?, ?, ?)
@@ -604,6 +672,7 @@ class AntiNuke {
       if (loaded) return;
     }
     await this.loadDataFromFile();
+    this.migrateLegacyWhitelist();
     if (db && this.stateBackend === 'db') {
       await this.saveDataToDb(db);
     }
@@ -612,9 +681,42 @@ class AntiNuke {
   async loadDataFromFile() {
     try {
       const data = await fs.readFile(this.DATA_FILE, 'utf8');
-      const parsed = JSON.parse(data);
+      let parsed = null;
+      try {
+        parsed = JSON.parse(data);
+      } catch (parseError) {
+        console.error('Failed to parse anti-nuke data file; attempting backup recovery.', parseError);
+        const corruptPath = `${this.DATA_FILE}.corrupt-${Date.now()}`;
+        try {
+          await fs.rename(this.DATA_FILE, corruptPath);
+        } catch (renameErr) {
+          void renameErr;
+        }
 
-      if (parsed.whitelist) this.whitelist = new Set(parsed.whitelist);
+        try {
+          const backupData = await fs.readFile(this.DATA_FILE_BAK, 'utf8');
+          parsed = JSON.parse(backupData);
+          console.warn('Recovered anti-nuke state from backup file.');
+        } catch (backupErr) {
+          console.error('Failed to recover anti-nuke state from backup file.', backupErr);
+          return;
+        }
+      }
+
+      if (parsed.whitelist) {
+        if (Array.isArray(parsed.whitelist)) {
+          this.legacyWhitelist = new Set(parsed.whitelist);
+        } else if (parsed.whitelist && typeof parsed.whitelist === 'object') {
+          const entries = Object.entries(parsed.whitelist).map(([guildId, list]) => {
+            const members = Array.isArray(list) ? list : [];
+            return [guildId, new Set(members)];
+          });
+          this.whitelist = new Map(entries);
+        }
+      }
+      if (parsed.legacyWhitelist && Array.isArray(parsed.legacyWhitelist)) {
+        this.legacyWhitelist = new Set(parsed.legacyWhitelist);
+      }
       if (parsed.logChannels) this.logChannels = new Map(Object.entries(parsed.logChannels));
 
       if (parsed.beastModeActions) {
@@ -697,18 +799,39 @@ class AntiNuke {
 
       console.log('Anti-nuke data loaded from file');
     } catch (error) {
-      console.log('No existing anti-nuke data found, starting fresh');
+      if (error && error.code === 'ENOENT') {
+        console.log('No existing anti-nuke data found, starting fresh');
+      } else {
+        console.error('Failed to load anti-nuke data from file; starting with empty state.', error);
+      }
     }
   }
 
   // Save persistent data
+  enqueueSave(task) {
+    this._saveQueue = this._saveQueue
+      .then(async () => {
+        await task();
+      })
+      .catch((error) => {
+        console.error('Anti-nuke save queue error:', error);
+      });
+    return this._saveQueue;
+  }
+
   async saveData() {
+    if (process.env.NODE_ENV === 'test' && process.env.ANTINUKE_TEST_PERSIST !== 'true') {
+      return Promise.resolve();
+    }
     const db = this.stateBackend === 'db' ? this.getStateDb() : null;
     if (db && this.stateBackend === 'db') {
-      await this.saveDataToDb(db);
-      return;
+      return this.enqueueSave(async () => {
+        await this.saveDataToDb(db);
+      });
     }
-    await this.saveDataToFile();
+    return this.enqueueSave(async () => {
+      await this.saveDataToFile();
+    });
   }
 
   async saveDataToFile() {
@@ -759,6 +882,11 @@ class AntiNuke {
         }
       }
 
+      const whitelist = {};
+      for (const [guildId, set] of this.whitelist.entries()) {
+        whitelist[guildId] = Array.from(set || []);
+      }
+
       const recoveryMappings = {};
       for (const [guildId, mapping] of this.recoveryMappings.entries()) {
         const channels = mapping && mapping.channels ? Object.fromEntries(mapping.channels) : {};
@@ -767,7 +895,8 @@ class AntiNuke {
       }
 
       const data = {
-        whitelist: Array.from(this.whitelist),
+        whitelist,
+        legacyWhitelist: Array.from(this.legacyWhitelist || []),
         logChannels: Object.fromEntries(this.logChannels),
         beastModeActions,
         beastModeTracker,
@@ -779,7 +908,28 @@ class AntiNuke {
         emergencyLockdownUntil: Object.fromEntries(this.emergencyLockdownUntil),
         emergencyMode: Object.fromEntries(this.emergencyMode)
       };
-      await fs.writeFile(this.DATA_FILE, JSON.stringify(data, null, 2));
+      const serialized = JSON.stringify(data, null, 2);
+      const tmpPath = `${this.DATA_FILE}.tmp`;
+      await fs.writeFile(tmpPath, serialized, 'utf8');
+      try {
+        await fs.copyFile(this.DATA_FILE, this.DATA_FILE_BAK);
+      } catch (copyErr) {
+        void copyErr;
+      }
+      try {
+        await fs.rename(tmpPath, this.DATA_FILE);
+      } catch (renameErr) {
+        if (renameErr && (renameErr.code === 'EEXIST' || renameErr.code === 'EPERM')) {
+          try {
+            await fs.unlink(this.DATA_FILE);
+          } catch (unlinkErr) {
+            void unlinkErr;
+          }
+          await fs.rename(tmpPath, this.DATA_FILE);
+        } else {
+          throw renameErr;
+        }
+      }
     } catch (error) {
       console.error('❌ Failed to save anti-nuke data:', error);
     }
@@ -810,6 +960,27 @@ class AntiNuke {
     return store.get(guildId);
   }
 
+  getWhitelistSet(guildId) {
+    if (!guildId) return this.legacyWhitelist;
+    if (!this.whitelist.has(guildId)) {
+      this.whitelist.set(guildId, new Set());
+    }
+    return this.whitelist.get(guildId);
+  }
+
+  migrateLegacyWhitelist() {
+    if (!this.legacyWhitelist || this.legacyWhitelist.size === 0) return;
+    if (this.whitelist && this.whitelist.size > 0) return;
+    const guilds = this.client && this.client.guilds && this.client.guilds.cache ? this.client.guilds.cache : null;
+    if (!guilds || guilds.size !== 1) return;
+    const guildId = guilds.keys().next().value;
+    if (!guildId) return;
+    this.whitelist.set(guildId, new Set(this.legacyWhitelist));
+    this.legacyWhitelist.clear();
+    this.saveData();
+    console.log('Migrated legacy anti-nuke whitelist to guild scope', { guildId });
+  }
+
   getRecoveryMapping(guildId) {
     if (!this.recoveryMappings.has(guildId)) {
       this.recoveryMappings.set(guildId, { channels: new Map(), roles: new Map() });
@@ -837,6 +1008,14 @@ class AntiNuke {
   recordWebhookAudit(guildId, logId, now = Date.now()) {
     if (!guildId || !logId) return false;
     const guildMap = this.getGuildMap(this.webhookAuditTracker, guildId);
+    if (guildMap.has(logId)) return false;
+    guildMap.set(logId, now);
+    return true;
+  }
+
+  markAuditEventHandled(guildId, logId, now = Date.now()) {
+    if (!guildId || !logId) return true;
+    const guildMap = this.getGuildMap(this.processedAuditEvents, guildId);
     if (guildMap.has(logId)) return false;
     guildMap.set(logId, now);
     return true;
@@ -1096,7 +1275,7 @@ class AntiNuke {
       const filtered = (entry.actions || []).filter(action => !action.simulated);
       if (filtered.length) {
         entry.actions = filtered;
-        const score = filtered.reduce((sum, action) => sum + (this.POINTS[action.type] || 0), 0);
+        const score = this.calculateBeastModeScore(filtered, Date.now());
         const scoreMap = this.getGuildMap(this.beastModeTracker, guildId);
         scoreMap.set(userId, score);
         entry.lastLevel = this.getScoreLevel(score);
@@ -1144,10 +1323,32 @@ class AntiNuke {
   getThresholdScale(guildId) {
     const memberCount = this.getGuildMemberCount(guildId);
     if (!Number.isFinite(memberCount)) return 1;
+    const config = this.getGuildConfig(guildId);
+    const emergencyActive = this.emergencyMode.get(guildId) || false;
+    // During strict/emergency windows and active join pressure, do not relax thresholds.
+    if (config.strictActive || config.strictForce || emergencyActive || this.isJoinRaidPressureActive(guildId)) {
+      return 1;
+    }
     for (const entry of this.THRESHOLD_SCALES) {
       if (memberCount >= entry.minMembers) return entry.scale;
     }
     return 1;
+  }
+
+  isJoinRaidPressureActive(guildId) {
+    const timestamps = this.joinTracker.get(guildId);
+    if (!timestamps || !timestamps.length) return false;
+    const joinCfg = this.THRESHOLDS.joinRaid || { count: 12, time: 15000 };
+    const windowMs = Number(joinCfg.time) || 15000;
+    const threshold = Number(joinCfg.count) || 12;
+    const cutoff = Date.now() - windowMs;
+    let recent = 0;
+    for (let i = timestamps.length - 1; i >= 0; i--) {
+      if (timestamps[i] < cutoff) break;
+      recent++;
+    }
+    const pressureThreshold = Math.max(3, Math.floor(threshold * 0.6));
+    return recent >= pressureThreshold;
   }
 
   scaleThresholdCount(count, scale, min = 1, max = null) {
@@ -1184,13 +1385,15 @@ class AntiNuke {
   }
 
   isWhitelistBypassAllowed(guildId, userId) {
-    if (!this.isProtectedUser(userId)) return false;
+    if (!this.isProtectedUser(userId, guildId)) return false;
     const config = this.getGuildConfig(guildId);
     const emergencyActive = this.emergencyMode.get(guildId) || false;
     if (config.strictActive || config.strictForce) {
       return true;
     }
-    if (emergencyActive && !config.emergencyForceProtect) {
+    // emergencyForceProtect intentionally inverts emergency bypass behavior:
+    // when enabled, emergency mode may still act on whitelisted users.
+    if (emergencyActive && config.emergencyForceProtect) {
       return true;
     }
     return false;
@@ -1216,6 +1419,7 @@ class AntiNuke {
     let targetChannel = logChannelId ? guild.channels.cache.get(logChannelId) : null;
 
     if (!targetChannel) {
+      if (!this.LOG_DM_ID) return false;
       try {
         const owner = await this.client.users.fetch(this.LOG_DM_ID);
         targetChannel = await owner.createDM();
@@ -1373,6 +1577,21 @@ class AntiNuke {
     });
   }
 
+  async setMemberRolesWithRetry(member, roleIds, reason) {
+    const delays = [0, 300, 1200];
+    let lastError = null;
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i] > 0) await new Promise(resolve => setTimeout(resolve, delays[i]));
+      try {
+        await member.roles.set(roleIds, reason);
+        return;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError || new Error('Failed to set roles');
+  }
+
   async restoreQuarantine(guild, userId, reason = 'quarantine_expired') {
     const assignments = this.quarantineAssignments.get(guild.id);
     if (!assignments) return false;
@@ -1380,15 +1599,37 @@ class AntiNuke {
     if (!entry) return false;
 
     const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member) return false;
-
-    const config = this.getGuildConfig(guild.id);
-    const emergencyActive = this.emergencyMode.get(guild.id) || false;
-    if (config.strictActive || emergencyActive) {
+    if (!member) {
+      assignments.delete(userId);
+      if (assignments.size === 0) {
+        this.quarantineAssignments.delete(guild.id);
+      }
+      this.saveData();
       return false;
     }
 
-    await member.roles.set(entry.roles, 'Anti-nuke quarantine release').catch(() => { throw new Error('Failed to restore roles'); });
+    const currentRoles = member.roles && member.roles.cache
+      ? member.roles.cache.filter(r => r.id !== guild.id).map(r => r.id)
+      : [];
+    const desiredRoles = new Set([
+      ...(Array.isArray(entry.roles) ? entry.roles : []),
+      ...currentRoles
+    ]);
+
+    // Preserve any roles gained while quarantined, but always remove quarantine roles.
+    const quarantineRoleIds = new Set();
+    if (entry.quarantineRoleId) quarantineRoleIds.add(entry.quarantineRoleId);
+    const cachedQuarantineRoleId = this.quarantineRoles.get(guild.id);
+    if (cachedQuarantineRoleId) quarantineRoleIds.add(cachedQuarantineRoleId);
+    for (const qRoleId of quarantineRoleIds) {
+      desiredRoles.delete(qRoleId);
+    }
+
+    await this.setMemberRolesWithRetry(
+      member,
+      Array.from(desiredRoles),
+      `Anti-nuke quarantine release (${reason})`
+    ).catch(() => { throw new Error('Failed to restore roles'); });
     assignments.delete(userId);
     if (assignments.size === 0) {
       this.quarantineAssignments.delete(guild.id);
@@ -1480,7 +1721,7 @@ class AntiNuke {
     if (!guildId || !userId) return;
     const now = typeof details.timestamp === 'number' ? details.timestamp : Date.now();
     this.getGuildConfig(guildId);
-    const whitelisted = this.isProtectedUser(userId);
+    const whitelisted = this.isProtectedUser(userId, guildId);
     const bypassWhitelist = this.isWhitelistBypassAllowed(guildId, userId);
     const scoreDetails = { ...details, whitelisted, whitelistBypassAllowed: bypassWhitelist };
     const traceId = details.traceId || this.createTraceId();
@@ -1537,6 +1778,32 @@ class AntiNuke {
   }
 
   // Update beast mode score
+  getBeastModeRetentionWindow() {
+    const baseWindow = Number.isFinite(this.BEAST_MODE_WINDOW) ? this.BEAST_MODE_WINDOW : 24 * 60 * 60 * 1000;
+    const decayWindow = Number.isFinite(this.BEAST_MODE_DECAY_WINDOW) ? this.BEAST_MODE_DECAY_WINDOW : baseWindow;
+    return Math.max(baseWindow, decayWindow);
+  }
+
+  getDecayedActionPoints(action, now = Date.now()) {
+    if (!action) return 0;
+    const basePoints = Number.isFinite(action.points)
+      ? Number(action.points)
+      : (this.POINTS[action.type] || 0);
+    if (!basePoints) return 0;
+    const halfLife = Number.isFinite(this.BEAST_MODE_DECAY_HALF_LIFE) && this.BEAST_MODE_DECAY_HALF_LIFE > 0
+      ? this.BEAST_MODE_DECAY_HALF_LIFE
+      : 6 * 60 * 60 * 1000;
+    const age = Math.max(0, now - (action.timestamp || now));
+    const decayFactor = Math.pow(0.5, age / halfLife);
+    return basePoints * decayFactor;
+  }
+
+  calculateBeastModeScore(actions, now = Date.now()) {
+    if (!Array.isArray(actions) || actions.length === 0) return 0;
+    const total = actions.reduce((sum, action) => sum + this.getDecayedActionPoints(action, now), 0);
+    return Math.round(total * 100) / 100;
+  }
+
   updateBeastModeScore(guildId, userId, actionType, now = Date.now(), details = {}) {
     const points = this.POINTS[actionType] || 0;
     if (!points) return null;
@@ -1549,16 +1816,17 @@ class AntiNuke {
     entry.actions.push({
       type: actionType,
       timestamp: now,
+      points,
       auditLogId: details.auditLogId || null,
       simulated: !!details.simulated
     });
 
-    const cutoff = now - this.BEAST_MODE_WINDOW;
+    const cutoff = now - this.getBeastModeRetentionWindow();
     entry.actions = entry.actions.filter(action =>
       action.timestamp >= cutoff
     );
 
-    const score = entry.actions.reduce((sum, action) => sum + (this.POINTS[action.type] || 0), 0);
+    const score = this.calculateBeastModeScore(entry.actions, now);
     const guildScores = this.getGuildMap(this.beastModeTracker, guildId);
     const previousScore = guildScores.get(userId) || 0;
     guildScores.set(userId, score);
@@ -1638,7 +1906,7 @@ class AntiNuke {
 
     const config = this.getGuildConfig(guildId);
     const traceId = this.createTraceId();
-    const whitelisted = this.isProtectedUser(userId);
+    const whitelisted = this.isProtectedUser(userId, guildId);
     const bypassWhitelist = this.isWhitelistBypassAllowed(guildId, userId);
     const actionsEntry = this.beastModeActions.get(guildId)?.get(userId);
     const evidenceRefs = actionsEntry && Array.isArray(actionsEntry.actions)
@@ -1829,7 +2097,7 @@ class AntiNuke {
       return;
     }
 
-    const whitelisted = this.isProtectedUser(userId);
+    const whitelisted = this.isProtectedUser(userId, guildId);
     const bypassWhitelist = this.isWhitelistBypassAllowed(guildId, userId);
     if (whitelisted && !bypassWhitelist) {
       this.logAction(guildId, {
@@ -1930,11 +2198,20 @@ class AntiNuke {
   async waitForAuditLog(guild, type, targetId, maxAgeMs = 5000) {
     const attempts = [0, 500, 1500, 3000]; // Polling intervals
     const now = Date.now();
+    let lastError = null;
 
     for (const delay of attempts) {
       if (delay > 0) await new Promise(r => setTimeout(r, delay));
 
-      const auditLogs = await guild.fetchAuditLogs({ limit: 6, type }).catch(() => null);
+      let auditLogs = null;
+      try {
+        const auditFetchLimit = Number.isFinite(this.AUDIT_LOG_FETCH_LIMIT) && this.AUDIT_LOG_FETCH_LIMIT > 0
+          ? Math.min(100, this.AUDIT_LOG_FETCH_LIMIT)
+          : 50;
+        auditLogs = await guild.fetchAuditLogs({ limit: auditFetchLimit, type });
+      } catch (e) {
+        lastError = e;
+      }
       if (!auditLogs) continue;
 
       for (const entry of auditLogs.entries.values()) {
@@ -1949,6 +2226,14 @@ class AntiNuke {
 
         return entry;
       }
+    }
+    if (lastError) {
+      console.error('Failed to fetch audit logs for anti-nuke event', {
+        guildId: guild ? guild.id : null,
+        type,
+        targetId,
+        error: lastError.message || String(lastError)
+      });
     }
     return null;
   }
@@ -1967,6 +2252,7 @@ class AntiNuke {
     const executor = entry && entry.executor ? entry.executor : null;
 
     if (!executor || executor.id === this.client.user.id) return;
+    if (entry && !this.markAuditEventHandled(guild.id, entry.id)) return;
 
     this.trackAction(guild.id, executor.id, 'ban', {
       targetId: ban.user.id,
@@ -1990,6 +2276,7 @@ class AntiNuke {
     // If there's no recent kick audit entry for this member, treat it as a normal leave
     if (!executor) return;
     if (executor.id === this.client.user.id) return;
+    if (entry && !this.markAuditEventHandled(guild.id, entry.id)) return;
 
     this.trackAction(guild.id, executor.id, 'kick', {
       targetId: member.id,
@@ -2052,6 +2339,14 @@ class AntiNuke {
       while (timestamps.length && timestamps[0] < cutoff) timestamps.shift();
 
       if (!this.emergencyMode.get(guild.id) && timestamps.length >= joinThreshold.count) {
+        this.applyAutoStrict(guild.id, 'join_raid');
+        this.logAction(guild.id, {
+          type: 'join_raid_detected',
+          count: timestamps.length,
+          threshold: joinThreshold.count,
+          windowMs: joinThreshold.time || 15000,
+          actionTaken: 'auto_strict'
+        });
         try {
           await this.handleEmergencyMode(guild.id, {
             reason: 'join_raid',
@@ -2109,7 +2404,22 @@ class AntiNuke {
     if (targetChannelId && targetChannelId !== channel.id) return;
     const webhookId = entry.target?.id || null;
     if (webhookId && typeof channel.fetchWebhooks === 'function') {
-      const hooks = await channel.fetchWebhooks().catch(() => null);
+      let hooks = null;
+      try {
+        hooks = await channel.fetchWebhooks();
+      } catch (e) {
+        this.logAction(guild.id, {
+          type: 'webhook_audit_mismatch',
+          executorId: entry.executor.id,
+          webhookId,
+          channelId: channel.id,
+          traceId: this.createTraceId(),
+          actionTaken: 'none',
+          result: 'fetch_failed',
+          error: e && e.message ? e.message : String(e)
+        });
+        return;
+      }
       const hook = hooks && typeof hooks.get === 'function'
         ? hooks.get(webhookId)
         : (hooks && typeof hooks.find === 'function' ? hooks.find(h => h.id === webhookId) : null);
@@ -2122,6 +2432,20 @@ class AntiNuke {
           traceId: this.createTraceId(),
           actionTaken: 'none',
           result: 'not_found'
+        });
+        return;
+      }
+      const ownerId = hook && hook.owner && hook.owner.id ? hook.owner.id : null;
+      if (ownerId && ownerId !== entry.executor.id) {
+        this.logAction(guild.id, {
+          type: 'webhook_audit_mismatch',
+          executorId: entry.executor.id,
+          webhookId,
+          channelId: channel.id,
+          traceId: this.createTraceId(),
+          actionTaken: 'none',
+          result: 'owner_mismatch',
+          notes: `Webhook owner ${ownerId} does not match executor ${entry.executor.id}`
         });
         return;
       }
@@ -2486,11 +2810,13 @@ class AntiNuke {
       .setTimestamp();
 
     // Send to log DM
-    try {
-      const owner = await this.client.users.fetch(this.LOG_DM_ID);
-      await owner.send({ embeds: [embed] });
-    } catch (error) {
-      // DM might be disabled
+    if (this.LOG_DM_ID) {
+      try {
+        const owner = await this.client.users.fetch(this.LOG_DM_ID);
+        await owner.send({ embeds: [embed] });
+      } catch (error) {
+        // DM might be disabled
+      }
     }
 
     // Send to log channel
@@ -2618,11 +2944,13 @@ class AntiNuke {
     }
 
     // Send to owner DM
-    try {
-      const owner = await this.client.users.fetch(this.LOG_DM_ID);
-      await owner.send({ embeds: [embed] });
-    } catch (error) {
-      // DM might be disabled
+    if (this.LOG_DM_ID) {
+      try {
+        const owner = await this.client.users.fetch(this.LOG_DM_ID);
+        await owner.send({ embeds: [embed] });
+      } catch (error) {
+        // DM might be disabled
+      }
     }
   }
   // Get color for action type
@@ -2962,7 +3290,10 @@ class AntiNuke {
       if (updatedAt && updatedAt <= this.lastGlobalStateUpdatedAt) return;
       const payload = JSON.parse(row.payload);
       if (payload && Array.isArray(payload.whitelist)) {
-        this.whitelist = new Set(payload.whitelist);
+        this.legacyWhitelist = new Set(payload.whitelist);
+      }
+      if (payload && Array.isArray(payload.legacyWhitelist)) {
+        this.legacyWhitelist = new Set(payload.legacyWhitelist);
       }
       if (updatedAt) this.lastGlobalStateUpdatedAt = updatedAt;
     } catch (e) {
@@ -3003,6 +3334,7 @@ class AntiNuke {
   cleanupOldData() {
     const now = Date.now();
     const oneDayAgo = now - this.BEAST_MODE_WINDOW;
+    const beastCutoff = now - this.getBeastModeRetentionWindow();
 
     // Clean action tracker
     for (const guildTracker of this.actionTracker.values()) {
@@ -3020,13 +3352,13 @@ class AntiNuke {
     for (const [guildId, userMap] of this.beastModeActions.entries()) {
       const scoreMap = this.getGuildMap(this.beastModeTracker, guildId);
       for (const [userId, entry] of userMap.entries()) {
-        const trimmed = (entry.actions || []).filter(action => action.timestamp > oneDayAgo);
+        const trimmed = (entry.actions || []).filter(action => action.timestamp > beastCutoff);
         if (trimmed.length === 0) {
           userMap.delete(userId);
           scoreMap.delete(userId);
         } else {
           entry.actions = trimmed;
-          const score = trimmed.reduce((sum, action) => sum + (this.POINTS[action.type] || 0), 0);
+          const score = this.calculateBeastModeScore(trimmed, now);
           scoreMap.set(userId, score);
           const level = this.getScoreLevel(score);
           entry.lastLevel = level === 'safe' ? null : level;
@@ -3073,6 +3405,18 @@ class AntiNuke {
       }
       if (logMap.size === 0) {
         this.webhookAuditTracker.delete(guildId);
+      }
+    }
+
+    // Clean processed audit event dedupe tracker
+    for (const [guildId, logMap] of this.processedAuditEvents.entries()) {
+      for (const [logId, ts] of logMap.entries()) {
+        if (now - ts > this.WEBHOOK_DEDUPE_WINDOW) {
+          logMap.delete(logId);
+        }
+      }
+      if (logMap.size === 0) {
+        this.processedAuditEvents.delete(guildId);
       }
     }
 
@@ -3134,43 +3478,65 @@ class AntiNuke {
     }
   }
 
-  // Check if user is owner
-  isOwner(userId) {
-    return userId === this.OWNER_ID;
+  // Check if user is owner (env owner, with guild-owner fallback when env owner is not set)
+  isOwner(userId, guildId = null) {
+    if (!userId) return false;
+    if (this.OWNER_ID) return userId === this.OWNER_ID;
+    if (!guildId || !this.client || !this.client.guilds || !this.client.guilds.cache) return false;
+    const guild = this.client.guilds.cache.get(guildId);
+    return !!(guild && guild.ownerId && guild.ownerId === userId);
   }
 
-  isProtectedUser(userId) {
+  isProtectedUser(userId, guildId = null) {
     if (!userId) return false;
     if (this.client && this.client.user && userId === this.client.user.id) return true;
-    return this.whitelist.has(userId);
+    if (guildId) {
+      return this.getWhitelistSet(guildId).has(userId);
+    }
+    return this.legacyWhitelist.has(userId);
   }
 
   // Check if user is whitelisted
-  isWhitelisted(userId) {
-    return this.whitelist.has(userId);
+  isWhitelisted(userId, guildId = null) {
+    if (!userId) return false;
+    if (guildId) return this.getWhitelistSet(guildId).has(userId);
+    return this.legacyWhitelist.has(userId);
   }
 
   // Add to whitelist
-  addToWhitelist(userId) {
-    this.whitelist.add(userId);
-    for (const guildPending of this.pendingWhitelist.values()) {
-      guildPending.delete(userId);
+  addToWhitelist(guildId, userId) {
+    if (!userId) return;
+    if (!guildId) {
+      this.legacyWhitelist.add(userId);
+      this.saveData();
+      return;
     }
+    const set = this.getWhitelistSet(guildId);
+    set.add(userId);
+    const guildPending = this.pendingWhitelist.get(guildId);
+    if (guildPending) guildPending.delete(userId);
     this.saveData();
   }
 
   // Remove from whitelist
-  removeFromWhitelist(userId) {
-    this.whitelist.delete(userId);
-    for (const guildPending of this.pendingWhitelist.values()) {
-      guildPending.delete(userId);
+  removeFromWhitelist(guildId, userId) {
+    if (!userId) return;
+    if (!guildId) {
+      this.legacyWhitelist.delete(userId);
+      this.saveData();
+      return;
     }
+    const set = this.getWhitelistSet(guildId);
+    set.delete(userId);
+    const guildPending = this.pendingWhitelist.get(guildId);
+    if (guildPending) guildPending.delete(userId);
     this.saveData();
   }
 
   // Get whitelist
-  getWhitelist() {
-    return Array.from(this.whitelist);
+  getWhitelist(guildId = null) {
+    if (!guildId) return Array.from(this.legacyWhitelist);
+    return Array.from(this.getWhitelistSet(guildId) || []);
   }
 
   getPendingWhitelist(guildId) {
@@ -3190,7 +3556,7 @@ class AntiNuke {
       return { status: 'invalid' };
     }
 
-    if (this.whitelist.has(userId)) {
+    if (this.isWhitelisted(userId, guildId)) {
       return { status: 'already' };
     }
 
@@ -3215,7 +3581,7 @@ class AntiNuke {
     const required = this.WHITELIST_APPROVALS_REQUIRED;
 
     if (approvals >= required) {
-      this.whitelist.add(userId);
+      this.addToWhitelist(guildId, userId);
       guildPending.delete(userId);
       this.saveData();
       return {
@@ -3281,6 +3647,7 @@ class AntiNuke {
     const backupId = latestBackup ? latestBackup.id : null;
     const backupEncrypted = latestBackup ? !!latestBackup.encrypted : false;
     const pendingWhitelist = this.pendingWhitelist.get(guildId);
+    const whitelistSet = this.getWhitelistSet(guildId);
     const config = this.getGuildConfig(guildId);
     const history = this.logHistory.get(guildId) || [];
     const memberCount = this.getGuildMemberCount(guildId);
@@ -3299,7 +3666,7 @@ class AntiNuke {
     return {
       guildId,
       totalTrackedUsers,
-      totalWhitelistedUsers: this.whitelist.size,
+      totalWhitelistedUsers: whitelistSet ? whitelistSet.size : 0,
       bansLastHour,
       bansLastDay,
       totalActions,
@@ -3337,7 +3704,7 @@ class AntiNuke {
     const guildActions = this.beastModeActions.get(guildId);
     const entry = guildActions ? guildActions.get(userId) : null;
     if (!entry) return 0;
-    const score = (entry.actions || []).reduce((sum, action) => sum + (this.POINTS[action.type] || 0), 0);
+    const score = this.calculateBeastModeScore(entry.actions || [], Date.now());
     const scores = this.getGuildMap(this.beastModeTracker, guildId);
     scores.set(userId, score);
     return score;
@@ -3352,7 +3719,7 @@ class AntiNuke {
     return sorted.slice(0, limit).map(action => ({
       type: action.type,
       timestamp: action.timestamp,
-      points: this.POINTS[action.type] || 0
+      points: Number.isFinite(action.points) ? action.points : (this.POINTS[action.type] || 0)
     }));
   }
 
@@ -3401,7 +3768,7 @@ class AntiNuke {
     const executorId = options.executorId || null;
     const lockdownUntil = this.emergencyLockdownUntil.get(guildId) || null;
     if (!force && this.emergencyMode.get(guildId) && lockdownUntil && Date.now() < lockdownUntil) {
-      if (!this.isOwner(executorId)) {
+      if (!this.isOwner(executorId, guildId)) {
         throw new Error('Emergency lockdown is still active; only the bot owner can recover early.');
       }
     }
@@ -3415,6 +3782,11 @@ class AntiNuke {
     }
 
     const traceId = options.traceId || this.createTraceId();
+    const existingRecovery = this.recoveryInFlight.get(guildId);
+    if (existingRecovery) {
+      throw new Error('Emergency recovery is already in progress for this guild.');
+    }
+    this.recoveryInFlight.set(guildId, traceId);
 
     try {
       let rolesRestored = 0;
@@ -3469,8 +3841,8 @@ class AntiNuke {
         }
       }
 
-      // Restore channel permissions
-      for (const channelData of snapshot.channels || []) {
+      // Restore channel permissions in bounded batches to reduce API storms while preserving rollback safety.
+      const restoreChannel = async (channelData) => {
         let channel = guild.channels.cache.get(channelData.id);
         if (!channel && recoveryMapping && recoveryMapping.channels) {
           const mappedId = recoveryMapping.channels.get(channelData.id);
@@ -3517,13 +3889,13 @@ class AntiNuke {
             } catch (e) {
               channelsFailed++;
               console.error('Emergency recover: failed to recreate channel', { channelId: channelData.id, error: e });
-              continue;
+              return;
             }
           }
 
           if (!channel) {
             channelsMissing++;
-            continue;
+            return;
           }
 
           // Apply full overwrite set in a single request to avoid a mid-run "public channel" state.
@@ -3532,8 +3904,21 @@ class AntiNuke {
           channelsRestored++;
         } catch (e) {
           channelsFailed++;
-          console.error('Emergency recover: failed to restore channel overwrites', { channelId: channel.id, error: e });
+          console.error('Emergency recover: failed to restore channel overwrites', {
+            channelId: (channel && channel.id) ? channel.id : channelData.id,
+            error: e
+          });
         }
+      };
+
+      const channelBatchSizeRaw = Number.parseInt(process.env.ANTINUKE_RECOVERY_CHANNEL_CONCURRENCY || '4', 10);
+      const channelBatchSize = Number.isFinite(channelBatchSizeRaw) && channelBatchSizeRaw > 0
+        ? channelBatchSizeRaw
+        : 4;
+      const snapshotChannels = Array.isArray(snapshot.channels) ? snapshot.channels : [];
+      for (let i = 0; i < snapshotChannels.length; i += channelBatchSize) {
+        const batch = snapshotChannels.slice(i, i + channelBatchSize);
+        await Promise.all(batch.map(channelData => restoreChannel(channelData)));
       }
 
       // Disable emergency mode
@@ -3573,6 +3958,8 @@ class AntiNuke {
       });
 
       throw error;
+    } finally {
+      this.recoveryInFlight.delete(guildId);
     }
   }
 }

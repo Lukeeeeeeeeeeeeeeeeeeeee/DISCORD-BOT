@@ -2,6 +2,7 @@ const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 const { hasAdministrator } = require('./permissions');
 const { resolveGuildId } = require('./guild');
 const { fetchMembersByIds } = require('./member-fetch');
+const { RECRUITING_RULES } = require('../services/recruiting/rules-service');
 
 // Role hierarchy for permissions
 const ROLE_HIERARCHY = {
@@ -32,13 +33,14 @@ const ROLE_BASE_REQUIREMENTS = {
 };
 
 // Constants
-const TARGET_RECRUITS_PER_WEEK = 8;
+const TARGET_RECRUITS_PER_WEEK = RECRUITING_RULES.TARGET_RECRUITS_PER_WEEK;
 const PIVOT_RECRUITS_PER_WEEK = TARGET_RECRUITS_PER_WEEK / 2;
 const ACTIVITY_MAX_STEP = 1.5;
 const VERIFY_MAX_STEP = 1.0;
 const RETENTION_MAX_STEP = 0.5;
-const MIN_MIN_REQ = 2;
-const MAX_MIN_REQ = 8;
+const MIN_MIN_REQ = RECRUITING_RULES.MIN_MIN_REQ;
+const MAX_MIN_REQ = RECRUITING_RULES.MAX_MIN_REQ;
+const RETENTION_COHORT_LIMIT = Number.parseInt(process.env.RETENTION_COHORT_LIMIT || '250', 10);
 
 const PROGRESSION_TARGET = 4;
 const PROGRESSION_RATE = 0.5;
@@ -284,12 +286,16 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
     // Calculate retention for 7-day window
     let retention = 0;
     if (guild) {
+      const cohortLimit = Number.isFinite(RETENTION_COHORT_LIMIT) && RETENTION_COHORT_LIMIT > 0
+        ? RETENTION_COHORT_LIMIT
+        : 250;
       const retentionCohort = await db.all(
-        'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC',
+        'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC LIMIT ?',
         guildId,
         recruiterId,
         retentionStart,
-        retentionEnd
+        retentionEnd,
+        cohortLimit
       );
 
       const cohortSize = retentionCohort.length;

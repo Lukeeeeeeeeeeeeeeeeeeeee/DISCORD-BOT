@@ -51,4 +51,30 @@ describe('upsertLeaderboardMessage', () => {
     const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, 'NA');
     expect(row.message_id).toBe('m-2');
   });
+
+  test('concurrent upserts create only one new message record', async () => {
+    const db = await makeDb();
+    let sendCount = 0;
+    const channel = {
+      id: 'chan-race',
+      messages: {
+        fetch: jest.fn(async (id) => ({ id, edit: async () => ({ id }) })),
+        edit: jest.fn(async (id) => ({ id }))
+      },
+      send: jest.fn(async () => {
+        sendCount += 1;
+        return { id: `m-race-${sendCount}` };
+      })
+    };
+
+    await Promise.all([
+      upsertLeaderboardMessage(db, channel, 'EU', 'race', null, 'GLOBAL'),
+      upsertLeaderboardMessage(db, channel, 'EU', 'race', null, 'GLOBAL')
+    ]);
+
+    const row = await db.get('SELECT * FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?', 'GLOBAL', channel.id, 'EU');
+    expect(row).toBeDefined();
+    expect(sendCount).toBe(1);
+    expect(row.message_id).toBe('m-race-1');
+  });
 });

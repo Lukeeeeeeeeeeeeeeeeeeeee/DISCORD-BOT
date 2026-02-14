@@ -37,8 +37,15 @@ function makeGuildMock({ recruiterId, recruitedId }) {
   channels.set('EU_CH', makeChannel('EU_CH'));
   channels.set('CENTRAL_CH', makeChannel('CENTRAL_CH'));
 
-  // Provide minimal roles cache (scheduler has fallback DB path if roles missing)
-  const roles = { cache: { get: jest.fn(() => null) } };
+  const rolesMap = new Map();
+  const addRole = (id) => {
+    if (!id) return;
+    rolesMap.set(id, { id, name: `role-${id}`, position: 1 });
+  };
+  addRole(constants.ROLE_IDS.ROOKIE);
+  addRole(constants.ROLE_IDS.UNVERIFIED);
+  (constants.ROLE_IDS.ONBOARDING || []).forEach(r => addRole(r));
+  const roles = { cache: { get: jest.fn((id) => rolesMap.get(id) || null) } };
 
   const recruitedMember = {
     id: recruitedId,
@@ -70,6 +77,11 @@ function makeGuildMock({ recruiterId, recruitedId }) {
   };
 
   const members = {
+    me: {
+      id: 'BOT',
+      permissions: { has: jest.fn(() => true) },
+      roles: { highest: { position: 100 } }
+    },
     fetch: jest.fn(async (id) => {
       if (!id) return new Map([[recruiterId, recruiterMember], [recruitedId, recruitedMember]]);
       if (id === recruiterId) return recruiterMember;

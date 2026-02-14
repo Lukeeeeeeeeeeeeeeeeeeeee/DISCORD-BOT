@@ -2,12 +2,17 @@ jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
-function makeInteraction() {
+function makeInteraction(opts = {}) {
+  const roleAddFails = !!opts.roleAddFails;
   const reply = jest.fn();
   const options = { getSubcommand: () => 'buy', getString: (_k) => 'vip-role' };
   const member = {
     id: 'RBUY',
-    roles: { add: jest.fn().mockResolvedValue(true) }
+    roles: {
+      add: roleAddFails
+        ? jest.fn().mockRejectedValue(new Error('Missing Permissions'))
+        : jest.fn().mockResolvedValue(true)
+    }
   };
   const guild = {
     id: 'GLOBAL',
@@ -50,6 +55,23 @@ describe('buy role items', () => {
     expect(interaction.reply).toHaveBeenCalled();
     const rec = await require('../src/db_async').get('SELECT * FROM recruiters WHERE id = ?', 'RBUY');
     expect(rec.points).toBe(5); // 30 - 25
+    expect(member.roles.add).toHaveBeenCalled();
+  });
+
+  test('buy vip-role refunds points when role grant fails', async () => {
+    const { interaction, member } = makeInteraction({ roleAddFails: true });
+    const cmd = require('../src/commands/recruiting/recruiter.js');
+    await cmd.execute(interaction);
+
+    expect(interaction.reply).toHaveBeenCalled();
+    const payload = interaction.reply.mock.calls[0][0];
+    const description = payload && payload.embeds && payload.embeds[0] && payload.embeds[0].data
+      ? payload.embeds[0].data.description
+      : '';
+    expect(description).toMatch(/Purchase was canceled/i);
+
+    const rec = await require('../src/db_async').get('SELECT * FROM recruiters WHERE id = ?', 'RBUY');
+    expect(rec.points).toBe(30);
     expect(member.roles.add).toHaveBeenCalled();
   });
 });

@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
 const { buildErrorEmbed } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
 
 module.exports = {
@@ -32,17 +33,8 @@ module.exports = {
       return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
 
-    if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
-
-    const respond = (payload) => {
-      if (interaction.deferred || interaction.replied) {
-        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
-        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
-      }
-      return interaction.reply(payload);
-    };
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const enabled = interaction.options.getBoolean('enabled');
     const durationMinutes = interaction.options.getInteger('duration_minutes');
@@ -62,7 +54,7 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setColor(enabled ? '#FF0000' : '#00FF00')
-      .setTitle(enabled ? '🛑 Strict Mode Enabled' : '✅ Strict Mode Disabled')
+      .setTitle(enabled ? 'Strict Mode Enabled' : 'Strict Mode Disabled')
       .setDescription(enabled ? 'Strict mode is now active for this server.' : 'Strict mode has been turned off.')
       .addFields(
         { name: 'Enabled', value: enabled ? 'Yes' : 'No', inline: true },

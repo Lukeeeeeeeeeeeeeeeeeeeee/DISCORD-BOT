@@ -1,5 +1,6 @@
-const { ROLE_IDS } = require('../constants');
+const { ROLE_IDS, REGION_ROLE_IDS } = require('../constants');
 const { getRegionInfo } = require('./regions');
+const scheduler = require('../scheduler');
 
 async function retrySetNickname(member, nickname, delaysMs = [0, 1000, 2000]) {
     if (!member || !nickname) return false;
@@ -33,7 +34,6 @@ function inferTeamFromOnboarding(member) {
 }
 
 function inferTeamFromRegionTag(member) {
-    const { REGION_ROLE_IDS } = require('../constants');
     if (!member || !member.roles || !member.roles.cache) return null;
     const keys = ['EU', 'NA', 'AS'];
     for (const key of keys) {
@@ -53,6 +53,9 @@ async function promoteMember({ member, db, guild, verifierId }) {
     const guildId = guild ? guild.id : null;
     const team = inferTeamFromOnboarding(member) || inferTeamFromRegionTag(member);
     const teamRoleId = ROLE_IDS.TEAM_MEMBER && team ? ROLE_IDS.TEAM_MEMBER[team] : null;
+    const teamInfo = getRegionInfo(team);
+    const teamName = teamInfo.name || (team || 'Unknown');
+    const teamEmoji = teamInfo.emoji || '';
 
     // Roles to remove
     const rolesToRemove = [
@@ -64,24 +67,35 @@ async function promoteMember({ member, db, guild, verifierId }) {
         ...(ROLE_IDS.ONBOARDING || [])
     ].filter(Boolean);
 
-    const uniqueRolesToRemove = new Set(rolesToRemove);
-    const currentRoleIds = new Set(member.roles.cache.map(r => r.id));
-    for (const roleId of uniqueRolesToRemove) {
-        currentRoleIds.delete(roleId);
-    }
+    const uniqueRolesToRemove = Array.from(new Set(rolesToRemove));
+    const rolesToRemoveNow = uniqueRolesToRemove
+        .filter(roleId => roleId !== member.guild.id)
+        .filter(roleId => member.roles.cache.has(roleId));
+    const rolesToAddNow = [ROLE_IDS.SOLACE, teamRoleId]
+        .filter(Boolean)
+        .filter(roleId => roleId !== member.guild.id)
+        .filter(roleId => !member.roles.cache.has(roleId));
 
-    if (ROLE_IDS.SOLACE) currentRoleIds.add(ROLE_IDS.SOLACE);
-    if (teamRoleId) currentRoleIds.add(teamRoleId);
-
-    const finalRoleIds = Array.from(currentRoleIds).filter(id => id !== member.guild.id);
-    await member.roles.set(finalRoleIds, 'Rookie promotion').catch(err => {
+    try {
+      if (rolesToRemoveNow.length) {
+        await member.roles.remove(rolesToRemoveNow, 'Rookie promotion');
+      }
+      if (rolesToAddNow.length) {
+        await member.roles.add(rolesToAddNow, 'Rookie promotion');
+      }
+    } catch (err) {
       console.error('Failed to update roles during rookie promotion:', err);
-    });
+      return {
+        team,
+        teamName,
+        teamEmoji,
+        promoted: false,
+        error: 'Failed to update member roles during promotion.'
+      };
+    }
 
     // Update Nickname
     const cleanedNickname = stripRookiePoints(member.nickname) || member.user.username;
-    const teamInfo = getRegionInfo(team);
-    const teamEmoji = teamInfo.emoji || '';
     const newNick = `${cleanedNickname} ${teamEmoji}`.trim();
     if (newNick !== member.nickname) {
         await retrySetNickname(member, newNick);
@@ -113,12 +127,10 @@ async function promoteMember({ member, db, guild, verifierId }) {
 
     // Recompute leaderboards
     try {
-        const scheduler = require('../scheduler');
         await scheduler.recomputeLeaderboards(db, guild);
     } catch (e) { void e; }
 
-    const teamName = getRegionInfo(team).name || (team || 'Unknown');
-    return { team, teamName, teamEmoji };
+    return { team, teamName, teamEmoji, promoted: true };
 }
 
 module.exports = { promoteMember, stripRookiePoints };

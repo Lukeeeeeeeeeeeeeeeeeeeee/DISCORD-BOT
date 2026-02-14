@@ -3,7 +3,6 @@ const path = require('path');
 
 const BASE = {
   GUILD_ID: "1331020304763453522",
-  TESTING_USER_ID: "1381692847018868778", // Your user ID for testing
   ROLE_IDS: {
     // Onboarding roles: [0]=Fire/EU, [1]=Water/NA, [2]=Air/AS
     ONBOARDING: ["1459878495290261839", "1459880782108692521", "1459880774168739892"],
@@ -77,6 +76,12 @@ const BASE = {
     'custom-suggestion': 100,
     'vip-role': 25,
     'mvp-role': 35
+  },
+  RECRUIT_POLICY: {
+    // Set to 0 or negative to disable the check.
+    MAX_JOIN_MINUTES: 120,
+    // Set to 0 or negative to disable the check.
+    MIN_ACCOUNT_AGE_DAYS: 180
   }
 };
 
@@ -190,8 +195,11 @@ function normalizeConfig(rawConfig) {
   if (rawConfig.GUILD_ID || rawConfig.guildId) {
     normalized.GUILD_ID = rawConfig.GUILD_ID || rawConfig.guildId;
   }
-  if (rawConfig.TESTING_USER_ID || rawConfig.testingUserId) {
-    normalized.TESTING_USER_ID = rawConfig.TESTING_USER_ID || rawConfig.testingUserId;
+  if (rawConfig.RECRUIT_POLICY || rawConfig.recruitPolicy) {
+    normalized.RECRUIT_POLICY = {
+      ...(isPlainObject(rawConfig.RECRUIT_POLICY) ? rawConfig.RECRUIT_POLICY : {}),
+      ...(isPlainObject(rawConfig.recruitPolicy) ? rawConfig.recruitPolicy : {})
+    };
   }
 
   if (rawConfig.ROLE_IDS || rawConfig.roleIds) {
@@ -240,7 +248,8 @@ function normalizeConfig(rawConfig) {
     'REPEATED_FLAGS_TO_WARN',
     'ESCALATION_WINDOW_WEEKS',
     'REGIONS',
-    'PURCHASE_ITEMS'
+    'PURCHASE_ITEMS',
+    'RECRUIT_POLICY'
   ];
   for (const key of passthroughKeys) {
     if (rawConfig[key] !== undefined) normalized[key] = rawConfig[key];

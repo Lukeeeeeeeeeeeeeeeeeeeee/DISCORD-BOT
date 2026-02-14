@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
 const { buildErrorEmbed } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
 
 module.exports = {
@@ -43,17 +44,8 @@ module.exports = {
       return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
 
-    if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
-
-    const respond = (payload) => {
-      if (interaction.deferred || interaction.replied) {
-        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
-        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
-      }
-      return interaction.reply(payload);
-    };
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const mode = interaction.options.getString('mode');
     const preserveView = interaction.options.getBoolean('preserve_view');
@@ -75,7 +67,7 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setColor('#00AAFF')
-      .setTitle('🛡️ Quarantine Options Updated')
+      .setTitle('Quarantine Options Updated')
       .setDescription('Updated quarantine behavior for this server.')
       .addFields(
         { name: 'Mode', value: config.quarantine?.mode || 'quarantine', inline: true },

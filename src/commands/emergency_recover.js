@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { hasAdministrator } = require('../lib/permissions');
 const runtime = require('../lib/runtime');
 const { replyError } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 
 module.exports = {
   data: {
@@ -23,18 +24,17 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    // Check admin permissions
     if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ 
-        content: '❌ Administrator permission required.',
+      return interaction.reply({
+        content: 'Administrator permission required.',
         flags: 64
       });
     }
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
-      return interaction.reply({ 
-        content: '❌ Anti-nuke system not initialized.',
+      return interaction.reply({
+        content: 'Anti-nuke system not initialized.',
         flags: 64
       });
     }
@@ -42,47 +42,45 @@ module.exports = {
     try {
       const backupId = interaction.options.getString('backup_id');
       const force = interaction.options.getBoolean('force') || false;
-      if (force && !antiNuke.isOwner(interaction.user.id)) {
+      if (force && !antiNuke.isOwner(interaction.user.id, interaction.guild && interaction.guild.id)) {
         return replyError(interaction, 'Force recovery is restricted to the bot owner.', { flags: 64 });
       }
 
-      // Check if server is in emergency mode
       const status = antiNuke.getStatus(interaction.guild.id);
       if (!status.isEmergency && !force) {
         const embed = new EmbedBuilder()
           .setColor('#FFFF00')
-          .setTitle('⚠️ Not in Emergency Mode')
+          .setTitle('Not in Emergency Mode')
           .setDescription('This server is not currently in emergency mode.')
           .addFields(
-            { name: 'Current Status', value: '🟢 Normal Operation', inline: true },
-            { name: 'Backup Available', value: status.hasBackup ? '✅ Yes' : '❌ No', inline: true }
+            { name: 'Current Status', value: 'Normal operation', inline: true },
+            { name: 'Backup Available', value: status.hasBackup ? 'Yes' : 'No', inline: true }
           )
           .setTimestamp();
         return interaction.reply({ embeds: [embed], flags: 64 });
       }
 
-      // Check if backup exists
       if (!status.hasBackup) {
         const embed = new EmbedBuilder()
           .setColor('#FF0000')
-          .setTitle('❌ No Backup Available')
+          .setTitle('No Backup Available')
           .setDescription('Cannot recover: no backup found for this server.')
           .setTimestamp();
         return interaction.reply({ embeds: [embed], flags: 64 });
       }
 
-      await interaction.deferReply({ flags: 64 });
+      const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+      await defer();
 
-      // Perform emergency recovery
       const result = await antiNuke.emergencyRecover(interaction.guild.id, backupId, {
         force,
         traceId: antiNuke.createTraceId(),
         executorId: interaction.user.id
       });
-      
+
       const embed = new EmbedBuilder()
         .setColor('#00FF00')
-        .setTitle('✅ Emergency Recovery Successful')
+        .setTitle('Emergency Recovery Successful')
         .setDescription('Server has been recovered from emergency lockdown.')
         .addFields(
           { name: 'Roles Restored', value: result.rolesRestored.toString(), inline: true },
@@ -94,22 +92,21 @@ module.exports = {
         )
         .addFields(
           {
-            name: '🔧 What Was Restored',
-            value: '• All role permissions\n• Channel permission overwrites\n• Server settings\n• Emergency mode disabled',
+            name: 'What Was Restored',
+            value: 'All role permissions\nChannel permission overwrites\nServer settings\nEmergency mode disabled',
             inline: false
           }
         )
         .setFooter({ text: 'Server is now back to normal operation' })
         .setTimestamp();
 
-      await interaction.editReply({ embeds: [embed] });
-
+      return respond({ embeds: [embed] });
     } catch (error) {
       console.error('Emergency recovery error:', error);
-      
+
       const embed = new EmbedBuilder()
         .setColor('#FF0000')
-        .setTitle('❌ Emergency Recovery Failed')
+        .setTitle('Emergency Recovery Failed')
         .setDescription(`Failed to recover from emergency mode: ${error.message}`)
         .setTimestamp();
 

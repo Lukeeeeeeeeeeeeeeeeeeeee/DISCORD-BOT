@@ -1,5 +1,6 @@
 const DEFAULT_CHUNK_SIZE = Number.parseInt(process.env.MEMBER_FETCH_CHUNK || '100', 10);
 const DEFAULT_CONCURRENCY = Number.parseInt(process.env.MEMBER_FETCH_CONCURRENCY || '3', 10);
+const DEFAULT_MAX_RETRIES = Number.parseInt(process.env.MEMBER_FETCH_MAX_RETRIES || '2', 10);
 
 function chunkArray(items, size = DEFAULT_CHUNK_SIZE) {
   const out = [];
@@ -11,6 +12,19 @@ function chunkArray(items, size = DEFAULT_CHUNK_SIZE) {
   return out;
 }
 const { runWithConcurrency } = require('./concurrency');
+function getRetryAfterMs(error, fallbackMs) {
+  const retryAfter = error && (error.retryAfter ?? error.retry_after ?? error.data?.retry_after ?? error.rawError?.retry_after);
+  if (Number.isFinite(retryAfter)) {
+    const value = Number(retryAfter);
+    return value < 1000 ? Math.ceil(value * 1000) : Math.ceil(value);
+  }
+  return fallbackMs;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function fetchMembersByIds(guild, ids, opts = {}) {
   const members = new Map();
   if (!guild || !ids || !ids.length) return members;
@@ -31,15 +45,32 @@ async function fetchMembersByIds(guild, ids, opts = {}) {
 
   const chunkSize = Number.isFinite(opts.chunkSize) ? opts.chunkSize : DEFAULT_CHUNK_SIZE;
   const concurrency = Number.isFinite(opts.concurrency) ? opts.concurrency : DEFAULT_CONCURRENCY;
+  const maxRetries = Number.isFinite(opts.maxRetries) ? opts.maxRetries : DEFAULT_MAX_RETRIES;
   const chunks = chunkArray(missing, chunkSize);
 
   await runWithConcurrency(chunks, concurrency, async (chunk) => {
-    const fetched = await guild.members.fetch({ user: chunk }).catch(() => null);
-    if (!fetched) return null;
-    if (typeof fetched.values === 'function') {
-      for (const member of fetched.values()) {
-        if (member && member.id) members.set(member.id, member);
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const fetched = await guild.members.fetch({ user: chunk });
+        if (fetched && typeof fetched.values === 'function') {
+          for (const member of fetched.values()) {
+            if (member && member.id) members.set(member.id, member);
+          }
+        }
+        return null;
+      } catch (error) {
+        lastError = error;
+        const hardFail = error && (error.code === 50007 || error.code === 50013 || error.code === 50001);
+        if (hardFail || attempt >= maxRetries) break;
+        const rateLimited = error && (error.status === 429 || error.code === 429);
+        const baseDelayMs = 1000 * (attempt + 1);
+        const delayMs = rateLimited ? getRetryAfterMs(error, baseDelayMs) : baseDelayMs;
+        await sleep(delayMs);
       }
+    }
+    if (lastError) {
+      console.warn('Member fetch failed after retries', { count: chunk.length, error: lastError.message || lastError });
     }
     return null;
   });
