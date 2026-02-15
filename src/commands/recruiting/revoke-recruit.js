@@ -1,6 +1,7 @@
 const db = require('../../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { hasAdminOrStaffPermissions } = require('../../lib/permissions');
+const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
 
 module.exports = {
@@ -13,6 +14,7 @@ module.exports = {
     if (!hasAdminOrStaffPermissions(interaction.member)) {
       return replyError(interaction, 'Admin/Staff only.');
     }
+    const guildId = resolveGuildId(interaction.guild);
 
     if (typeof interaction.deferReply === 'function') {
       await interaction.deferReply({ flags: 64 });
@@ -35,7 +37,7 @@ module.exports = {
 
     try {
       // Get the recruit record to find region and recruiter info
-      const recruit = await db.get('SELECT * FROM recruits WHERE recruited_id = ? AND valid = 1', member.id);
+      const recruit = await db.get('SELECT * FROM recruits WHERE guild_id = ? AND recruited_id = ? AND valid = 1', guildId, member.id);
       if (!recruit) {
         return replyError(interaction, 'No valid recruit record found for this member.');
       }
@@ -45,15 +47,16 @@ module.exports = {
       // Mark recruit as invalid in database and adjust recruiter points
       await db.run('BEGIN TRANSACTION');
       try {
-        await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', recruit.id);
+        await db.run('UPDATE recruits SET valid = 0 WHERE guild_id = ? AND id = ?', guildId, recruit.id);
         await db.run(
-          'INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)',
+          'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
+          guildId,
           recruit.recruiter_id
         );
-        const recRow = await db.get('SELECT points FROM recruiters WHERE id = ?', recruit.recruiter_id);
+        const recRow = await db.get('SELECT points FROM recruiters WHERE guild_id = ? AND id = ?', guildId, recruit.recruiter_id);
         const currentPoints = recRow ? recRow.points || 0 : 0;
         const newPoints = Math.max(0, currentPoints - recruitPoints);
-        await db.run('UPDATE recruiters SET points = ? WHERE id = ?', newPoints, recruit.recruiter_id);
+        await db.run('UPDATE recruiters SET points = ? WHERE guild_id = ? AND id = ?', newPoints, guildId, recruit.recruiter_id);
         await db.run('COMMIT');
       } catch (err) {
         await db.run('ROLLBACK');
@@ -139,6 +142,7 @@ module.exports = {
       }
 
       console.info('Recruit revoked', {
+        guildId,
         recruitedId: member.id,
         recruiterId: recruit.recruiter_id,
         region: recruit.region,

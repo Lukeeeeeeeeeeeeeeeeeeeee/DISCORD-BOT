@@ -2,6 +2,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const { EmbedBuilder } = require('discord.js');
 const { ensureCommandAccess } = require('../../lib/command-auth');
+const { resolveGuildId } = require('../../lib/guild');
 
 module.exports = {
   data: { name: 'status' },
@@ -17,6 +18,7 @@ module.exports = {
     }
 
     const { DB_PATH } = require('../../db_async');
+    const guildId = resolveGuildId(interaction.guild);
     let dbSize = 'N/A';
     try {
       const s = await fs.stat(DB_PATH);
@@ -42,8 +44,8 @@ module.exports = {
 
     // gather DB counts
     const db = require('../../db_async');
-    const recruitsRow = await db.get('SELECT COUNT(*) as c FROM recruits');
-    const recruitersRow = await db.get('SELECT COUNT(*) as c FROM recruiters');
+    const recruitsRow = await db.get('SELECT COUNT(*) as c FROM recruits WHERE guild_id = ?', guildId);
+    const recruitersRow = await db.get('SELECT COUNT(*) as c FROM recruiters WHERE guild_id = ?', guildId);
     const recruits = recruitsRow ? recruitsRow.c : 0;
     const recruiters = recruitersRow ? recruitersRow.c : 0;
 

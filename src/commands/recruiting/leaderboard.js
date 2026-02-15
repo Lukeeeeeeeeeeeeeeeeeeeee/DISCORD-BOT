@@ -5,6 +5,7 @@ const { hasAdministrator } = require('../../lib/permissions');
 const { getWeekStartUtcTs } = require('../../lib/week');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
+const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
 
 const FULL_FETCH_MAX = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_MAX || '5000', 10);
@@ -40,6 +41,7 @@ module.exports = {
   data: { name: 'leaderboard' },
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
+    const guildId = resolveGuildId(interaction.guild);
     if (sub === 'show') {
       const region = interaction.options.getString('region');
       const weekStart = getWeekStartUtcTs();
@@ -51,7 +53,7 @@ module.exports = {
         // Prefer role membership, but fill missing cache entries from DB-backed IDs.
         let dbIds = [];
         try {
-          const dbRows = await db.all('SELECT id FROM recruiters');
+          const dbRows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
           dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
         } catch (e) {
           console.error('Failed to load recruiter IDs for leaderboard', e);
@@ -91,7 +93,7 @@ module.exports = {
         }
 
         const recruiterMembers = Array.from(allRecruiterIds);
-        const meta = await loadRecruiterMeta(db, recruiterMembers);
+        const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
 
         if (recruiterMembers.length === 0) {
           const { makeLeaderboardText } = require('../../lib/messages');
@@ -101,9 +103,9 @@ module.exports = {
         }
 
         // Get recruit data for all recruiters
-        const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region, weekStart, sinceTs: weekStart });
+        const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { guildId, region, weekStart, sinceTs: weekStart });
         const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
-        const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
+        const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
         // Get 7-day stats and minReq for each recruiter
         const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../../lib/recruiting-system');
@@ -118,7 +120,7 @@ module.exports = {
           const staffMember = (memberMap && memberMap.get(r.recruiter_id))
             || (interaction.guild.members && interaction.guild.members.cache ? interaction.guild.members.cache.get(r.recruiter_id) : null);
           const roleBase = getBaseRequirement(staffMember);
-          const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
+          const newStaffCheck = await isNewStaff(db, r.recruiter_id, { guildId }).catch(() => false);
 
           const teamName = getRegionInfo(region).name || region;
           const displayName = staffMember && staffMember.user
@@ -134,7 +136,7 @@ module.exports = {
             minReq = previousMinReq;
           }
           if (minReq == null) {
-            const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+            const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild, { ...statsWindow, guildId }).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
             minReq = calculateMinRecruitsFixed({
               roleBase,
               member: staffMember,
@@ -189,7 +191,7 @@ module.exports = {
       let memberMap = new Map();
       let dbIds = [];
       try {
-        const dbRows = await db.all('SELECT id FROM recruiters');
+        const dbRows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
         dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
       } catch (e) {
         console.error('Failed to load recruiter IDs for leaderboard', e);
@@ -226,7 +228,7 @@ module.exports = {
       }
 
       const recruiterMembers = Array.from(allRecruiterIds);
-      const meta = await loadRecruiterMeta(db, recruiterMembers);
+      const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
 
       if (recruiterMembers.length === 0) {
         const { makeLeaderboardText } = require('../../lib/messages');
@@ -236,9 +238,9 @@ module.exports = {
       }
 
       // Get global recruit data
-      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { weekStart, sinceTs: weekStart });
+      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { guildId, weekStart, sinceTs: weekStart });
       const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
-      const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
+      const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
       // Get 7-day stats and minReq for global
       const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../../lib/recruiting-system');
@@ -253,7 +255,7 @@ module.exports = {
         const staffMember = (memberMap && memberMap.get(r.recruiter_id))
           || (interaction.guild.members && interaction.guild.members.cache ? interaction.guild.members.cache.get(r.recruiter_id) : null);
         const roleBase = getBaseRequirement(staffMember);
-        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
+        const newStaffCheck = await isNewStaff(db, r.recruiter_id, { guildId }).catch(() => false);
 
         const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
 
@@ -264,7 +266,7 @@ module.exports = {
           minReq = previousMinReq;
         }
         if (minReq == null) {
-          const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
+          const stats7d = await calculate7DayStats(db, r.recruiter_id, interaction.guild, { ...statsWindow, guildId }).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
           minReq = calculateMinRecruitsFixed({
             roleBase,
             member: staffMember,
@@ -303,7 +305,6 @@ module.exports = {
       // admin only
       if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin only.');
       try {
-        const guildId = interaction.guild && interaction.guild.id ? interaction.guild.id : 'GLOBAL';
         const scheduler = require('../../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);
         await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);

@@ -2,6 +2,7 @@ const db = require('../../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { hasModPlusPermissions } = require('../../lib/recruiting-system');
 const { formatUtcDateOnly } = require('../../lib/time');
+const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
 
 module.exports = {
@@ -13,6 +14,7 @@ module.exports = {
     if (!interaction.guild) {
       return replyError(interaction, 'This command can only be used in a server.');
     }
+    const guildId = resolveGuildId(interaction.guild);
 
     // MOD+ only
     if (!hasModPlusPermissions(interaction.member)) {
@@ -66,7 +68,8 @@ module.exports = {
     // Check for existing active absence
     try {
       const existingAbsence = await db.get(
-        'SELECT * FROM absences WHERE recruiter_id = ? AND active = 1',
+        'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1',
+        guildId,
         targetId
       );
 
@@ -75,14 +78,14 @@ module.exports = {
       if (existingAbsence) {
         // Update existing absence
         await db.run(
-          'UPDATE absences SET end_date = ?, created_by = ?, start_date = ? WHERE recruiter_id = ? AND active = 1',
-          endDate, interaction.user.id, startDate, targetId
+          'UPDATE absences SET end_date = ?, created_by = ?, start_date = ? WHERE guild_id = ? AND recruiter_id = ? AND active = 1',
+          endDate, interaction.user.id, startDate, guildId, targetId
         );
       } else {
         // Create new absence
         await db.run(
-          'INSERT INTO absences (recruiter_id, start_date, end_date, created_at, created_by, active) VALUES (?, ?, ?, ?, ?, 1)',
-          targetId, startDate, endDate, Date.now(), interaction.user.id
+          'INSERT INTO absences (guild_id, recruiter_id, start_date, end_date, created_at, created_by, active) VALUES (?, ?, ?, ?, ?, ?, 1)',
+          guildId, targetId, startDate, endDate, Date.now(), interaction.user.id
         );
       }
 
