@@ -9,11 +9,35 @@ const { resolveGuildId } = require('../../lib/guild');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
 
+function getTeamRoleMappings() {
+  const onboardingFromArray = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
+  return [
+    {
+      team: 'EU', // Fire
+      recruiterRoleId: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU ? RECRUITER_ROLE_IDS.EU : null,
+      onboardingRoleId: ROLE_IDS.ONBOARDING_FIRE || onboardingFromArray[0] || null
+    },
+    {
+      team: 'NA', // Water
+      recruiterRoleId: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA ? RECRUITER_ROLE_IDS.NA : null,
+      onboardingRoleId: ROLE_IDS.ONBOARDING_WATER || onboardingFromArray[1] || null
+    },
+    {
+      team: 'AS', // Air
+      recruiterRoleId: RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS ? RECRUITER_ROLE_IDS.AS : null,
+      onboardingRoleId: ROLE_IDS.ONBOARDING_AIR || onboardingFromArray[2] || null
+    }
+  ];
+}
+
 function inferTeamFromRecruiter(member) {
   if (!member || !member.roles || !member.roles.cache || typeof member.roles.cache.has !== 'function') return null;
-  if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU && member.roles.cache.has(RECRUITER_ROLE_IDS.EU)) return 'EU';
-  if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA && member.roles.cache.has(RECRUITER_ROLE_IDS.NA)) return 'NA';
-  if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS && member.roles.cache.has(RECRUITER_ROLE_IDS.AS)) return 'AS';
+  const mappings = getTeamRoleMappings();
+  for (const mapping of mappings) {
+    if (mapping.recruiterRoleId && member.roles.cache.has(mapping.recruiterRoleId)) {
+      return mapping.team;
+    }
+  }
   return null;
 }
 
@@ -28,10 +52,8 @@ function inferRegionTagFromMember(member) {
 }
 
 function pickOnboardingRole(team) {
-  // Use explicit role IDs if available, fallback to array
-  if (team === 'EU' && ROLE_IDS.ONBOARDING_FIRE) return ROLE_IDS.ONBOARDING_FIRE;
-  if (team === 'NA' && ROLE_IDS.ONBOARDING_WATER) return ROLE_IDS.ONBOARDING_WATER;
-  if (team === 'AS' && ROLE_IDS.ONBOARDING_AIR) return ROLE_IDS.ONBOARDING_AIR;
+  const mapping = getTeamRoleMappings().find(entry => entry.team === team);
+  if (mapping && mapping.onboardingRoleId) return mapping.onboardingRoleId;
 
   // Fallback to array indexing
   const list = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
