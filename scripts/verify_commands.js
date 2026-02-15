@@ -5,6 +5,8 @@ const { Collection } = require('discord.js');
 const client = {
     commands: new Collection()
 };
+const commandSourceByName = new Map();
+const loadFailures = [];
 
 const commandsPath = path.join(__dirname, '../src/commands');
 
@@ -12,6 +14,7 @@ function shouldIgnoreCommandModule(fullPath) {
     const normalized = fullPath.split(path.sep).join('/');
     if (normalized.includes('/recruiter-handlers/')) return true;
     const base = path.basename(fullPath).toLowerCase();
+    if (base === 'recruiter.js' && normalized.endsWith('/commands/recruiter.js')) return true;
     if (base === 'recruitment_report.js') return true;
     if (base.endsWith('-helpers.js')) return true;
     if (base === 'verify.js') return true;
@@ -30,13 +33,20 @@ function loadCommandsRecursively(dir) {
             try {
                 const cmd = require(fullPath);
                 if (cmd && cmd.data && cmd.data.name && typeof cmd.execute === 'function') {
+                    const relPath = path.relative(commandsPath, fullPath);
+                    const existingPath = commandSourceByName.get(cmd.data.name);
+                    if (existingPath) {
+                        throw new Error(`Duplicate command "${cmd.data.name}" from ${relPath} and ${existingPath}`);
+                    }
+                    commandSourceByName.set(cmd.data.name, relPath);
                     client.commands.set(cmd.data.name, cmd);
-                    console.log(`Loaded command: ${cmd.data.name} from ${path.relative(commandsPath, fullPath)}`);
+                    console.log(`Loaded command: ${cmd.data.name} from ${relPath}`);
                 } else {
                     console.warn(`Skipping invalid command module: ${file}`);
                 }
             } catch (e) {
                 console.error(`Failed to load command ${file}:`, e);
+                loadFailures.push({ file, error: e });
             }
         }
     }
@@ -45,6 +55,14 @@ function loadCommandsRecursively(dir) {
 console.log('Starting command verification...');
 try {
     loadCommandsRecursively(commandsPath);
+    if (loadFailures.length > 0) {
+        console.error('\nCommand verification failed due to load errors:');
+        for (const failure of loadFailures) {
+            const message = failure && failure.error && failure.error.message ? failure.error.message : String(failure.error);
+            console.error(`- ${failure.file}: ${message}`);
+        }
+        process.exit(1);
+    }
     console.log(`\nTotal commands loaded: ${client.commands.size}`);
 
     const expectedCommands = ['recruit', 'recruiter', 'leaderboard', 'rookiepoints', 'rookie_promote', 'invite', 'info', 'absent', 'status'];

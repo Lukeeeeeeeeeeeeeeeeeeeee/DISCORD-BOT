@@ -14,6 +14,18 @@ const analytics = require('./lib/analytics');
 const runtime = require('./lib/runtime');
 const { logUnexpectedError, getCommandCategory, getInteractionMeta } = require('./lib/logger');
 const { preloadLocales } = require('./lib/i18n');
+const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
+const { startHealthServer } = require('./lib/health-server');
+
+try {
+  const envWarnings = validateRuntimeEnvironment({ minNodeMajor: 18 });
+  for (const warning of envWarnings) {
+    console.warn('Runtime environment warning:', warning);
+  }
+} catch (error) {
+  console.error('FATAL: Runtime environment validation failed:', error);
+  process.exit(1);
+}
 
 const enableMessageContent = (process.env.ENABLE_MESSAGE_CONTENT || '').toLowerCase() === 'true';
 const intents = [
@@ -66,11 +78,14 @@ const inviteInitPromise = (async () => {
 });
 
 const commandsPath = path.join(__dirname, 'commands');
+const commandSourceByName = new Map();
+const commandLoadErrors = [];
 
 function shouldIgnoreCommandModule(fullPath) {
   const normalized = fullPath.split(path.sep).join('/');
   if (normalized.includes('/recruiter-handlers/')) return true;
   const base = path.basename(fullPath).toLowerCase();
+  if (base === 'recruiter.js' && normalized.endsWith('/commands/recruiter.js')) return true;
   if (base === 'recruitment_report.js') return true;
   if (base.endsWith('-helpers.js')) return true;
   if (base === 'verify.js') return true;
@@ -89,20 +104,36 @@ function loadCommandsRecursively(dir) {
       try {
         const cmd = require(fullPath);
         if (cmd && cmd.data && cmd.data.name && typeof cmd.execute === 'function') {
+          const existingPath = commandSourceByName.get(cmd.data.name);
+          if (existingPath) {
+            throw new Error(
+              `Duplicate command "${cmd.data.name}" from "${path.relative(commandsPath, fullPath)}" and "${existingPath}"`
+            );
+          }
+          commandSourceByName.set(cmd.data.name, path.relative(commandsPath, fullPath));
           client.commands.set(cmd.data.name, cmd);
         } else {
           console.warn(`Skipping invalid command module: ${file}`);
         }
       } catch (e) {
         console.error(`Failed to load command ${file}:`, e);
+        commandLoadErrors.push({ file, error: e });
       }
     }
   }
 }
 
 loadCommandsRecursively(commandsPath);
+if (commandLoadErrors.length > 0) {
+  const details = commandLoadErrors.map(entry => {
+    const message = entry && entry.error && entry.error.message ? entry.error.message : String(entry.error);
+    return `${entry.file}: ${message}`;
+  });
+  throw new Error(`Command loading failed:\n${details.join('\n')}`);
+}
 
 let _readyCalled = false;
+let healthServer = null;
 async function onReady() {
   if (_readyCalled) return;
   _readyCalled = true;
@@ -112,6 +143,11 @@ async function onReady() {
   });
   await antiNukeInitPromise;
   scheduler.start(client, db);
+
+  const healthPort = Number.parseInt(process.env.HEALTHCHECK_PORT || '', 10);
+  if (Number.isFinite(healthPort) && healthPort > 0 && !healthServer) {
+    healthServer = startHealthServer({ db, port: healthPort });
+  }
 
   await inviteInitPromise;
   const guildId = GUILD_ID;
@@ -139,24 +175,51 @@ async function onReady() {
 // Use clientReady to avoid v15 breaking changes (ready alias deprecation in v14).
 client.once('clientReady', onReady);
 
+let shutdownPromise = null;
 async function flushShutdown(signal) {
-  try {
-    if (analytics && typeof analytics.flushAll === 'function') {
-      await analytics.flushAll();
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    try {
+      if (typeof scheduler.stop === 'function') {
+        scheduler.stop();
+      }
+      if (analytics && typeof analytics.flushAll === 'function') {
+        await analytics.flushAll();
+      }
+      const antiNuke = runtime.getAntiNuke();
+      if (antiNuke && typeof antiNuke.saveData === 'function') {
+        await antiNuke.saveData();
+      }
+      const antiNukeRollback = runtime.getAntiNukeRollback();
+      if (antiNukeRollback && typeof antiNukeRollback.saveRollbackData === 'function') {
+        await antiNukeRollback.saveRollbackData();
+      }
+      if (healthServer && typeof healthServer.close === 'function') {
+        await new Promise(resolve => {
+          try {
+            healthServer.close(() => resolve());
+          } catch (_error) {
+            resolve();
+          }
+        });
+        healthServer = null;
+      }
+      if (client && typeof client.destroy === 'function') {
+        client.destroy();
+      }
+      if (db && typeof db.close === 'function') {
+        await db.close();
+      }
+    } catch (e) {
+      console.error('Failed during shutdown flush:', e);
+    } finally {
+      if (signal) {
+        const shouldFail = signal === 'uncaughtException' || signal === 'unhandledRejection';
+        process.exit(shouldFail ? 1 : 0);
+      }
     }
-    const antiNuke = runtime.getAntiNuke();
-    if (antiNuke && typeof antiNuke.saveData === 'function') {
-      await antiNuke.saveData();
-    }
-    const antiNukeRollback = runtime.getAntiNukeRollback();
-    if (antiNukeRollback && typeof antiNukeRollback.saveRollbackData === 'function') {
-      await antiNukeRollback.saveRollbackData();
-    }
-  } catch (e) {
-    console.error('Failed to flush anti-nuke data on shutdown:', e);
-  } finally {
-    if (signal) process.exit(0);
-  }
+  })();
+  return shutdownPromise;
 }
 
 process.on('SIGINT', () => void flushShutdown('SIGINT'));
@@ -468,9 +531,9 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
       try {
         const canFallback = invites && invites.size === 1;
         if (canFallback && inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
-          const candidates = await inviteSystem.getActiveInviteCodeCandidates();
+          const candidates = await inviteSystem.getActiveInviteCodeCandidates(guild.id);
           if (candidates && candidates.length === 1 && invites.has(candidates[0])) {
-            await inviteSystem.markInviteUsed(candidates[0], joinedUserId);
+            await inviteSystem.markInviteUsed(candidates[0], joinedUserId, guild.id);
             await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
           }
         }
@@ -526,7 +589,7 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
 
     // If this invite code belongs to our tracked recruiter_invites, mark it used
     if (usedCode && inviteSystem && typeof inviteSystem.markInviteUsed === 'function') {
-      await inviteSystem.markInviteUsed(usedCode, joinedUserId);
+      await inviteSystem.markInviteUsed(usedCode, joinedUserId, guild.id);
       await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
       return;
     }
@@ -535,9 +598,9 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     try {
       const canFallback = invites && invites.size === 1;
       if (!usedCode && canFallback && inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
-        const candidates = await inviteSystem.getActiveInviteCodeCandidates();
+        const candidates = await inviteSystem.getActiveInviteCodeCandidates(guild.id);
         if (candidates && candidates.length === 1 && invites.has(candidates[0])) {
-          await inviteSystem.markInviteUsed(candidates[0], joinedUserId);
+          await inviteSystem.markInviteUsed(candidates[0], joinedUserId, guild.id);
           await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
         }
       }
@@ -559,9 +622,7 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
 }
 
 (async () => {
-  // sanitize token from .env (trim, remove surrounding quotes)
-  const rawToken = process.env.DISCORD_TOKEN;
-  const token = rawToken ? rawToken.trim().replace(/^"(.+)"$/, '$1') : null;
+  const token = sanitizeEnvToken(process.env.DISCORD_TOKEN);
   if (!token) {
     console.error('FATAL: DISCORD_TOKEN is missing from environment. Create a .env with DISCORD_TOKEN=<your token> and restart.');
     process.exit(1);
