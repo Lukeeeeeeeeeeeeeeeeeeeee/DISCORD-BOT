@@ -42,6 +42,45 @@ function pickOnboardingRole(team) {
   return list[0];
 }
 
+function getAssignableTeams() {
+  const preferred = ['EU', 'NA', 'AS'];
+  const teams = preferred.filter(team => Boolean(pickOnboardingRole(team)));
+  return teams.length ? teams : preferred;
+}
+
+function pickLeastOccupiedTeam(guild, teams) {
+  if (!guild || !guild.roles || !guild.roles.cache || !teams || !teams.length) return null;
+  const counts = teams.map((team) => {
+    const roleId = pickOnboardingRole(team);
+    const role = roleId ? guild.roles.cache.get(roleId) : null;
+    const count = role && role.members ? Number(role.members.size || 0) : 0;
+    return { team, count };
+  });
+
+  const minCount = Math.min(...counts.map(entry => entry.count));
+  const lowest = counts.filter(entry => entry.count === minCount).map(entry => entry.team);
+  if (!lowest.length) return null;
+  if (lowest.length === 1) return lowest[0];
+  return lowest[Math.floor(Math.random() * lowest.length)];
+}
+
+function resolveRecruitTeam(guild, recruiterMember) {
+  const recruiterTeam = inferTeamFromRecruiter(recruiterMember);
+  if (recruiterTeam) return recruiterTeam;
+  const assignableTeams = getAssignableTeams();
+  return pickLeastOccupiedTeam(guild, assignableTeams);
+}
+
+function getAllOnboardingRoleIds() {
+  const fromExplicit = [
+    ROLE_IDS.ONBOARDING_FIRE,
+    ROLE_IDS.ONBOARDING_WATER,
+    ROLE_IDS.ONBOARDING_AIR
+  ];
+  const fromArray = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
+  return Array.from(new Set([...fromExplicit, ...fromArray].filter(Boolean)));
+}
+
 function mentionRole(roleId, fallback) {
   if (!roleId) return fallback || 'role';
   return `<@&${roleId}>`;
@@ -354,18 +393,13 @@ module.exports = {
       const recruitedGuildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       if (!recruitedGuildMember) return replyError(interaction, 'Member not found in this guild.');
 
-      const { hasAdministrator } = require('../../lib/permissions');
       const recruiterMemberForTeam = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-      let team = inferTeamFromRecruiter(recruiterMemberForTeam);
+      let team = resolveRecruitTeam(interaction.guild, recruiterMemberForTeam);
       const regionTag = inferRegionTagFromMember(recruitedGuildMember);
       if (!team) {
-        if (recruiterMemberForTeam && hasAdministrator(recruiterMemberForTeam)) {
-          team = regionTag === 'NA' ? 'NA' : (regionTag === 'AS' ? 'AS' : 'EU');
-        } else {
-          const regionCodes = Object.keys(REGION_INFO || {}).length ? Object.keys(REGION_INFO) : ['EU', 'NA', 'AS'];
-          const labelList = regionCodes.map(code => getTeamLabel(code)).join(', ');
-          return replyError(interaction, `You must have a team recruiter role (${labelList}) to use this command.`);
-        }
+        const regionCodes = Object.keys(REGION_INFO || {}).length ? Object.keys(REGION_INFO) : ['EU', 'NA', 'AS'];
+        const labelList = regionCodes.map(code => getTeamLabel(code)).join(', ');
+        return replyError(interaction, `Unable to determine team assignment. Configure onboarding team roles (${labelList}).`);
       }
       const teamInfo = getRegionInfo(team);
       const teamName = teamInfo && teamInfo.name ? teamInfo.name : team;
@@ -399,14 +433,24 @@ module.exports = {
       if (exist) return replyError(interaction, 'That member has already been recruited previously.');
 
       const chosenRole = pickOnboardingRole(team);
+      if (!chosenRole) {
+        return replyError(interaction, 'No onboarding role is configured for this team.');
+      }
 
       try {
         // remove unverified if present
         if (recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)) await recruitedGuildMember.roles.remove(ROLE_IDS.UNVERIFIED);
+        // ensure only one onboarding team role remains on the member
+        const onboardingRoleIds = getAllOnboardingRoleIds();
+        for (const onboardingRoleId of onboardingRoleIds) {
+          if (onboardingRoleId !== chosenRole && recruitedGuildMember.roles.cache.has(onboardingRoleId)) {
+            await recruitedGuildMember.roles.remove(onboardingRoleId);
+          }
+        }
         // add rookie
         await recruitedGuildMember.roles.add(ROLE_IDS.ROOKIE);
         // add chosen onboarding role
-        if (chosenRole) await recruitedGuildMember.roles.add(chosenRole);
+        await recruitedGuildMember.roles.add(chosenRole);
 
         // set nickname
         if (recruitedGuildMember.manageable) {

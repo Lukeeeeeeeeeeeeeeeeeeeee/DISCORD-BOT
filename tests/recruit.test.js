@@ -209,6 +209,48 @@ describe('/recruit command', () => {
     expect(desc).toBe('That member has already been recruited previously.');
   });
 
+  test('assigns least occupied onboarding team when recruiter has no team role', async () => {
+    const ROLE_IDS = require('../src/constants').ROLE_IDS;
+    const { interaction, guildMember, rolesCache } = makeInteraction({
+      recruiterId: 'R_NO_TEAM',
+      member: { id: 'M_NO_TEAM', tag: 'NoTeam#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
+      team: 'NONE'
+    });
+
+    rolesCache.set(ROLE_IDS.ONBOARDING_FIRE, { members: new Map([['u1', {}], ['u2', {}], ['u3', {}]]) });
+    rolesCache.set(ROLE_IDS.ONBOARDING_WATER, { members: new Map([['u4', {}]]) });
+    rolesCache.set(ROLE_IDS.ONBOARDING_AIR, { members: new Map([['u5', {}], ['u6', {}]]) });
+
+    const cmd = require('../src/commands/recruiting/recruit.js');
+    await cmd.execute(interaction);
+
+    expect(interaction.reply).toHaveBeenCalled();
+    const addedRoles = guildMember.roles.add.mock.calls.map(call => call[0]);
+    expect(addedRoles).toEqual(expect.arrayContaining([ROLE_IDS.ROOKIE, ROLE_IDS.ONBOARDING_WATER]));
+  });
+
+  test('assigns random onboarding team when all occupancies are equal', async () => {
+    const ROLE_IDS = require('../src/constants').ROLE_IDS;
+    const { interaction, guildMember, rolesCache } = makeInteraction({
+      recruiterId: 'R_RANDOM',
+      member: { id: 'M_RANDOM', tag: 'Random#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
+      team: 'NONE'
+    });
+
+    rolesCache.set(ROLE_IDS.ONBOARDING_FIRE, { members: new Map([['u1', {}], ['u2', {}]]) });
+    rolesCache.set(ROLE_IDS.ONBOARDING_WATER, { members: new Map([['u3', {}], ['u4', {}]]) });
+    rolesCache.set(ROLE_IDS.ONBOARDING_AIR, { members: new Map([['u5', {}], ['u6', {}]]) });
+
+    const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0.99);
+    const cmd = require('../src/commands/recruiting/recruit.js');
+    await cmd.execute(interaction);
+    randomSpy.mockRestore();
+
+    expect(interaction.reply).toHaveBeenCalled();
+    const addedRoles = guildMember.roles.add.mock.calls.map(call => call[0]);
+    expect(addedRoles).toEqual(expect.arrayContaining([ROLE_IDS.ROOKIE, ROLE_IDS.ONBOARDING_AIR]));
+  });
+
   test('recruiter info shows extended fields', async () => {
     const db = require('../src/db_async');
 
