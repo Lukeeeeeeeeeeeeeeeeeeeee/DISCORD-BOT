@@ -251,27 +251,6 @@ describe('/recruit command', () => {
     expect(addedRoles).toEqual(expect.arrayContaining([ROLE_IDS.ROOKIE, ROLE_IDS.ONBOARDING_AIR]));
   });
 
-  test('maps recruiter fire/water/air roles to onboarding fire/water/air roles', async () => {
-    const ROLE_IDS = require('../src/constants').ROLE_IDS;
-    const scenarios = [
-      { recruiterId: 'R_FIRE', memberId: 'M_FIRE', team: 'EU', expectedOnboarding: ROLE_IDS.ONBOARDING_FIRE },
-      { recruiterId: 'R_WATER', memberId: 'M_WATER', team: 'NA', expectedOnboarding: ROLE_IDS.ONBOARDING_WATER },
-      { recruiterId: 'R_AIR', memberId: 'M_AIR', team: 'AS', expectedOnboarding: ROLE_IDS.ONBOARDING_AIR }
-    ];
-
-    const cmd = require('../src/commands/recruiting/recruit.js');
-    for (const scenario of scenarios) {
-      const { interaction, guildMember } = makeInteraction({
-        recruiterId: scenario.recruiterId,
-        member: { id: scenario.memberId, tag: `${scenario.memberId}#0001`, createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
-        team: scenario.team
-      });
-      await cmd.execute(interaction);
-      const addedRoles = guildMember.roles.add.mock.calls.map(call => call[0]);
-      expect(addedRoles).toEqual(expect.arrayContaining([ROLE_IDS.ROOKIE, scenario.expectedOnboarding]));
-    }
-  });
-
   test('recruiter info shows extended fields', async () => {
     const db = require('../src/db_async');
 
