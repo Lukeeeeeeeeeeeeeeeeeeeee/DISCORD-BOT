@@ -1,6 +1,6 @@
 const db = require('../../db_async');
 const { EmbedBuilder } = require('discord.js');
-const { hasAdminOrStaffPermissions } = require('../../lib/permissions');
+const { ensureCommandAccess } = require('../../lib/command-auth');
 const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
 
@@ -10,10 +10,11 @@ module.exports = {
     description: 'Revoke a recruit and update invite channels',
   },
   async execute(interaction) {
-    // Admin/staff only
-    if (!hasAdminOrStaffPermissions(interaction.member)) {
-      return replyError(interaction, 'Admin/Staff only.');
-    }
+    const allowed = await ensureCommandAccess(interaction, {
+      allowStaff: true,
+      deniedMessage: 'Admin/Staff only.'
+    });
+    if (!allowed) return null;
     const guildId = resolveGuildId(interaction.guild);
 
     if (typeof interaction.deferReply === 'function') {

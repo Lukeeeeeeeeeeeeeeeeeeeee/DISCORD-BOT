@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { hasAdministrator } = require('../lib/permissions');
+const { ensureCommandAccess } = require('../lib/command-auth');
 const { buildErrorEmbed } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
 
@@ -17,9 +17,12 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    if (!hasAdministrator(interaction.member)) {
-      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
-    }
+    const allowed = await ensureCommandAccess(interaction, {
+      allowStaff: false,
+      deniedMessage: 'Administrator permission required.',
+      flags: 64
+    });
+    if (!allowed) return null;
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {

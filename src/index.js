@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
@@ -12,7 +12,7 @@ const { handleRookieWarLogMessage } = require('./lib/rookie-war');
 const { createVoiceStateUpdateHandler } = require('./events/voice-state-update');
 const analytics = require('./lib/analytics');
 const runtime = require('./lib/runtime');
-const { logUnexpectedError, getCommandCategory, getInteractionMeta } = require('./lib/logger');
+const { logUnexpectedError, logRuntimeEvent, getCommandCategory, getInteractionMeta } = require('./lib/logger');
 const { preloadLocales } = require('./lib/i18n');
 const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
 const { startHealthServer } = require('./lib/health-server');
@@ -20,10 +20,12 @@ const { startHealthServer } = require('./lib/health-server');
 try {
   const envWarnings = validateRuntimeEnvironment({ minNodeMajor: 18 });
   for (const warning of envWarnings) {
-    console.warn('Runtime environment warning:', warning);
+    logRuntimeEvent('warn', 'startup.env', 'Runtime environment warning', { warning });
   }
 } catch (error) {
-  console.error('FATAL: Runtime environment validation failed:', error);
+  logRuntimeEvent('error', 'startup.env', 'Runtime environment validation failed', {
+    error: String(error && error.message ? error.message : error)
+  });
   process.exit(1);
 }
 
@@ -62,9 +64,9 @@ function createRuntimeTraceId() {
 }
 
 const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
-  console.log('🛡️ Complete anti-nuke system with rollback ready!');
+  logRuntimeEvent('info', 'startup.antiNuke', 'Anti-nuke system initialized');
 }).catch(err => {
-  console.error('❌ Failed to initialize anti-nuke:', err);
+  logUnexpectedError('startup.antiNuke', err);
 });
 
 const inviteInitPromise = (async () => {
@@ -72,9 +74,9 @@ const inviteInitPromise = (async () => {
   const inviteCommand = require('./commands/recruiting/invite');
   await createInviteTables();
   await inviteCommand.init();
-  console.log('🔗 Invite system ready!');
+  logRuntimeEvent('info', 'startup.invites', 'Invite system initialized');
 })().catch(err => {
-  console.error('❌ Failed to initialize invite system:', err);
+  logUnexpectedError('startup.invites', err);
 });
 
 const commandsPath = path.join(__dirname, 'commands');
@@ -137,7 +139,7 @@ let healthServer = null;
 async function onReady() {
   if (_readyCalled) return;
   _readyCalled = true;
-  console.log(`Logged in as ${client.user.tag}`);
+  logRuntimeEvent('info', 'startup.ready', 'Discord client ready', { userTag: client.user.tag });
   await preloadLocales().catch((err) => {
     console.error('Failed to preload locales:', err);
   });
@@ -211,7 +213,7 @@ async function flushShutdown(signal) {
         await db.close();
       }
     } catch (e) {
-      console.error('Failed during shutdown flush:', e);
+      logUnexpectedError('shutdown.flush', e);
     } finally {
       if (signal) {
         const shouldFail = signal === 'uncaughtException' || signal === 'unhandledRejection';
@@ -225,11 +227,11 @@ async function flushShutdown(signal) {
 process.on('SIGINT', () => void flushShutdown('SIGINT'));
 process.on('SIGTERM', () => void flushShutdown('SIGTERM'));
 process.on('uncaughtException', async (err) => {
-  console.error('Uncaught exception:', err);
+  logUnexpectedError('process.uncaughtException', err);
   await flushShutdown('uncaughtException');
 });
 process.on('unhandledRejection', async (reason) => {
-  console.error('Unhandled rejection:', reason);
+  logUnexpectedError('process.unhandledRejection', reason instanceof Error ? reason : new Error(String(reason)));
   await flushShutdown('unhandledRejection');
 });
 
@@ -258,7 +260,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ embeds: [embed], flags: 64 });
       }
     } catch (err2) {
-      // If the interaction is expired, Discord returns code 10062 — ignore silently
+      // If the interaction is expired, Discord returns code 10062 â€” ignore silently
       if (isInteractionAckError(err2)) return;
       // otherwise log
       console.error('Failed to send error response for interaction:', err2);
@@ -628,7 +630,7 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     process.exit(1);
   }
   if (token.length < 40) {
-    console.error('FATAL: DISCORD_TOKEN appears too short — ensure you pasted the full bot token with no quotes or trailing spaces.');
+    console.error('FATAL: DISCORD_TOKEN appears too short â€” ensure you pasted the full bot token with no quotes or trailing spaces.');
     process.exit(1);
   }
 
@@ -645,3 +647,4 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     process.exit(1);
   }
 })();
+

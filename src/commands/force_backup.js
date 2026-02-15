@@ -1,5 +1,5 @@
 const { EmbedBuilder } = require('discord.js');
-const { hasAdministrator } = require('../lib/permissions');
+const { ensureCommandAccess } = require('../lib/command-auth');
 const { replyError } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
 
@@ -9,10 +9,12 @@ module.exports = {
     description: 'Create manual backup of server (Admin only)'
   },
   async execute(interaction) {
-    // Check admin permissions
-    if (!hasAdministrator(interaction.member)) {
-      return replyError(interaction, 'Administrator permission required.', { flags: 64 });
-    }
+    const allowed = await ensureCommandAccess(interaction, {
+      allowStaff: false,
+      deniedMessage: 'Administrator permission required.',
+      flags: 64
+    });
+    if (!allowed) return null;
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {

@@ -300,14 +300,17 @@ Done when:
 Fallback:
 - Restore DB from snapshot + revert latest scoping commit if query behavior regresses.
 
-#### Phase C (P1) Operational Hardening - 1h - Pending
+#### Phase C (P1) Operational Hardening - 1h - Done (with one bounded residual)
 Target:
 - Reduce incident response time and policy drift.
 
-Tasks:
-1. Align `package.json` Node engine with runtime minimum.
-2. Standardize command denial responses through `ensureCommandAccess` where still manual.
-3. Add one structured log format for startup/shutdown/command errors.
+Tasks completed:
+1. Aligned `package.json` engine with runtime policy (`node >=18`).
+2. Standardized admin/staff denial handling through `ensureCommandAccess` across loaded anti-nuke/admin command modules.
+3. Added structured runtime event logging for startup/shutdown critical paths.
+
+Residual:
+1. `src/commands/recruiting/recruiter.js` still contains legacy manual permission checks in several subcommand branches because the file is not safely patchable with the standard UTF-8 patch flow.
 
 Done when:
 - Lint clean, tests pass, and startup logs are consistent and parseable.

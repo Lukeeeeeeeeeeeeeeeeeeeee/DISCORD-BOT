@@ -1,7 +1,7 @@
 const db = require('../../db_async');
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../../constants');
 const { getRegionInfo } = require('../../lib/regions');
-const { hasAdministrator } = require('../../lib/permissions');
+const { ensureCommandAccess } = require('../../lib/command-auth');
 const { getWeekStartUtcTs } = require('../../lib/week');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
@@ -303,7 +303,11 @@ module.exports = {
 
     if (sub === 'init') {
       // admin only
-      if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin only.');
+      const allowed = await ensureCommandAccess(interaction, {
+        allowStaff: false,
+        deniedMessage: 'Administrator permission required.'
+      });
+      if (!allowed) return null;
       try {
         const scheduler = require('../../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);

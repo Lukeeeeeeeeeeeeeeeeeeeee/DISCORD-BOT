@@ -20,6 +20,19 @@ function logUnexpectedError(scope, error, meta = {}) {
   console.error('Unexpected error', payload);
 }
 
+function logRuntimeEvent(level, scope, message, meta = {}) {
+  const payload = { scope, message, ...meta };
+  if (level === 'warn') {
+    console.warn('Runtime event', payload);
+    return;
+  }
+  if (level === 'error') {
+    console.error('Runtime event', payload);
+    return;
+  }
+  console.log('Runtime event', payload);
+}
+
 const ANTINUKE_COMMANDS = new Set([
   'antinuke_status',
   'antinuke_rollback',
@@ -68,6 +81,7 @@ function getInteractionMeta(interaction) {
 
 module.exports = {
   logUnexpectedError,
+  logRuntimeEvent,
   getCommandCategory,
   getInteractionMeta
 };
