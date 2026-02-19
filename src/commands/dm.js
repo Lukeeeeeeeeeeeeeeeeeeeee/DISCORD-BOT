@@ -21,6 +21,10 @@ module.exports = {
     });
     if (!allowed) return null;
 
+    if (!interaction.guild || !interaction.guild.members) {
+      return replyError(interaction, 'This command can only be used inside a server.');
+    }
+
     const role = interaction.options.getRole('role', false);  // Make role optional
     const message = interaction.options.getString('message', true);
     const limitOpt = interaction.options.getInteger('limit');
@@ -31,13 +35,16 @@ module.exports = {
     if (!message) {
       return replyError(interaction, 'Missing required message parameter.');
     }
+    if (message.length > 2000) {
+      return replyError(interaction, 'Message must be 2000 characters or fewer.');
+    }
 
     // Must specify either role or everyone
     if (!role && !dmEveryone) {
       return replyError(interaction, 'You must specify a role OR set everyone to true.');
     }
 
-    if (limitOpt && (limitOpt < 1 || limitOpt > HARD_MAX)) {
+    if (limitOpt !== null && limitOpt !== undefined && (limitOpt < 1 || limitOpt > HARD_MAX)) {
       return replyError(interaction, `Limit must be between 1 and ${HARD_MAX}.`);
     }
 
@@ -51,24 +58,25 @@ module.exports = {
         const rem = Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
         return replyError(interaction, `Please wait ${rem}s before sending another DM broadcast. Use preview to test.`);
       }
-      cooldowns.set(interaction.user.id, now);
     }
 
-    const allowFullFetch = (process.env.DM_ALLOW_FULL_FETCH || '').toLowerCase() === 'true';
+    // Default to full member fetch for reliable role targeting; set DM_ALLOW_FULL_FETCH=false to opt out.
+    const allowFullFetch = (process.env.DM_ALLOW_FULL_FETCH || 'true').toLowerCase() !== 'false';
     let membersCol = null;
-    if (dmEveryone) {
-      if (allowFullFetch && interaction.guild.members && typeof interaction.guild.members.fetch === 'function') {
-        membersCol = await interaction.guild.members.fetch().catch(() => null);
+    const canFetchAllMembers = allowFullFetch
+      && interaction.guild.members
+      && typeof interaction.guild.members.fetch === 'function';
+    if (canFetchAllMembers) {
+      membersCol = await interaction.guild.members.fetch().catch(() => null);
+    }
+    if (!membersCol) {
+      if (dmEveryone) {
+        membersCol = interaction.guild.members.cache;
+      } else if (role && role.members && role.members.size > 0) {
+        membersCol = role.members;
+      } else {
+        membersCol = interaction.guild.members.cache;
       }
-      if (!membersCol) membersCol = interaction.guild.members.cache;
-    } else if (role && role.members) {
-      membersCol = role.members;
-      if (allowFullFetch && membersCol.size === 0 && interaction.guild.members && typeof interaction.guild.members.fetch === 'function') {
-        const all = await interaction.guild.members.fetch().catch(() => null);
-        membersCol = all || membersCol;
-      }
-    } else {
-      membersCol = interaction.guild.members.cache;
     }
 
     // Filter targets based on role or everyone
@@ -89,6 +97,8 @@ module.exports = {
       const sample = recipients.slice(0, 10).map(m => `<@${m.id}>`).join(', ');
       return interaction.editReply({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}` });
     }
+
+    cooldowns.set(interaction.user.id, Date.now());
 
     // Queue the job and return immediately to avoid interaction timeouts
     const batches = [];
@@ -175,8 +185,10 @@ module.exports = {
           console.error('Failed to post DM completion audit:', err);
         });
       }
-    })();
+    })().catch(err => {
+      console.error('DM broadcast job failed:', err);
+    });
 
-    return interaction.editReply({ content: `Queued DM broadcast to ${recipients.length} recipient(s) in ${batches.length} batch(es). Progress will be posted to the audit channel.`, flags: 64 });
+    return interaction.editReply({ content: `Queued DM broadcast to ${recipients.length} recipient(s) in ${batches.length} batch(es). Progress will be posted to the audit channel.` });
   }
 };
