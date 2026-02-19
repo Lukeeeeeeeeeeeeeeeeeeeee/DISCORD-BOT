@@ -92,6 +92,58 @@ function appendSentIds(campaignKey, metadata, sentIds) {
   writeHistory(history);
 }
 
+async function forEachWithConcurrency(items, concurrency, handler) {
+  const safeConcurrency = Number.isFinite(concurrency) && concurrency > 0 ? Math.floor(concurrency) : 1;
+  let index = 0;
+  const workers = Array.from({ length: safeConcurrency }, async () => {
+    while (true) {
+      const current = index;
+      index += 1;
+      if (current >= items.length) return;
+      await handler(items[current], current);
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function detectPreviouslySentFromDmHistory({
+  members,
+  message,
+  botUserId,
+  lookbackMs = 0,
+  fetchLimit = 25,
+  concurrency = 8
+} = {}) {
+  const result = new Set();
+  if (!botUserId || !Array.isArray(members) || members.length === 0) return result;
+
+  await forEachWithConcurrency(members, concurrency, async (member) => {
+    try {
+      if (!member || !member.id || !member.user || member.user.bot) return;
+      if (typeof member.createDM !== 'function') return;
+      const dmChannel = await member.createDM();
+      if (!dmChannel || !dmChannel.messages || typeof dmChannel.messages.fetch !== 'function') return;
+      const recentMessages = await dmChannel.messages.fetch({ limit: fetchLimit });
+      if (!recentMessages || typeof recentMessages.values !== 'function') return;
+
+      for (const msg of recentMessages.values()) {
+        if (!msg || !msg.author) continue;
+        if (String(msg.author.id) !== String(botUserId)) continue;
+        if (String(msg.content || '') !== String(message)) continue;
+        if (lookbackMs > 0 && Number.isFinite(msg.createdTimestamp)) {
+          if ((Date.now() - Number(msg.createdTimestamp)) > lookbackMs) continue;
+        }
+        result.add(String(member.id));
+        return;
+      }
+    } catch (_err) {
+      // Per-member DM history scan failures are non-fatal.
+    }
+  });
+
+  return result;
+}
+
 module.exports = {
   data: { name: 'dm' },
   async execute(interaction, _client, _db) {
@@ -183,7 +235,33 @@ module.exports = {
       roleId: role ? role.id : null,
       message
     });
-    const alreadySent = getAlreadySentIds(campaignKey);
+    const historySent = getAlreadySentIds(campaignKey);
+    const alreadySent = new Set(historySent);
+
+    const shouldScanDmHistory = (process.env.DM_DEDUPE_SCAN_DMS || 'true').toLowerCase() !== 'false';
+    let scannedSentCount = 0;
+    if (shouldScanDmHistory && orderedTargets.length > 0) {
+      const botUserId = (_client && _client.user && _client.user.id)
+        || (interaction.client && interaction.client.user && interaction.client.user.id)
+        || null;
+      const lookbackDays = Number.parseInt(process.env.DM_DEDUPE_LOOKBACK_DAYS || '14', 10);
+      const lookbackMs = Number.isFinite(lookbackDays) && lookbackDays > 0 ? lookbackDays * 24 * 60 * 60 * 1000 : 0;
+      const scanConcurrency = Number.parseInt(process.env.DM_DEDUPE_SCAN_CONCURRENCY || '8', 10);
+      const scanFetchLimit = Number.parseInt(process.env.DM_DEDUPE_SCAN_FETCH_LIMIT || '25', 10);
+      const scanned = await detectPreviouslySentFromDmHistory({
+        members: orderedTargets,
+        message,
+        botUserId,
+        lookbackMs,
+        fetchLimit: Number.isFinite(scanFetchLimit) && scanFetchLimit > 0 ? scanFetchLimit : 25,
+        concurrency: Number.isFinite(scanConcurrency) && scanConcurrency > 0 ? scanConcurrency : 8
+      });
+      for (const id of scanned) {
+        if (!alreadySent.has(id)) scannedSentCount += 1;
+        alreadySent.add(id);
+      }
+    }
+
     const unsentTargets = orderedTargets.filter(member => !alreadySent.has(String(member.id)));
     const alreadySentCount = orderedTargets.length - unsentTargets.length;
     const offsetTargets = unsentTargets.slice(offset);
@@ -194,7 +272,7 @@ module.exports = {
     if (!offsetTargets.length) {
       if (preview) {
         return interaction.editReply({
-          content: `Preview: found ${totalFound} members, ${alreadySentCount} already sent for this same message, ${offset} skipped by offset, and 0 are left to send.`
+          content: `Preview: found ${totalFound} members, ${alreadySentCount} already sent for this same message${scannedSentCount ? ` (${scannedSentCount} detected from DM history)` : ''}, ${offset} skipped by offset, and 0 are left to send.`
         });
       }
       return replyError(interaction, `No unsent members remain for this message${dmEveryone ? '' : ` and role ${role.name}`}. Try changing the message or adjusting offset.`);
@@ -203,7 +281,7 @@ module.exports = {
     if (preview) {
       const sample = recipients.slice(0, 10).map(m => `<@${m.id}>`).join(', ');
       return interaction.editReply({
-        content: `Preview: found ${totalFound} members, ${alreadySentCount} already sent for this same message, ${offset} skipped by offset, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}`
+        content: `Preview: found ${totalFound} members, ${alreadySentCount} already sent for this same message${scannedSentCount ? ` (${scannedSentCount} detected from DM history)` : ''}, ${offset} skipped by offset, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}`
       });
     }
 
@@ -229,7 +307,7 @@ module.exports = {
       }
 
       if (auditCh && auditCh.send) {
-        await auditCh.send(`DM broadcast queued by <@${interaction.user.id}> to **${targetLabel}**: ${recipients.length} unsent recipients in ${batches.length} batch(es). Skipped ${alreadySentCount} already-sent and ${offset} offset.`)
+        await auditCh.send(`DM broadcast queued by <@${interaction.user.id}> to **${targetLabel}**: ${recipients.length} unsent recipients in ${batches.length} batch(es). Skipped ${alreadySentCount} already-sent${scannedSentCount ? ` (${scannedSentCount} detected from DM history)` : ''} and ${offset} offset.`)
           .catch(err => console.error('Failed to post DM audit start:', err));
       }
 
@@ -317,7 +395,7 @@ module.exports = {
     });
 
     return interaction.editReply({
-      content: `Queued DM broadcast to ${recipients.length} unsent recipient(s) in ${batches.length} batch(es). Skipped ${alreadySentCount} already-sent and ${offset} offset. Progress will be posted to the audit channel.`
+      content: `Queued DM broadcast to ${recipients.length} unsent recipient(s) in ${batches.length} batch(es). Skipped ${alreadySentCount} already-sent${scannedSentCount ? ` (${scannedSentCount} detected from DM history)` : ''} and ${offset} offset. Progress will be posted to the audit channel.`
     });
   }
 };

@@ -28,7 +28,12 @@ function makeMember(id, roleIds = [], bot = false) {
         has: (roleId) => roleIds.includes(roleId)
       }
     },
-    send: jest.fn().mockResolvedValue(true)
+    send: jest.fn().mockResolvedValue(true),
+    createDM: jest.fn().mockResolvedValue({
+      messages: {
+        fetch: jest.fn().mockResolvedValue(new Collection())
+      }
+    })
   };
 }
 
@@ -83,6 +88,7 @@ function makeInteraction({
 }
 
 describe('/dm command', () => {
+  const BOT_CLIENT = { user: { id: 'bot-user' } };
   const originalFullFetch = process.env.DM_ALLOW_FULL_FETCH;
   const originalHistoryFile = process.env.DM_HISTORY_FILE;
   let historyFile;
@@ -122,7 +128,7 @@ describe('/dm command', () => {
     ]);
 
     const interaction = makeInteraction({ role, fetchedMembers, preview: true, everyone: false });
-    await dmCommand.execute(interaction, null, null);
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
 
     expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(interaction.editReply).toHaveBeenCalledWith(
@@ -146,7 +152,7 @@ describe('/dm command', () => {
     ]);
 
     const interaction = makeInteraction({ role, fetchedMembers, preview: true, everyone: false });
-    await dmCommand.execute(interaction, null, null);
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
 
     expect(interaction.guild.members.fetch).toHaveBeenCalledTimes(1);
     expect(interaction.editReply).toHaveBeenCalledWith(
@@ -173,7 +179,7 @@ describe('/dm command', () => {
       everyone: false
     });
 
-    await dmCommand.execute(interaction, null, null);
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
 
     expect(interaction.guild.members.fetch).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(
@@ -203,8 +209,51 @@ describe('/dm command', () => {
       limit: 1
     });
 
-    await dmCommand.execute(interaction, null, null);
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
 
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('First 1: <@u2>')
+      })
+    );
+  });
+
+  test('detects already sent recipients from DM history scan when file history is empty', async () => {
+    const role = {
+      id: 'role-revol',
+      name: '[REVOL]',
+      members: new Collection()
+    };
+    const sentMember = makeMember('u1', ['role-revol']);
+    const unsentMember = makeMember('u2', ['role-revol']);
+    sentMember.createDM = jest.fn().mockResolvedValue({
+      messages: {
+        fetch: jest.fn().mockResolvedValue(new Collection([
+          ['m1', {
+            author: { id: 'bot-user' },
+            content: 'hello from dm command',
+            createdTimestamp: Date.now() - 1000
+          }]
+        ]))
+      }
+    });
+
+    const interaction = makeInteraction({
+      role,
+      fetchedMembers: new Collection([
+        ['u1', sentMember],
+        ['u2', unsentMember]
+      ]),
+      preview: true
+    });
+
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('1 already sent for this same message')
+      })
+    );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining('First 1: <@u2>')
@@ -227,7 +276,7 @@ describe('/dm command', () => {
       preview: false,
       userId: 'admin-history'
     });
-    await dmCommand.execute(first, null, null);
+    await dmCommand.execute(first, BOT_CLIENT, null);
     await sleep(20);
 
     const second = makeInteraction({
@@ -236,7 +285,7 @@ describe('/dm command', () => {
       preview: true,
       userId: 'admin-history'
     });
-    await dmCommand.execute(second, null, null);
+    await dmCommand.execute(second, BOT_CLIENT, null);
 
     expect(second.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -254,7 +303,7 @@ describe('/dm command', () => {
     };
     const interaction = makeInteraction({ role, guild: null });
 
-    await dmCommand.execute(interaction, null, null);
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
 
     expect(replyError).toHaveBeenCalledWith(
       interaction,
@@ -274,7 +323,7 @@ describe('/dm command', () => {
       message: 'x'.repeat(2001)
     });
 
-    await dmCommand.execute(interaction, null, null);
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
 
     expect(replyError).toHaveBeenCalledWith(
       interaction,
@@ -297,7 +346,7 @@ describe('/dm command', () => {
       userId,
       fetchedMembers: new Collection()
     });
-    await dmCommand.execute(first, null, null);
+    await dmCommand.execute(first, BOT_CLIENT, null);
 
     const second = makeInteraction({
       role,
@@ -305,7 +354,7 @@ describe('/dm command', () => {
       userId,
       fetchedMembers: new Collection([['u1', makeMember('u1', ['role-revol'])]])
     });
-    await dmCommand.execute(second, null, null);
+    await dmCommand.execute(second, BOT_CLIENT, null);
 
     const cooldownErrorCall = replyError.mock.calls.find((call) => String(call[1]).includes('Please wait'));
     expect(cooldownErrorCall).toBeUndefined();
@@ -329,7 +378,7 @@ describe('/dm command', () => {
       fetchedMembers: new Collection([['u1', makeMember('u1', ['role-revol'])]])
     });
 
-    await dmCommand.execute(interaction, null, null);
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
 
     expect(interaction.editReply).toHaveBeenCalledTimes(1);
     const payload = interaction.editReply.mock.calls[0][0];
