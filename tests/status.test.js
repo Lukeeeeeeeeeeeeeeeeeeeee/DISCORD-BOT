@@ -16,7 +16,9 @@ describe('/status command', () => {
     delete require.cache[require.resolve('../src/db_async.js')];
     require('../src/db_async.js');
   });
-  afterEach(() => {
+  afterEach(async () => {
+    try { await require('../src/db_async.js').close(); } catch (e) { void e; }
+    try { delete require.cache[require.resolve('../src/db_async.js')]; } catch (e) { void e; }
     try { fs.unlinkSync(dbPath); } catch (e) { void e; }
     try { const bdir = path.join(path.dirname(dbPath),'backups'); fs.rmdirSync(bdir,{recursive:true}); } catch (e) { void e; }
   });

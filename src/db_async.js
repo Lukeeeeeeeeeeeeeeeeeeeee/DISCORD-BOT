@@ -910,20 +910,46 @@ async function init() {
   return db;
 }
 
-let dbPromise = init();
+let dbPromise = null;
+let dbInitError = null;
+
+function ensureDbPromise() {
+  if (!dbPromise) {
+    dbPromise = init().catch((err) => {
+      dbInitError = err instanceof Error ? err : new Error(String(err));
+      console.error('Database initialization failed', { dbPath: DB_PATH, error: dbInitError });
+      return null;
+    });
+  }
+  return dbPromise;
+}
+
+async function getDbOrThrow() {
+  const db = await ensureDbPromise();
+  if (db) return db;
+  throw (dbInitError || new Error('Database initialization failed'));
+}
 
 module.exports = {
   DB_PATH,
-  get: async (sql, ...params) => (await dbPromise).get(sql, ...params),
-  all: async (sql, ...params) => (await dbPromise).all(sql, ...params),
-  run: async (sql, ...params) => (await dbPromise).run(sql, ...params),
-  exec: async (sql) => (await dbPromise).exec(sql),
-  close: async () => { const d = await dbPromise; return d.close(); },
-  checkIntegrity: async (label) => runIntegrityChecks(await dbPromise, label || 'manual'),
+  get: async (sql, ...params) => (await getDbOrThrow()).get(sql, ...params),
+  all: async (sql, ...params) => (await getDbOrThrow()).all(sql, ...params),
+  run: async (sql, ...params) => (await getDbOrThrow()).run(sql, ...params),
+  exec: async (sql) => (await getDbOrThrow()).exec(sql),
+  close: async () => {
+    if (!dbPromise) return;
+    const db = await dbPromise;
+    if (db && typeof db.close === 'function') {
+      await db.close();
+    }
+    dbPromise = null;
+    dbInitError = null;
+  },
+  checkIntegrity: async (label) => runIntegrityChecks(await getDbOrThrow(), label || 'manual'),
   // prepare returns object with async helpers to ease migration
   prepare: (sql) => ({
-    get: async (...params) => (await dbPromise).get(sql, ...params),
-    all: async (...params) => (await dbPromise).all(sql, ...params),
-    run: async (...params) => (await dbPromise).run(sql, ...params),
+    get: async (...params) => (await getDbOrThrow()).get(sql, ...params),
+    all: async (...params) => (await getDbOrThrow()).all(sql, ...params),
+    run: async (...params) => (await getDbOrThrow()).run(sql, ...params),
   })
 };

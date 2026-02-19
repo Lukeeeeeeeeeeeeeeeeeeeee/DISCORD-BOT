@@ -24,6 +24,8 @@ describe('multiplier-active admin', () => {
     await db.run('INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'A', 1.25, 'm1.25_14d', Date.now(), Date.now() + (14 * 24 * 60 * 60 * 1000));
   });
   afterEach(async () => {
+    try { await require('../src/db_async').close(); } catch (e) { void e; }
+    try { delete require.cache[require.resolve('../src/db_async.js')]; } catch (e) { void e; }
     try { await db.close(); } catch (e) { void e; }
     try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });

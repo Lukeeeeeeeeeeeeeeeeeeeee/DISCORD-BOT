@@ -121,7 +121,9 @@ describe('/recruit command', () => {
     }
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    try { await require('../src/db_async').close(); } catch (e) { void e; }
+    try { delete require.cache[require.resolve('../src/db_async.js')]; } catch (e) { void e; }
     try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
 

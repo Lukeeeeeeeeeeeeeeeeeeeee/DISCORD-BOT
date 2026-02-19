@@ -39,6 +39,8 @@ describe('buy role items', () => {
     await db.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'RBUY', 30, 0, 0, 4);
   });
   afterEach(async () => {
+    try { await require('../src/db_async').close(); } catch (e) { void e; }
+    try { delete require.cache[require.resolve('../src/db_async.js')]; } catch (e) { void e; }
     try { await db.close(); } catch (e) { void e; }
     try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
