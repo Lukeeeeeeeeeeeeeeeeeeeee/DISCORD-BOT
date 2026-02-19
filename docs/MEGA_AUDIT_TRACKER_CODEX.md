@@ -28,6 +28,8 @@
 ## Test/Smoke State Isolation
 - Anti-nuke supports override file path via `ANTINUKE_DATA_FILE`:
   - `src/lib/antinuke.js`
+- Runtime default anti-nuke state file is local and ignored:
+  - `src/data/antinuke_data.local.json`
 - Jest sets temp anti-nuke state file:
   - `tests/setup-env.js`
   - `package.json` (`jest.setupFiles`)

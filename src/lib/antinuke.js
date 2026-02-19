@@ -134,11 +134,15 @@ class AntiNuke {
     this.pendingEmergencyConfirmations = new Map(); // guildId -> { pending, expiresAt }
     this.rapidActionTimers = new Map(); // key -> timeout
 
-    // File paths (allow test/smoke scripts to isolate mutable state).
+    // File paths:
+    // - default runtime state is stored in a local, non-repo file
+    // - repo file remains a seed/fallback to avoid merge conflicts on pull
+    // - test/smoke scripts can still override via ANTINUKE_DATA_FILE
     const overrideDataFile = process.env.ANTINUKE_DATA_FILE;
-    this.DATA_FILE = overrideDataFile
-      ? path.resolve(overrideDataFile)
-      : path.join(__dirname, '../data/antinuke_data.json');
+    const repoDataFile = path.join(__dirname, '../data/antinuke_data.json');
+    const localDataFile = path.join(__dirname, '../data/antinuke_data.local.json');
+    this.DATA_FILE = overrideDataFile ? path.resolve(overrideDataFile) : localDataFile;
+    this.FALLBACK_DATA_FILE = overrideDataFile ? null : repoDataFile;
     this.stateBackend = 'file';
     this.lastGlobalStateUpdatedAt = 0;
 
@@ -666,7 +670,18 @@ class AntiNuke {
 
   async loadDataFromFile() {
     try {
-      const data = await fs.readFile(this.DATA_FILE, 'utf8');
+      let data = null;
+      let loadedFrom = this.DATA_FILE;
+      try {
+        data = await fs.readFile(this.DATA_FILE, 'utf8');
+      } catch (readError) {
+        const fallbackFile = this.FALLBACK_DATA_FILE;
+        const canFallback = Boolean(fallbackFile && fallbackFile !== this.DATA_FILE);
+        if (!canFallback) throw readError;
+        data = await fs.readFile(fallbackFile, 'utf8');
+        loadedFrom = fallbackFile;
+      }
+
       const parsed = JSON.parse(data);
 
       if (parsed.whitelist) this.whitelist = new Set(parsed.whitelist);
@@ -756,7 +771,15 @@ class AntiNuke {
         }));
       }
 
-      console.log('Anti-nuke data loaded from file');
+      console.log(`Anti-nuke data loaded from file: ${path.basename(loadedFrom)}`);
+      if (loadedFrom !== this.DATA_FILE) {
+        try {
+          await this.saveDataToFile();
+          console.log(`Anti-nuke data migrated to local state file: ${path.basename(this.DATA_FILE)}`);
+        } catch (migrateError) {
+          console.error('Failed to migrate anti-nuke state file:', migrateError);
+        }
+      }
     } catch (error) {
       console.log('No existing anti-nuke data found, starting fresh');
     }

@@ -21,3 +21,6 @@ logs/
 
 # Env files
 .env
+
+# Local anti-nuke runtime state
+src/data/antinuke_data.local.json
