@@ -16,6 +16,8 @@
     "test:synthetic:analytics": "node scripts/synthetic-analytics-load.js",
     "test:p0": "node scripts/run-p0-regression.js",
     "test:verbose:log": "node scripts/run-jest-verbose-log.js",
+    "verify:commands": "node scripts/verify_commands.js",
+    "stability:check": "npm run lint && npm run verify:commands && npm test && npm run require-walk",
     "lint": "eslint . --ext .js",
     "test": "jest --runInBand",
     "require-walk": "node scripts/require-walk.js"
@@ -45,5 +47,10 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "jest": {
+    "setupFiles": [
+      "<rootDir>/tests/setup-env.js"
+    ]
   }
 }

@@ -134,8 +134,11 @@ class AntiNuke {
     this.pendingEmergencyConfirmations = new Map(); // guildId -> { pending, expiresAt }
     this.rapidActionTimers = new Map(); // key -> timeout
 
-    // File paths
-    this.DATA_FILE = path.join(__dirname, '../data/antinuke_data.json');
+    // File paths (allow test/smoke scripts to isolate mutable state).
+    const overrideDataFile = process.env.ANTINUKE_DATA_FILE;
+    this.DATA_FILE = overrideDataFile
+      ? path.resolve(overrideDataFile)
+      : path.join(__dirname, '../data/antinuke_data.json');
     this.stateBackend = 'file';
     this.lastGlobalStateUpdatedAt = 0;
 

@@ -22,11 +22,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run lint
-        run: npm run lint
-
-      - name: Run tests
-        run: npm test --silent
-
-      - name: Require-walk smoke test
-        run: npm run require-walk
+      - name: Run stability gates
+        run: npm run stability:check

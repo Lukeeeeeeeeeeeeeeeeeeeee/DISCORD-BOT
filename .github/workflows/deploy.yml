@@ -20,6 +20,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run predeploy stability checks
+        run: npm run stability:check
+
       - name: Upload to host (disabled)
         if: false
         uses: appleboy/scp-action@v0.1.5

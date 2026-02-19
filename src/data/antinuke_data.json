@@ -17,23 +17,4 @@
   "recoveryMappings": {},
   "emergencyLockdownUntil": {},
   "emergencyMode": {}
-}ictForce": false,
-      "emergencyForceProtect": true,
-      "pruneInstantBan": true,
-      "pruneThreshold": 1,
-      "autoActionThreshold": 0.8,
-      "quarantine": {
-        "mode": "quarantine",
-        "preserveView": false,
-        "durationMs": 86400000
-      },
-      "strictActive": false
-    }
-  },
-  "quarantineAssignments": {},
-  "recoveryMappings": {},
-  "emergencyLockdownUntil": {},
-  "emergencyMode": {
-    "GUILD_ONE": true
-  }
 }

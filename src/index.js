@@ -1,5 +1,4 @@
-﻿require('dotenv').config();
-const fs = require('fs');
+require('dotenv').config();
 const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const db = require('./db_async');
@@ -16,6 +15,7 @@ const { logUnexpectedError, logRuntimeEvent, getCommandCategory, getInteractionM
 const { preloadLocales } = require('./lib/i18n');
 const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
 const { startHealthServer } = require('./lib/health-server');
+const { loadCommandsIntoCollection } = require('./lib/command-loader');
 
 try {
   const envWarnings = validateRuntimeEnvironment({ minNodeMajor: 18 });
@@ -80,52 +80,13 @@ const inviteInitPromise = (async () => {
 });
 
 const commandsPath = path.join(__dirname, 'commands');
-const commandSourceByName = new Map();
-const commandLoadErrors = [];
-
-function shouldIgnoreCommandModule(fullPath) {
-  const normalized = fullPath.split(path.sep).join('/');
-  if (normalized.includes('/recruiter-handlers/')) return true;
-  const base = path.basename(fullPath).toLowerCase();
-  if (base === 'recruiter.js' && normalized.endsWith('/commands/recruiter.js')) return true;
-  if (base === 'recruitment_report.js') return true;
-  if (base.endsWith('-helpers.js')) return true;
-  if (base === 'verify.js') return true;
-  return false;
-}
-
-function loadCommandsRecursively(dir) {
-  const files = fs.readdirSync(dir);
-  for (const file of files) {
-    const fullPath = path.join(dir, file);
-    const stat = fs.statSync(fullPath);
-    if (stat.isDirectory()) {
-      loadCommandsRecursively(fullPath);
-    } else if (file.endsWith('.js')) {
-      if (shouldIgnoreCommandModule(fullPath)) continue;
-      try {
-        const cmd = require(fullPath);
-        if (cmd && cmd.data && cmd.data.name && typeof cmd.execute === 'function') {
-          const existingPath = commandSourceByName.get(cmd.data.name);
-          if (existingPath) {
-            throw new Error(
-              `Duplicate command "${cmd.data.name}" from "${path.relative(commandsPath, fullPath)}" and "${existingPath}"`
-            );
-          }
-          commandSourceByName.set(cmd.data.name, path.relative(commandsPath, fullPath));
-          client.commands.set(cmd.data.name, cmd);
-        } else {
-          console.warn(`Skipping invalid command module: ${file}`);
-        }
-      } catch (e) {
-        console.error(`Failed to load command ${file}:`, e);
-        commandLoadErrors.push({ file, error: e });
-      }
-    }
+const { loadErrors: commandLoadErrors } = loadCommandsIntoCollection({
+  commandsPath,
+  collection: client.commands,
+  onWarn: (message) => {
+    logRuntimeEvent('warn', 'startup.commands', message);
   }
-}
-
-loadCommandsRecursively(commandsPath);
+});
 if (commandLoadErrors.length > 0) {
   const details = commandLoadErrors.map(entry => {
     const message = entry && entry.error && entry.error.message ? entry.error.message : String(entry.error);

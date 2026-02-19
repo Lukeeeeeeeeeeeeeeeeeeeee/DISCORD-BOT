@@ -10,9 +10,10 @@ function walk(dir, out) {
   }
 }
 
-function main() {
+function main({ forceExit = false } = {}) {
   process.env.NODE_ENV = process.env.NODE_ENV || 'test';
   process.env.DATABASE_PATH = process.env.DATABASE_PATH || path.join(require('os').tmpdir(), `require-walk-${Date.now()}.db`);
+  process.env.ANTINUKE_DATA_FILE = process.env.ANTINUKE_DATA_FILE || path.join(require('os').tmpdir(), `antinuke-state-${Date.now()}.json`);
 
   const root = path.join(process.cwd(), 'src');
   const skip = new Set([
@@ -44,12 +45,17 @@ function main() {
     for (const x of failed) {
       console.error(`\n--- ${x.file} ---\n${x.err}`);
     }
-    process.exit(1);
+    if (forceExit) process.exit(1);
+    throw new Error(`Require-walk failures: ${failed.length}`);
   }
 
   console.log(`Require-walk OK: ${ok}`);
+  if (forceExit) process.exit(0);
+  return { ok, failedCount: 0 };
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  main({ forceExit: true });
+}
 
 module.exports = { main };

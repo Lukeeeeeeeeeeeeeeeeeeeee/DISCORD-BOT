@@ -380,5 +380,6 @@ async function handleExpiredAbsences(guild) {
 module.exports = {
   performWeeklyRecalculations,
   sendWeeklyRecalculationDM,
+  postRetentionToInviteChannels,
   handleExpiredAbsences
 };

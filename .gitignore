@@ -3,6 +3,8 @@ node_modules/
 
 # Database backups
 *.db
+*.db-wal
+*.db-shm
 backups/
 
 # Logs

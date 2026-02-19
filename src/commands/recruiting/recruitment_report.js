@@ -15,7 +15,6 @@ const { getWeekStartUtcTs } = require('../../lib/week');
 const { clampText } = require('../../lib/text');
 const { getTeamLabel, normalizeRegionInput } = require('../../lib/regions');
 const { replyError } = require('../../lib/embeds');
-const { resolveGuildId } = require('../../lib/guild');
 
 function chunkLines(lines, maxLen = 1024) {
   const chunks = [];
