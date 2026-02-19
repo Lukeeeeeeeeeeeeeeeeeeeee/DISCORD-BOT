@@ -1,16 +1,96 @@
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { CHANNELS } = require('../constants');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { replyError } = require('../lib/embeds');
 
 // Tunables
-const DEFAULT_MAX = 30; // default recipients cap
 const HARD_MAX = 1000; // absolute hard cap (allows batching up to 1000)
 const DELAY_MS = 1200; // ms between DMs
 const BATCH_SIZE = 100; // recipients per batch
 const BATCH_DELAY_MS = 5000; // delay between batches
 const COOLDOWN_MS = 5 * 60 * 1000; // per-admin cooldown for non-preview sends
+const MAX_HISTORY_CAMPAIGNS = 200;
 
 const cooldowns = new Map();
+
+function getHistoryFilePath() {
+  return process.env.DM_HISTORY_FILE || path.join(process.cwd(), 'data', 'dm_history.json');
+}
+
+function readHistory() {
+  const historyFile = getHistoryFilePath();
+  try {
+    if (!fs.existsSync(historyFile)) return { campaigns: {} };
+    const raw = fs.readFileSync(historyFile, 'utf8');
+    if (!raw || !raw.trim()) return { campaigns: {} };
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return { campaigns: {} };
+    if (!parsed.campaigns || typeof parsed.campaigns !== 'object') parsed.campaigns = {};
+    return parsed;
+  } catch (err) {
+    console.error('Failed to read DM history:', err);
+    return { campaigns: {} };
+  }
+}
+
+function writeHistory(history) {
+  const historyFile = getHistoryFilePath();
+  try {
+    const campaigns = history && history.campaigns && typeof history.campaigns === 'object' ? history.campaigns : {};
+    const entries = Object.entries(campaigns);
+    if (entries.length > MAX_HISTORY_CAMPAIGNS) {
+      entries.sort((a, b) => {
+        const aTs = Date.parse((a[1] && a[1].updatedAt) || '') || 0;
+        const bTs = Date.parse((b[1] && b[1].updatedAt) || '') || 0;
+        return bTs - aTs;
+      });
+      history.campaigns = Object.fromEntries(entries.slice(0, MAX_HISTORY_CAMPAIGNS));
+    }
+    fs.mkdirSync(path.dirname(historyFile), { recursive: true });
+    fs.writeFileSync(historyFile, JSON.stringify(history, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Failed to write DM history:', err);
+  }
+}
+
+function hashMessage(message) {
+  return crypto.createHash('sha256').update(String(message || '').trim()).digest('hex').slice(0, 24);
+}
+
+function buildCampaignKey({ guildId, dmEveryone, roleId, message }) {
+  const targetType = dmEveryone ? 'everyone' : `role:${roleId || 'unknown'}`;
+  return `${guildId}:${targetType}:${hashMessage(message)}`;
+}
+
+function getAlreadySentIds(campaignKey) {
+  const history = readHistory();
+  const entry = history.campaigns && history.campaigns[campaignKey] ? history.campaigns[campaignKey] : null;
+  const sent = entry && Array.isArray(entry.sentMemberIds) ? entry.sentMemberIds : [];
+  return new Set(sent.map(String));
+}
+
+function appendSentIds(campaignKey, metadata, sentIds) {
+  if (!Array.isArray(sentIds) || sentIds.length === 0) return;
+  const history = readHistory();
+  if (!history.campaigns || typeof history.campaigns !== 'object') history.campaigns = {};
+  const nowIso = new Date().toISOString();
+  const existing = history.campaigns[campaignKey] || {};
+  const merged = new Set(Array.isArray(existing.sentMemberIds) ? existing.sentMemberIds.map(String) : []);
+  for (const id of sentIds) {
+    if (id !== null && id !== undefined) merged.add(String(id));
+  }
+
+  history.campaigns[campaignKey] = {
+    ...existing,
+    ...metadata,
+    sentMemberIds: Array.from(merged),
+    updatedAt: nowIso,
+    createdAt: existing.createdAt || nowIso
+  };
+  writeHistory(history);
+}
 
 module.exports = {
   data: { name: 'dm' },
@@ -28,6 +108,7 @@ module.exports = {
     const role = interaction.options.getRole('role', false);  // Make role optional
     const message = interaction.options.getString('message', true);
     const limitOpt = interaction.options.getInteger('limit');
+    const offsetOpt = interaction.options.getInteger('offset');
     const preview = interaction.options.getBoolean('preview') || false;
     const dmEveryone = interaction.options.getBoolean('everyone') || false;
 
@@ -46,6 +127,9 @@ module.exports = {
 
     if (limitOpt !== null && limitOpt !== undefined && (limitOpt < 1 || limitOpt > HARD_MAX)) {
       return replyError(interaction, `Limit must be between 1 and ${HARD_MAX}.`);
+    }
+    if (offsetOpt !== null && offsetOpt !== undefined && (offsetOpt < 0 || offsetOpt > HARD_MAX)) {
+      return replyError(interaction, `Offset must be between 0 and ${HARD_MAX}.`);
     }
 
     await interaction.deferReply({ flags: 64 });
@@ -90,12 +174,37 @@ module.exports = {
     const totalFound = targets.size;
     if (!totalFound) return replyError(interaction, `No human members found${dmEveryone ? '' : ` with the role ${role.name}`}.`);
 
-    const cap = Math.min(limitOpt || DEFAULT_MAX, HARD_MAX);
-    const recipients = Array.from(targets.values()).slice(0, cap);
+    // Keep recipient ordering stable so offset/resume behaves predictably.
+    const orderedTargets = Array.from(targets.values()).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    const offset = Math.max(0, offsetOpt || 0);
+    const campaignKey = buildCampaignKey({
+      guildId: interaction.guild.id,
+      dmEveryone,
+      roleId: role ? role.id : null,
+      message
+    });
+    const alreadySent = getAlreadySentIds(campaignKey);
+    const unsentTargets = orderedTargets.filter(member => !alreadySent.has(String(member.id)));
+    const alreadySentCount = orderedTargets.length - unsentTargets.length;
+    const offsetTargets = unsentTargets.slice(offset);
+    const defaultCap = Math.min(offsetTargets.length, HARD_MAX);
+    const cap = Math.min(limitOpt !== null && limitOpt !== undefined ? limitOpt : defaultCap, HARD_MAX);
+    const recipients = offsetTargets.slice(0, cap);
+
+    if (!offsetTargets.length) {
+      if (preview) {
+        return interaction.editReply({
+          content: `Preview: found ${totalFound} members, ${alreadySentCount} already sent for this same message, ${offset} skipped by offset, and 0 are left to send.`
+        });
+      }
+      return replyError(interaction, `No unsent members remain for this message${dmEveryone ? '' : ` and role ${role.name}`}. Try changing the message or adjusting offset.`);
+    }
 
     if (preview) {
       const sample = recipients.slice(0, 10).map(m => `<@${m.id}>`).join(', ');
-      return interaction.editReply({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}` });
+      return interaction.editReply({
+        content: `Preview: found ${totalFound} members, ${alreadySentCount} already sent for this same message, ${offset} skipped by offset, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}`
+      });
     }
 
     cooldowns.set(interaction.user.id, Date.now());
@@ -109,6 +218,7 @@ module.exports = {
       let totalSent = 0;
       let totalFailed = 0;
       let totalRetries = 0;
+      const sentIds = [];
       const auditChId = CHANNELS && CHANNELS.INVITES_OVERALL ? CHANNELS.INVITES_OVERALL : null;
       let auditCh = null;
       if (auditChId) {
@@ -119,7 +229,7 @@ module.exports = {
       }
 
       if (auditCh && auditCh.send) {
-        await auditCh.send(`DM broadcast queued by <@${interaction.user.id}> to **${targetLabel}**: ${recipients.length} recipients in ${batches.length} batch(es).`)
+        await auditCh.send(`DM broadcast queued by <@${interaction.user.id}> to **${targetLabel}**: ${recipients.length} unsent recipients in ${batches.length} batch(es). Skipped ${alreadySentCount} already-sent and ${offset} offset.`)
           .catch(err => console.error('Failed to post DM audit start:', err));
       }
 
@@ -158,8 +268,12 @@ module.exports = {
         for (let i = 0; i < batch.length; i++) {
           const member = batch[i];
           const res = await sendWithRetries(member, message, 2);
-          if (res.ok) batchSent++;
-          else batchFailed++;
+          if (res.ok) {
+            batchSent++;
+            sentIds.push(member.id);
+          } else {
+            batchFailed++;
+          }
           batchRetries += Math.max(0, res.attempts);
 
           if (i < batch.length - 1) await new Promise(r => setTimeout(r, DELAY_MS));
@@ -185,10 +299,25 @@ module.exports = {
           console.error('Failed to post DM completion audit:', err);
         });
       }
+
+      appendSentIds(
+        campaignKey,
+        {
+          guildId: interaction.guild.id,
+          targetType: dmEveryone ? 'everyone' : 'role',
+          targetId: dmEveryone ? null : role.id,
+          targetLabel,
+          messageHash: hashMessage(message),
+          requestedBy: interaction.user.id
+        },
+        sentIds
+      );
     })().catch(err => {
       console.error('DM broadcast job failed:', err);
     });
 
-    return interaction.editReply({ content: `Queued DM broadcast to ${recipients.length} recipient(s) in ${batches.length} batch(es). Progress will be posted to the audit channel.` });
+    return interaction.editReply({
+      content: `Queued DM broadcast to ${recipients.length} unsent recipient(s) in ${batches.length} batch(es). Skipped ${alreadySentCount} already-sent and ${offset} offset. Progress will be posted to the audit channel.`
+    });
   }
 };

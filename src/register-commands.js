@@ -62,7 +62,8 @@ const commands = [
     .addStringOption(opt => opt.setName('message').setDescription('Message to send to matching members').setRequired(true))
     .addRoleOption(opt => opt.setName('role').setDescription('Role to DM (optional if using everyone)').setRequired(false))
     .addBooleanOption(opt => opt.setName('everyone').setDescription('DM all server members (overrides role)').setRequired(false))
-    .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (caps apply)').setRequired(false).setMinValue(1).setMaxValue(1000))
+    .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (default: all unsent matches, up to 1000)').setRequired(false).setMinValue(1).setMaxValue(1000))
+    .addIntegerOption(opt => opt.setName('offset').setDescription('Skip first N unsent matches (useful for resuming)').setRequired(false).setMinValue(0).setMaxValue(1000))
     .addBooleanOption(opt => opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
   new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
