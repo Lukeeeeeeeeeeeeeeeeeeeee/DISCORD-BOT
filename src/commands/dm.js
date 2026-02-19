@@ -186,6 +186,17 @@ module.exports = {
 
     await interaction.deferReply({ flags: 64 });
 
+    const enableProgressUpdates = (process.env.DM_PROGRESS_UPDATES || 'true').toLowerCase() !== 'false';
+    const editProgress = async (content) => {
+      if (!enableProgressUpdates) return;
+      try {
+        await interaction.editReply({ content });
+      } catch (_err) {
+        // Progress updates are best-effort and must never fail the command.
+      }
+    };
+    await editProgress('Preparing DM recipient list...');
+
     // cooldown check (only applies to actual sends, not previews)
     if (!preview) {
       const last = cooldowns.get(interaction.user.id) || 0;
@@ -241,6 +252,7 @@ module.exports = {
     const shouldScanDmHistory = (process.env.DM_DEDUPE_SCAN_DMS || 'true').toLowerCase() !== 'false';
     let scannedSentCount = 0;
     if (shouldScanDmHistory && orderedTargets.length > 0) {
+      await editProgress('Preparing DM recipient list (checking prior sends)...');
       const botUserId = (_client && _client.user && _client.user.id)
         || (interaction.client && interaction.client.user && interaction.client.user.id)
         || null;

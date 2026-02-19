@@ -91,6 +91,7 @@ describe('/dm command', () => {
   const BOT_CLIENT = { user: { id: 'bot-user' } };
   const originalFullFetch = process.env.DM_ALLOW_FULL_FETCH;
   const originalHistoryFile = process.env.DM_HISTORY_FILE;
+  const originalProgressUpdates = process.env.DM_PROGRESS_UPDATES;
   let historyFile;
 
   beforeEach(() => {
@@ -101,6 +102,7 @@ describe('/dm command', () => {
       `dm-history-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
     );
     process.env.DM_HISTORY_FILE = historyFile;
+    process.env.DM_PROGRESS_UPDATES = 'false';
     ensureCommandAccess.mockResolvedValue(true);
   });
 
@@ -114,6 +116,9 @@ describe('/dm command', () => {
 
     if (originalHistoryFile === undefined) delete process.env.DM_HISTORY_FILE;
     else process.env.DM_HISTORY_FILE = originalHistoryFile;
+
+    if (originalProgressUpdates === undefined) delete process.env.DM_PROGRESS_UPDATES;
+    else process.env.DM_PROGRESS_UPDATES = originalProgressUpdates;
   });
 
   test('preview defaults to all unsent recipients instead of 30 cap', async () => {
