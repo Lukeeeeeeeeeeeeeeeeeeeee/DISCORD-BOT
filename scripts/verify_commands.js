@@ -1,6 +1,14 @@
 const path = require('path');
+const os = require('os');
 const { Collection } = require('discord.js');
 const { loadCommandsIntoCollection } = require('../src/lib/command-loader');
+
+// Isolate command verification from caller env so CI/prod DB paths cannot leak in.
+process.env.NODE_ENV = process.env.NODE_ENV || 'test';
+process.env.DATABASE_PATH = process.env.VERIFY_COMMANDS_DATABASE_PATH
+  || path.join(os.tmpdir(), `verify-commands-${Date.now()}.db`);
+process.env.ANTINUKE_DATA_FILE = process.env.VERIFY_COMMANDS_ANTINUKE_DATA_FILE
+  || path.join(os.tmpdir(), `antinuke-verify-${Date.now()}.json`);
 
 const client = {
   commands: new Collection()
