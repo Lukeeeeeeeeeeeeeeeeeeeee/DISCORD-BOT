@@ -64,7 +64,7 @@ jobs:
         with:
           host: ${{ secrets.CLAN_B_SFTP_HOST }}
           username: ${{ secrets.CLAN_B_SFTP_USER }}
-          password: ${{ secrets.CLAN_B_SFTP_PASSWORD }}
+          key: ${{ secrets.CLAN_B_SFTP_KEY }}
           port: ${{ secrets.CLAN_B_SFTP_PORT }}
           source: "."
           target: "/home/container"
