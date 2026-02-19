@@ -22,7 +22,8 @@ function main({ forceExit = false } = {}) {
   const root = path.join(process.cwd(), 'src');
   const skip = new Set([
     path.join(root, 'index.js'),
-    path.join(root, 'check.js')
+    path.join(root, 'check.js'),
+    path.join(root, 'shard.js')
   ]);
 
   const files = [];
