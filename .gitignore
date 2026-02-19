@@ -5,6 +5,14 @@ node_modules/
 *.db
 *.db-wal
 *.db-shm
+*.db-wal.*
+*.db-shm.*
+*.db.bak
+*.db.bak-*
+*.db.corrupt-*
+*.db-journal
+*.db.*
+data/drills/
 backups/
 
 # Logs
