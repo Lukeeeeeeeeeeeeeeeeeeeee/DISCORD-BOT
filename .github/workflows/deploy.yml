@@ -1,13 +1,23 @@
-﻿name: Deploy to Bot-Hosting
+name: Deploy to Bot Hosts
 
 on:
   push:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deploy target"
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - clan_a
+          - clan_b
 
 jobs:
-  deploy:
+  predeploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,14 +33,38 @@ jobs:
       - name: Run predeploy stability checks
         run: npm run stability:check
 
-      - name: Upload to host (disabled)
-        if: false
+  deploy_clan_a:
+    runs-on: ubuntu-latest
+    needs: predeploy
+    if: ${{ github.event_name == 'push' || github.event.inputs.target == 'both' || github.event.inputs.target == 'clan_a' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Upload to Clan A host
         uses: appleboy/scp-action@v0.1.5
         with:
-          host: ${{ secrets.SFTP_HOST }}
-          username: ${{ secrets.SFTP_USER }}
-          password: ${{ secrets.SFTP_PASSWORD }}
-          port: ${{ secrets.SFTP_PORT }}
+          host: ${{ secrets.CLAN_A_SFTP_HOST }}
+          username: ${{ secrets.CLAN_A_SFTP_USER }}
+          password: ${{ secrets.CLAN_A_SFTP_PASSWORD }}
+          port: ${{ secrets.CLAN_A_SFTP_PORT }}
           source: "."
           target: "/home/container"
 
+  deploy_clan_b:
+    runs-on: ubuntu-latest
+    needs: predeploy
+    if: ${{ github.event_name == 'push' || github.event.inputs.target == 'both' || github.event.inputs.target == 'clan_b' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Upload to Clan B host
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host: ${{ secrets.CLAN_B_SFTP_HOST }}
+          username: ${{ secrets.CLAN_B_SFTP_USER }}
+          password: ${{ secrets.CLAN_B_SFTP_PASSWORD }}
+          port: ${{ secrets.CLAN_B_SFTP_PORT }}
+          source: "."
+          target: "/home/container"
