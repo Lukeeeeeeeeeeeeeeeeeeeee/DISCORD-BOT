@@ -41,6 +41,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Build deploy payload
+        run: |
+          rm -rf deploy_payload
+          mkdir -p deploy_payload
+          rsync -a \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.idea/' \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'data/' \
+            --exclude 'configs/' \
+            --exclude 'backups/' \
+            --exclude 'node_modules/' \
+            ./ deploy_payload/
+
       - name: Upload to Clan A host
         uses: appleboy/scp-action@v0.1.5
         with:
@@ -48,7 +64,7 @@ jobs:
           username: ${{ secrets.CLAN_A_SFTP_USER }}
           password: ${{ secrets.CLAN_A_SFTP_PASSWORD }}
           port: ${{ secrets.CLAN_A_SFTP_PORT }}
-          source: "."
+          source: "deploy_payload/*"
           target: "/home/container"
 
   deploy_clan_b:
@@ -59,6 +75,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Build deploy payload
+        run: |
+          rm -rf deploy_payload
+          mkdir -p deploy_payload
+          rsync -a \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.idea/' \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'data/' \
+            --exclude 'configs/' \
+            --exclude 'backups/' \
+            --exclude 'node_modules/' \
+            ./ deploy_payload/
+
       - name: Upload to Clan B host
         uses: appleboy/scp-action@v0.1.5
         with:
@@ -66,5 +98,5 @@ jobs:
           username: ${{ secrets.CLAN_B_SFTP_USER }}
           key: ${{ secrets.CLAN_B_SFTP_KEY }}
           port: ${{ secrets.CLAN_B_SFTP_PORT }}
-          source: "."
+          source: "deploy_payload/*"
           target: "/home/container"
