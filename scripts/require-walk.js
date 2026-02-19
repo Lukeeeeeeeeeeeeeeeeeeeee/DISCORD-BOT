@@ -11,9 +11,13 @@ function walk(dir, out) {
 }
 
 function main({ forceExit = false } = {}) {
+  const os = require('os');
   process.env.NODE_ENV = process.env.NODE_ENV || 'test';
-  process.env.DATABASE_PATH = process.env.DATABASE_PATH || path.join(require('os').tmpdir(), `require-walk-${Date.now()}.db`);
-  process.env.ANTINUKE_DATA_FILE = process.env.ANTINUKE_DATA_FILE || path.join(require('os').tmpdir(), `antinuke-state-${Date.now()}.json`);
+  // Always isolate require-walk DB/state from caller env so CI/prod paths cannot leak in.
+  process.env.DATABASE_PATH = process.env.REQUIRE_WALK_DATABASE_PATH
+    || path.join(os.tmpdir(), `require-walk-${Date.now()}.db`);
+  process.env.ANTINUKE_DATA_FILE = process.env.REQUIRE_WALK_ANTINUKE_DATA_FILE
+    || path.join(os.tmpdir(), `antinuke-state-${Date.now()}.json`);
 
   const root = path.join(process.cwd(), 'src');
   const skip = new Set([
