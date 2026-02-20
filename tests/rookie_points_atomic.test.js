@@ -81,4 +81,38 @@ describe('rookie points atomic updates', () => {
     const parsed = parseRookieNickname('SeededUser 1e5/10');
     expect(parsed.points).toBeNull();
   });
+
+  test('parseRookieNickname strips legacy prefix collisions from base', () => {
+    const { parseRookieNickname } = require('../src/lib/rookie-points');
+    const parsed = parseRookieNickname('0/2 | wapberry 2/10');
+    expect(parsed.points).toBe(2);
+    expect(parsed.base).toBe('wapberry');
+  });
+
+  test('addRookiePoints rewrites broken mixed nickname into canonical format', async () => {
+    const { addRookiePoints } = require('../src/lib/rookie-points');
+    const member = makeMember('rookie-mixed');
+    member.manageable = true;
+    member.nickname = '0/2 | wapberry 2/10';
+    const guild = { id: 'G1' };
+
+    await db.run(
+      'INSERT INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
+      'G1',
+      member.id,
+      2,
+      Date.now()
+    );
+
+    const result = await addRookiePoints({
+      db,
+      member,
+      guild,
+      delta: 1,
+      verifierId: 'verifier'
+    });
+
+    expect(result.points).toBe(3);
+    expect(member.setNickname).toHaveBeenCalledWith('wapberry 3/10');
+  });
 });

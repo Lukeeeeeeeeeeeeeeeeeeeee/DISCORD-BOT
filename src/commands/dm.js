@@ -309,7 +309,9 @@ module.exports = {
       let totalFailed = 0;
       let totalRetries = 0;
       const sentIds = [];
-      const auditChId = CHANNELS && CHANNELS.INVITES_OVERALL ? CHANNELS.INVITES_OVERALL : null;
+      const auditChId = CHANNELS
+        ? (CHANNELS.ECONOMY_NOTIFICATIONS || CHANNELS.INVITES_OVERALL || null)
+        : null;
       let auditCh = null;
       if (auditChId) {
         auditCh = await interaction.guild.channels.fetch(auditChId).catch(err => {

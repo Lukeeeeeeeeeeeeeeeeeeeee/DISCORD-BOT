@@ -390,4 +390,38 @@ describe('/dm command', () => {
     expect(payload.flags).toBeUndefined();
     expect(payload.content).toContain('Queued DM broadcast to 1 unsent recipient(s)');
   });
+
+  test('posts DM audit logs to economy notifications channel when available', async () => {
+    const role = {
+      id: 'role-revol',
+      name: '[REVOL]',
+      members: new Collection()
+    };
+    const auditChannel = {
+      send: jest.fn().mockResolvedValue(true)
+    };
+    const constants = require('../src/constants');
+    const interaction = makeInteraction({
+      role,
+      preview: false,
+      userId: 'admin-audit-channel',
+      fetchedMembers: new Collection([['u1', makeMember('u1', ['role-revol'])]]),
+      guild: {
+        id: 'guild-1',
+        members: {
+          cache: new Collection(),
+          fetch: jest.fn().mockResolvedValue(new Collection([['u1', makeMember('u1', ['role-revol'])]]))
+        },
+        channels: {
+          fetch: jest.fn().mockResolvedValue(auditChannel)
+        }
+      }
+    });
+
+    await dmCommand.execute(interaction, BOT_CLIENT, null);
+    await sleep(30);
+
+    expect(interaction.guild.channels.fetch).toHaveBeenCalledWith(constants.CHANNELS.ECONOMY_NOTIFICATIONS);
+    expect(auditChannel.send).toHaveBeenCalled();
+  });
 });

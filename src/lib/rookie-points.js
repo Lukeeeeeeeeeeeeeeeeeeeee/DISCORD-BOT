@@ -4,25 +4,41 @@ const { resolveGuildId } = require('./guild');
 
 function parseRookieNickname(rawName) {
   if (!rawName) return { base: null, points: null };
-  const s = String(rawName);
-  const trimmed = s.length > 128 ? s.slice(0, 128) : s;
-  const idx = trimmed.lastIndexOf('/');
-  if (idx === -1) return { base: trimmed.trim() || trimmed, points: null };
+  const source = String(rawName);
+  const capped = source.length > 128 ? source.slice(0, 128) : source;
+  const trimmed = capped.trim();
+  if (!trimmed) return { base: null, points: null };
 
-  const right = trimmed.slice(idx + 1).trim();
-  if (right !== '10') return { base: trimmed.trim() || trimmed, points: null };
-
-  const left = trimmed.slice(0, idx).trim();
-  const parts = left.split(/\s+/);
-  if (!parts.length) return { base: trimmed.trim() || trimmed, points: null };
-  const maybePoints = parts[parts.length - 1];
-  if (!/^-?\d+(?:\.\d+)?$/.test(maybePoints)) {
-    return { base: trimmed.trim() || trimmed, points: null };
+  const pointsMatch = trimmed.match(/(?:^|\s)(-?\d+(?:\.\d+)?)\s*\/\s*10\s*$/);
+  if (!pointsMatch) {
+    return { base: sanitizeRookieBase(trimmed), points: null };
   }
-  const points = Number(maybePoints);
-  if (!Number.isFinite(points)) return { base: trimmed.trim() || trimmed, points: null };
-  const base = parts.slice(0, -1).join(' ').trim();
-  return { base: base || trimmed.trim() || trimmed, points: points };
+
+  const points = Number(pointsMatch[1]);
+  if (!Number.isFinite(points)) {
+    return { base: sanitizeRookieBase(trimmed), points: null };
+  }
+
+  const left = trimmed.slice(0, pointsMatch.index).trim();
+  const base = sanitizeRookieBase(left || trimmed);
+  return { base: base || sanitizeRookieBase(trimmed), points };
+}
+
+function sanitizeRookieBase(rawBase) {
+  const source = rawBase == null ? '' : String(rawBase);
+  let cleaned = source.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
+
+  // Strip legacy progress prefixes such as "0/2 | Name".
+  cleaned = cleaned.replace(/^(?:\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\s*[|:-]\s*)+/g, '');
+  // Strip trailing legacy progress fragments left by previous systems.
+  cleaned = cleaned.replace(/(?:\s*[|:-]\s*\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?)+$/g, '');
+  cleaned = cleaned.replace(/\s+\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?$/g, '');
+  // Trim separators at boundaries and normalize pipe spacing.
+  cleaned = cleaned.replace(/^\s*[|:-]+\s*/, '').replace(/\s*[|:-]+\s*$/, '');
+  cleaned = cleaned.replace(/\s*\|\s*/g, ' | ').replace(/\s{2,}/g, ' ').trim();
+
+  return cleaned || source.replace(/\s+/g, ' ').trim();
 }
 
 function formatPoints(value) {
