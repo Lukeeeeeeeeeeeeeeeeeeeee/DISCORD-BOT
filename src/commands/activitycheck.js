@@ -295,10 +295,22 @@ module.exports = {
     let failed = 0;
     let removedRoleCount = 0;
     let addedRoleCount = 0;
+    const assignmentCounts = new Map();
+    const assignmentSourceCounts = {
+      team: 0,
+      random: 0,
+      none: 0
+    };
 
     for (const member of cappedCandidates) {
       const picked = pickInactiveRole(member, teamToInactiveRole, validInactivePool);
       const targetRoleId = picked.roleId;
+      if (picked && picked.source && Object.prototype.hasOwnProperty.call(assignmentSourceCounts, picked.source)) {
+        assignmentSourceCounts[picked.source] += 1;
+      }
+      if (targetRoleId) {
+        assignmentCounts.set(targetRoleId, (assignmentCounts.get(targetRoleId) || 0) + 1);
+      }
       if (!targetRoleId) {
         failed += 1;
         continue;
@@ -348,6 +360,10 @@ module.exports = {
     }
 
     const mode = preview ? 'Preview' : 'Done';
+    const assignmentSummary = Array.from(assignmentCounts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([roleId, count]) => `<@&${roleId}>: **${count}**`)
+      .join(', ');
     const summary = [
       `**${mode}: Activity check**`,
       `Message: \`${message.id}\` in <#${channel.id}>`,
@@ -359,7 +375,9 @@ module.exports = {
       `Skipped (no changes needed): **${skipped}**`,
       `Role adds: **${addedRoleCount}**`,
       `Role removals: **${removedRoleCount}**`,
-      `Failures: **${failed}**`
+      `Failures: **${failed}**`,
+      assignmentSummary ? `Inactive role distribution: ${assignmentSummary}` : null,
+      `Assignment source: team **${assignmentSourceCounts.team}**, random **${assignmentSourceCounts.random}**, none **${assignmentSourceCounts.none}**`
     ].filter(Boolean).join('\n');
 
     return interaction.editReply({ content: summary });

@@ -187,7 +187,16 @@ describe('activitycheck command', () => {
     expect(targetMember.roles.cache.has('inactive-eu')).toBe(true);
     expect(targetMember.roles.cache.has('region-eu')).toBe(true);
     expect(targetMember.roles.cache.has('react-fire')).toBe(true);
-    expect(interaction.editReply).toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('Inactive role distribution: <@&inactive-eu>: **1**')
+      })
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('Assignment source: team **1**, random **0**, none **0**')
+      })
+    );
   });
 
   test('accepts Discord message URL for messageid and resolves channel automatically', async () => {
