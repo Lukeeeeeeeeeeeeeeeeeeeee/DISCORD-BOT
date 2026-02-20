@@ -4,6 +4,8 @@ const path = require('path');
 const BASE = {
   GUILD_ID: "1331020304763453522",
   TESTING_USER_ID: "1381692847018868778", // Your user ID for testing
+  BRAND_NAME: "Solace",
+  BRAND_ROOKIE_HEADER_ICON: "<:SOLACEONTOP:1460693669391765750>",
   ROLE_IDS: {
     // Onboarding roles: [0]=Fire/EU, [1]=Water/NA, [2]=Air/AS
     ONBOARDING: ["1459878495290261839", "1459880782108692521", "1459880774168739892"],
@@ -58,6 +60,17 @@ const BASE = {
     RECRUITER_WARNINGS: "1331020754090987570",
     CENTRAL_LEADERBOARD: "1331020755617710260",
     ROOKIE_LOGS: "1331020800551293030"
+  },
+  ACTIVITY_CHECK: {
+    OWNER_IDS: ["1381692847018868778"],
+    TEAM_TO_INACTIVE_ROLE: {},
+    INACTIVE_ROLE_POOL: [],
+    TARGET_ROLE_IDS: [],
+    PRESERVE_ROLE_IDS: [],
+    EXEMPT_ROLE_IDS: [],
+    PRESERVE_REGION_ROLES: true,
+    PRESERVE_ONBOARDING_ROLES: true,
+    PRESERVE_STAFF_ROLES: true
   },
   MIN_RECRUITS_FOR_AUTO: 5,
   MIN_LEADERBOARD_ENTRIES: 5,
@@ -182,6 +195,75 @@ function normalizeChannels(rawChannels) {
   return mapKeys(rawChannels, keyMap);
 }
 
+function toStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (item == null ? '' : String(item).trim()))
+    .filter(Boolean);
+}
+
+function normalizeActivityCheck(rawActivityCheck) {
+  if (!isPlainObject(rawActivityCheck)) return {};
+  const keyMap = {
+    ownerIds: 'OWNER_IDS',
+    owner_ids: 'OWNER_IDS',
+    teamToInactiveRole: 'TEAM_TO_INACTIVE_ROLE',
+    team_to_inactive_role: 'TEAM_TO_INACTIVE_ROLE',
+    inactiveRoleIds: 'TEAM_TO_INACTIVE_ROLE',
+    inactive_role_ids: 'TEAM_TO_INACTIVE_ROLE',
+    inactiveRolePool: 'INACTIVE_ROLE_POOL',
+    inactive_role_pool: 'INACTIVE_ROLE_POOL',
+    inactiveRoles: 'INACTIVE_ROLE_POOL',
+    inactive_roles: 'INACTIVE_ROLE_POOL',
+    targetRoleIds: 'TARGET_ROLE_IDS',
+    target_role_ids: 'TARGET_ROLE_IDS',
+    preserveRoleIds: 'PRESERVE_ROLE_IDS',
+    preserve_role_ids: 'PRESERVE_ROLE_IDS',
+    exemptRoleIds: 'EXEMPT_ROLE_IDS',
+    exempt_role_ids: 'EXEMPT_ROLE_IDS',
+    preserveRegionRoles: 'PRESERVE_REGION_ROLES',
+    preserve_region_roles: 'PRESERVE_REGION_ROLES',
+    preserveOnboardingRoles: 'PRESERVE_ONBOARDING_ROLES',
+    preserve_onboarding_roles: 'PRESERVE_ONBOARDING_ROLES',
+    preserveStaffRoles: 'PRESERVE_STAFF_ROLES',
+    preserve_staff_roles: 'PRESERVE_STAFF_ROLES'
+  };
+  const mapped = mapKeys(rawActivityCheck, keyMap);
+  const out = {};
+
+  if (mapped.OWNER_IDS !== undefined) out.OWNER_IDS = toStringArray(mapped.OWNER_IDS);
+  if (mapped.INACTIVE_ROLE_POOL !== undefined) out.INACTIVE_ROLE_POOL = toStringArray(mapped.INACTIVE_ROLE_POOL);
+  if (mapped.TARGET_ROLE_IDS !== undefined) out.TARGET_ROLE_IDS = toStringArray(mapped.TARGET_ROLE_IDS);
+  if (mapped.PRESERVE_ROLE_IDS !== undefined) out.PRESERVE_ROLE_IDS = toStringArray(mapped.PRESERVE_ROLE_IDS);
+  if (mapped.EXEMPT_ROLE_IDS !== undefined) out.EXEMPT_ROLE_IDS = toStringArray(mapped.EXEMPT_ROLE_IDS);
+
+  const teamMapRaw = mapped.TEAM_TO_INACTIVE_ROLE;
+  if (isPlainObject(teamMapRaw)) {
+    const teamMap = {};
+    for (const [key, value] of Object.entries(teamMapRaw)) {
+      if (value == null) continue;
+      const normKey = String(key || '').trim().toUpperCase();
+      const normValue = String(value || '').trim();
+      if (!normKey || !normValue) continue;
+      teamMap[normKey] = normValue;
+    }
+    out.TEAM_TO_INACTIVE_ROLE = teamMap;
+  } else if (Array.isArray(teamMapRaw)) {
+    out.INACTIVE_ROLE_POOL = toStringArray(teamMapRaw);
+  }
+
+  const boolKeys = [
+    'PRESERVE_REGION_ROLES',
+    'PRESERVE_ONBOARDING_ROLES',
+    'PRESERVE_STAFF_ROLES'
+  ];
+  for (const key of boolKeys) {
+    if (mapped[key] !== undefined) out[key] = Boolean(mapped[key]);
+  }
+
+  return out;
+}
+
 function normalizeConfig(rawConfig) {
   if (!isPlainObject(rawConfig)) return {};
 
@@ -192,6 +274,14 @@ function normalizeConfig(rawConfig) {
   }
   if (rawConfig.TESTING_USER_ID || rawConfig.testingUserId) {
     normalized.TESTING_USER_ID = rawConfig.TESTING_USER_ID || rawConfig.testingUserId;
+  }
+  if (rawConfig.BRAND_NAME || rawConfig.brandName) {
+    normalized.BRAND_NAME = rawConfig.BRAND_NAME || rawConfig.brandName;
+  }
+  if (rawConfig.BRAND_ROOKIE_HEADER_ICON !== undefined || rawConfig.brandRookieHeaderIcon !== undefined) {
+    normalized.BRAND_ROOKIE_HEADER_ICON = rawConfig.BRAND_ROOKIE_HEADER_ICON !== undefined
+      ? rawConfig.BRAND_ROOKIE_HEADER_ICON
+      : rawConfig.brandRookieHeaderIcon;
   }
 
   if (rawConfig.ROLE_IDS || rawConfig.roleIds) {
@@ -230,6 +320,12 @@ function normalizeConfig(rawConfig) {
     normalized.REGION_INFO = {
       ...(isPlainObject(rawConfig.REGION_INFO) ? rawConfig.REGION_INFO : {}),
       ...(isPlainObject(rawConfig.regionInfo) ? rawConfig.regionInfo : {})
+    };
+  }
+  if (rawConfig.ACTIVITY_CHECK || rawConfig.activityCheck) {
+    normalized.ACTIVITY_CHECK = {
+      ...(isPlainObject(rawConfig.ACTIVITY_CHECK) ? rawConfig.ACTIVITY_CHECK : {}),
+      ...normalizeActivityCheck(rawConfig.activityCheck)
     };
   }
 

@@ -65,6 +65,12 @@ const commands = [
     .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (default: all unsent matches, up to 1000)').setRequired(false).setMinValue(1).setMaxValue(1000))
     .addIntegerOption(opt => opt.setName('offset').setDescription('Skip first N unsent matches (useful for resuming)').setRequired(false).setMinValue(0).setMaxValue(1000))
     .addBooleanOption(opt => opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
+  new SlashCommandBuilder().setName('activitycheck').setDescription('Owner-only activity checks')
+    .addSubcommand(s => s.setName('role').setDescription('Assign inactive roles to members who did not react to a message')
+      .addStringOption(opt => opt.setName('messageid').setDescription('Message ID to audit reactions from').setRequired(true))
+      .addChannelOption(opt => opt.setName('channel').setDescription('Channel containing the message (defaults to current channel)').setRequired(false))
+      .addIntegerOption(opt => opt.setName('limit').setDescription('Optional limit of matched members to process').setRequired(false).setMinValue(1).setMaxValue(5000))
+      .addBooleanOption(opt => opt.setName('preview').setDescription('If true, show results without changing roles').setRequired(false))),
   new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
     .addSubcommand(s => s.setName('show').setDescription('Show leaderboard').addStringOption(opt => opt.setName('region').setDescription('Region or all').setRequired(false)

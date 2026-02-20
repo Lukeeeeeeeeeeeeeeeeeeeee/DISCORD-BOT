@@ -1,4 +1,12 @@
-const { ROLE_IDS, RECRUITER_ROLE_IDS, REGION_ROLE_IDS, REGION_INFO, CHANNELS } = require('../../constants');
+const {
+  ROLE_IDS,
+  RECRUITER_ROLE_IDS,
+  REGION_ROLE_IDS,
+  REGION_INFO,
+  CHANNELS,
+  BRAND_NAME,
+  BRAND_ROOKIE_HEADER_ICON
+} = require('../../constants');
 const { getRegionInfo, getTeamLabel } = require('../../lib/regions');
 const { replyError } = require('../../lib/embeds');
 const db = require('../../db_async');
@@ -92,12 +100,15 @@ function buildRookieWelcomeMessage(teamName) {
   const fullRole = mentionRole(ROLE_IDS.AUTO_PROMOTE_ROLE, 'full member role');
   const recruiterRole = mentionRole(ROLE_IDS.RECRUITER, 'recruiter role');
   const trialRole = mentionRole(ROLE_IDS.TRIAL_RECRUITER, 'trial recruiter role');
-  return `Welcome to Solace! You have been recruited in ${teamName}.
+  const brandName = BRAND_NAME || 'Solace';
+  const headerIcon = BRAND_ROOKIE_HEADER_ICON ? `${BRAND_ROOKIE_HEADER_ICON} ` : '';
+  const headerName = String(brandName).toUpperCase();
+  return `Welcome to ${brandName}! You have been recruited in ${teamName}.
 Make sure you read how to war, whats a war and see readme!
 
-# <:SOLACEONTOP:1460693669391765750> SOLACE ROOKIE INFO
-Hello there and welcome to Solace! 
-The first thought that crosses your mind might be the reason behind your being given the ${rookieRole}—it's our basic role. You will have to earn ${fullRole} to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
+# ${headerIcon}${headerName} ROOKIE INFO
+Hello there and welcome to ${brandName}!
+The first thought that crosses your mind might be the reason behind your being given the ${rookieRole} - it's our basic role. You will have to earn ${fullRole} to gain full access to ${brandName}. To gain full access to ${brandName}, you have to collect points to help you move up. There are three methods available to you:
 
  Point Earning Methods
 
@@ -122,9 +133,9 @@ Points are shown beside your name (e.g., 0/10). With more wars, chat, and recrui
 
 Logging Progress 
 Make sure to put down your achievements in ${logsChannel} always. This is a must to ensure the counting of your points and your elevation. **Why?**
-<:greenarrow:1459897308610039900> Logging your progression insures that you get the points you worked for. It also is a chart of your progression if that helps you in terms of motivation.
+<:greenarrow:1459897308610039900> Logging your progression ensures that you get the points you worked for. It is also a chart of your progression if that helps you in terms of motivation.
 
-Wishing you good luck and once again welcoming you to Solace `;
+Wishing you good luck and once again welcoming you to ${brandName}`;
 }
 
 function normalizeIgn(rawIgn, suffix) {

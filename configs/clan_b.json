@@ -1,5 +1,7 @@
 {
   "guildId": "1412808625017065544",
+  "brandName": "REVOL",
+  "brandRookieHeaderIcon": "",
   "roleIds": {
     "onboarding": [
       "1473726606634909829",
@@ -52,5 +54,34 @@
     "recruiter_warnings": "1474126888166359171",
     "central_leaderboard": "1412808632554225690",
     "rookie_logs": ""
+  },
+  "activityCheck": {
+    "ownerIds": [
+      "1381692847018868778"
+    ],
+    "teamToInactiveRole": {
+      "EU": "1473726663329316946",
+      "NA": "1473726655565529259",
+      "AS": "1473726648712036496"
+    },
+    "inactiveRolePool": [
+      "1473726663329316946",
+      "1473726655565529259",
+      "1473726648712036496"
+    ],
+    "targetRoleIds": [
+      "1412808625747132501",
+      "1473726632769622173",
+      "1473726640939991261",
+      "1473726626733756438"
+    ],
+    "preserveRoleIds": [
+      "1473726606634909829",
+      "1473726616025694419",
+      "1473726598300700796"
+    ],
+    "preserveRegionRoles": true,
+    "preserveOnboardingRoles": true,
+    "preserveStaffRoles": true
   }
 }

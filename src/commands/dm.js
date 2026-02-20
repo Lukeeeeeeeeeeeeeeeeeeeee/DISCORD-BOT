@@ -96,7 +96,7 @@ async function forEachWithConcurrency(items, concurrency, handler) {
   const safeConcurrency = Number.isFinite(concurrency) && concurrency > 0 ? Math.floor(concurrency) : 1;
   let index = 0;
   const workers = Array.from({ length: safeConcurrency }, async () => {
-    while (true) {
+    while (index < items.length) {
       const current = index;
       index += 1;
       if (current >= items.length) return;
