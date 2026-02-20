@@ -79,6 +79,7 @@ const commands = [
       .addIntegerOption(opt => opt.setName('limit').setDescription('Optional limit of matched members to process').setRequired(false).setMinValue(1).setMaxValue(5000))
       .addBooleanOption(opt => opt.setName('preview').setDescription('If true, show results without changing roles').setRequired(false))),
   new SlashCommandBuilder().setName('pathbalance').setDescription('Owner-only one-time path role balancer for staged members')
+    .addBooleanOption(opt => opt.setName('all_members').setDescription('Process all guild members instead of only a source role (default false)').setRequired(false))
     .addRoleOption(opt => opt.setName('source_role').setDescription('Members in this role will be processed (default configured role)').setRequired(false))
     .addIntegerOption(opt => opt.setName('limit').setDescription('Optional cap on members to process').setRequired(false).setMinValue(1).setMaxValue(5000))
     .addBooleanOption(opt => opt.setName('preview').setDescription('Preview mode (default true)').setRequired(false))

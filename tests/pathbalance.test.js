@@ -41,7 +41,15 @@ function makeMember(id, roleIds, roleMap) {
   };
 }
 
-function makeInteraction({ members, sourceRoleId = '1463200689252597770', preview = true, confirm = '' }) {
+function makeInteraction({
+  members,
+  sourceRoleId = '1463200689252597770',
+  preview = true,
+  allMembers = false,
+  confirm = '',
+  removeSourceRole = true,
+  deleteSourceRole = true
+}) {
   const allRoleIds = [
     sourceRoleId,
     '1412808625529028767',
@@ -84,6 +92,10 @@ function makeInteraction({ members, sourceRoleId = '1463200689252597770', previe
 
   const guild = {
     id: 'guild-1',
+    members: {
+      cache: sourceMembers,
+      fetch: jest.fn(async () => sourceMembers)
+    },
     roles: {
       cache: roleMap,
       fetch: jest.fn(async (id) => {
@@ -99,8 +111,9 @@ function makeInteraction({ members, sourceRoleId = '1463200689252597770', previe
     options: {
       getBoolean: jest.fn((name) => {
         if (name === 'preview') return preview;
-        if (name === 'remove_source_role') return true;
-        if (name === 'delete_source_role') return true;
+        if (name === 'all_members') return allMembers;
+        if (name === 'remove_source_role') return removeSourceRole;
+        if (name === 'delete_source_role') return deleteSourceRole;
         return null;
       }),
       getString: jest.fn((name) => {
@@ -230,6 +243,38 @@ describe('pathbalance command', () => {
         '1463200689252597770'
       ]),
       expect.stringContaining('One-time path balance')
+    );
+  });
+
+  test('all_members mode processes guild members without source-role scope', async () => {
+    const ctx = makeInteraction({
+      members: [makeMember(
+        'all1',
+        ['1412808625529028767'], // rookie only, not in source role
+        new Collection()
+      )],
+      preview: true,
+      allMembers: true,
+      removeSourceRole: false,
+      deleteSourceRole: false
+    });
+    const member = makeMember('all1', ['1412808625529028767'], ctx.roleMap);
+    const allMembers = new Collection([[member.id, member]]);
+    ctx.interaction.guild.members.cache = allMembers;
+    ctx.interaction.guild.members.fetch = jest.fn(async () => allMembers);
+    ctx.sourceRole.members.clear();
+
+    await command.execute(ctx.interaction);
+
+    expect(ctx.interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('Scope: **all guild members**')
+      })
+    );
+    expect(ctx.interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('Processed members: **1**')
+      })
     );
   });
 });

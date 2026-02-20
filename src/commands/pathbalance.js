@@ -205,6 +205,18 @@ function toCollectionValues(collection) {
   return [];
 }
 
+async function fetchAllGuildMembers(guild) {
+  if (!guild || !guild.members) return [];
+  if (typeof guild.members.fetch === 'function') {
+    const fetched = await guild.members.fetch().catch(() => null);
+    if (fetched && typeof fetched.values === 'function') return Array.from(fetched.values());
+  }
+  if (guild.members.cache && typeof guild.members.cache.values === 'function') {
+    return Array.from(guild.members.cache.values());
+  }
+  return [];
+}
+
 function memberDisplay(member) {
   if (!member) return 'unknown';
   const nick = member.nickname ? String(member.nickname) : '';
@@ -258,8 +270,15 @@ module.exports = {
     }
 
     const preview = interaction.options.getBoolean('preview') !== false;
-    const removeSourceRole = interaction.options.getBoolean('remove_source_role') !== false;
-    const deleteSourceRole = interaction.options.getBoolean('delete_source_role') !== false;
+    const allMembers = interaction.options.getBoolean('all_members') === true;
+    const removeSourceRoleOption = interaction.options.getBoolean('remove_source_role');
+    const deleteSourceRoleOption = interaction.options.getBoolean('delete_source_role');
+    const removeSourceRole = removeSourceRoleOption !== null
+      ? removeSourceRoleOption === true
+      : !allMembers;
+    const deleteSourceRole = deleteSourceRoleOption !== null
+      ? deleteSourceRoleOption === true
+      : (!allMembers && removeSourceRole);
     const confirm = String(interaction.options.getString('confirm') || '').trim().toUpperCase();
     const limit = interaction.options.getInteger('limit') || 0;
     const sourceRoleOption = interaction.options.getRole('source_role', false);
@@ -277,10 +296,13 @@ module.exports = {
     await interaction.deferReply({ flags: 64 });
 
     await interaction.guild.roles.fetch().catch(() => null);
-    const sourceRole = interaction.guild.roles.cache.get(sourceRoleId)
-      || await interaction.guild.roles.fetch(sourceRoleId).catch(() => null);
-    if (!sourceRole) {
-      return interaction.editReply({ content: `Source role not found: <@&${sourceRoleId}>.` });
+    let sourceRole = null;
+    if (!allMembers || removeSourceRole || deleteSourceRole) {
+      sourceRole = interaction.guild.roles.cache.get(sourceRoleId)
+        || await interaction.guild.roles.fetch(sourceRoleId).catch(() => null);
+      if (!sourceRole) {
+        return interaction.editReply({ content: `Source role not found: <@&${sourceRoleId}>.` });
+      }
     }
 
     const missingRoleIds = Array.from(collectAllPathRoleIds())
@@ -291,9 +313,19 @@ module.exports = {
       });
     }
 
-    let members = toCollectionValues(sourceRole.members).filter((member) => member && member.user && !member.user.bot);
+    let members = [];
+    if (allMembers) {
+      members = (await fetchAllGuildMembers(interaction.guild))
+        .filter((member) => member && member.user && !member.user.bot);
+    } else {
+      members = toCollectionValues(sourceRole.members)
+        .filter((member) => member && member.user && !member.user.bot);
+    }
     if (limit > 0) members = members.slice(0, limit);
     if (!members.length) {
+      if (allMembers) {
+        return interaction.editReply({ content: 'No eligible members found in guild member list/cache.' });
+      }
       return interaction.editReply({ content: `No members found in source role <@&${sourceRoleId}>.` });
     }
 
@@ -383,7 +415,7 @@ module.exports = {
 
     let sourceRoleDeleted = false;
     let sourceDeleteError = null;
-    if (!preview && deleteSourceRole && removeSourceRole) {
+    if (!preview && deleteSourceRole && removeSourceRole && !allMembers) {
       try {
         await sourceRole.delete('One-time path balance completed');
         sourceRoleDeleted = true;
@@ -404,7 +436,7 @@ module.exports = {
 
     const lines = [
       `**${preview ? 'Preview' : 'Done'}: Path Balance**`,
-      `Source role: <@&${sourceRoleId}>`,
+      allMembers ? 'Scope: **all guild members**' : `Source role: <@&${sourceRoleId}>`,
       `Processed members: **${members.length}**`,
       limit > 0 ? `Limit: **${limit}**` : null,
       `Assigned paths (global): FIRE **${pathCountsGlobal.FIRE}**, WATER **${pathCountsGlobal.WATER}**, AIR **${pathCountsGlobal.AIR}**`,
@@ -415,7 +447,7 @@ module.exports = {
       removeSourceRole ? `Source role removals: **${removedSourceCount}**` : 'Source role removals: **disabled**',
       `Failures: **${failed}**`,
       preview ? 'No roles were changed (preview mode).' : null,
-      (!preview && deleteSourceRole)
+      (!preview && deleteSourceRole && !allMembers)
         ? (sourceRoleDeleted ? 'Source role deleted: **yes**' : `Source role deleted: **no** (${sourceDeleteError || 'unknown error'})`)
         : null
     ].filter(Boolean);
