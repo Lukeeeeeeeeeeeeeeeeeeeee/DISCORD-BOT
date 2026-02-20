@@ -136,6 +136,7 @@ function makeInteraction({ userId = 'owner-1', preview = false } = {}) {
       fetch: jest.fn(async () => roleMap)
     },
     members: {
+      cache: members,
       fetch: jest.fn(async () => members)
     }
   };
@@ -161,6 +162,7 @@ function makeInteraction({ userId = 'owner-1', preview = false } = {}) {
 describe('activitycheck command', () => {
   beforeEach(() => {
     mockReplyError.mockClear();
+    delete process.env.ACTIVITY_CHECK_MEMBER_FETCH_RETRIES;
   });
 
   test('rejects non-owner users', async () => {
@@ -248,6 +250,25 @@ describe('activitycheck command', () => {
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining('Reacted users: **185**')
+      })
+    );
+  });
+
+  test('falls back to member cache when guild member fetch is gateway-rate-limited', async () => {
+    process.env.ACTIVITY_CHECK_MEMBER_FETCH_RETRIES = '0';
+    const { interaction } = makeInteraction({ userId: 'owner-1', preview: true });
+
+    interaction.guild.members.fetch = jest.fn(async () => {
+      const error = new Error('Request with opcode 8 was rate limited. Retry after 5 seconds.');
+      error.name = 'GatewayRateLimitError';
+      throw error;
+    });
+
+    await cmd.execute(interaction);
+
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('Member source: **cache (gateway rate-limit fallback)**')
       })
     );
   });

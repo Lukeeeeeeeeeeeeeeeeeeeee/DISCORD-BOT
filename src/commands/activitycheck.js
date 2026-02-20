@@ -200,6 +200,68 @@ function parseMessageReference(rawValue) {
   };
 }
 
+function isGatewayMemberFetchRateLimit(error) {
+  if (!error) return false;
+  const name = String(error.name || '');
+  const message = String(error.message || '');
+  return name === 'GatewayRateLimitError'
+    || /opcode\s*8.*rate limited/i.test(message)
+    || /gatewayratelimiterror/i.test(name);
+}
+
+function parseRetryAfterMs(error) {
+  if (!error) return 0;
+  const rawRetryAfter = error.retryAfter ?? error.retry_after ?? (error.data && error.data.retry_after);
+  if (Number.isFinite(rawRetryAfter) && Number(rawRetryAfter) > 0) {
+    const value = Number(rawRetryAfter);
+    return value < 1000 ? Math.ceil(value * 1000) : Math.ceil(value);
+  }
+
+  const message = String(error.message || '');
+  const match = message.match(/retry after\s+([0-9]+(?:\.[0-9]+)?)\s*seconds?/i);
+  if (match && Number.isFinite(Number(match[1]))) {
+    return Math.ceil(Number(match[1]) * 1000);
+  }
+  return 0;
+}
+
+function getMemberFetchRetries() {
+  const parsed = Number.parseInt(process.env.ACTIVITY_CHECK_MEMBER_FETCH_RETRIES || '1', 10);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(0, parsed);
+}
+
+async function fetchMembersWithFallback(guild) {
+  const cache = guild && guild.members && guild.members.cache ? guild.members.cache : null;
+  const canFetch = guild && guild.members && typeof guild.members.fetch === 'function';
+  const retries = getMemberFetchRetries();
+  let lastError = null;
+
+  if (canFetch) {
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const members = await guild.members.fetch();
+        if (members && typeof members.values === 'function') {
+          return { members, source: 'fetch', fetchError: null };
+        }
+      } catch (error) {
+        lastError = error;
+        if (!isGatewayMemberFetchRateLimit(error)) break;
+        if (attempt >= retries) break;
+        const waitMs = parseRetryAfterMs(error) || ((attempt + 1) * 3000);
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+    }
+  }
+
+  if (cache && typeof cache.values === 'function' && cache.size > 0) {
+    return { members: cache, source: 'cache', fetchError: lastError };
+  }
+
+  if (lastError) throw lastError;
+  return { members: cache || new Map(), source: 'cache', fetchError: null };
+}
+
 module.exports = {
   data: { name: 'activitycheck' },
   async execute(interaction) {
@@ -274,7 +336,21 @@ module.exports = {
     }
 
     const reactedUserIds = await getReactedUserIds(message);
-    const allMembers = await interaction.guild.members.fetch();
+    let memberLoad = null;
+    try {
+      memberLoad = await fetchMembersWithFallback(interaction.guild);
+    } catch (error) {
+      if (isGatewayMemberFetchRateLimit(error)) {
+        const retryAfterMs = parseRetryAfterMs(error);
+        const retryAfterSecs = Math.max(1, Math.ceil(retryAfterMs / 1000));
+        return interaction.editReply({
+          content: `Discord rate-limited member loading for this command. Please retry in about **${retryAfterSecs}s**.`
+        });
+      }
+      throw error;
+    }
+    const allMembers = memberLoad.members;
+    const usedMemberCacheFallback = memberLoad.source === 'cache' && !!memberLoad.fetchError;
 
     const targetRoleIds = toIdSet(ACTIVITY_CHECK && ACTIVITY_CHECK.TARGET_ROLE_IDS);
     const exemptRoleIds = toIdSet(ACTIVITY_CHECK && ACTIVITY_CHECK.EXEMPT_ROLE_IDS);
@@ -376,6 +452,8 @@ module.exports = {
       `Role adds: **${addedRoleCount}**`,
       `Role removals: **${removedRoleCount}**`,
       `Failures: **${failed}**`,
+      usedMemberCacheFallback ? 'Member source: **cache (gateway rate-limit fallback)**' : 'Member source: **live fetch**',
+      usedMemberCacheFallback ? 'Note: fallback mode may miss uncached members. Retry after rate-limit window for full accuracy.' : null,
       assignmentSummary ? `Inactive role distribution: ${assignmentSummary}` : null,
       `Assignment source: team **${assignmentSourceCounts.team}**, random **${assignmentSourceCounts.random}**, none **${assignmentSourceCounts.none}**`
     ].filter(Boolean).join('\n');
