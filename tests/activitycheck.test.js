@@ -122,6 +122,15 @@ function makeInteraction({ userId = 'owner-1', preview = false } = {}) {
 
   const guild = {
     id: 'guild-1',
+    channels: {
+      cache: new Collection([
+        [channel.id, channel]
+      ]),
+      fetch: jest.fn(async (id) => {
+        if (id === channel.id) return channel;
+        return null;
+      })
+    },
     roles: {
       cache: roleMap,
       fetch: jest.fn(async () => roleMap)
@@ -178,6 +187,21 @@ describe('activitycheck command', () => {
     expect(targetMember.roles.cache.has('inactive-eu')).toBe(true);
     expect(targetMember.roles.cache.has('region-eu')).toBe(true);
     expect(targetMember.roles.cache.has('react-fire')).toBe(true);
+    expect(interaction.editReply).toHaveBeenCalled();
+  });
+
+  test('accepts Discord message URL for messageid and resolves channel automatically', async () => {
+    const { interaction, targetMember } = makeInteraction({ userId: 'owner-1', preview: false });
+    interaction.options.getString = jest.fn(() => 'https://discord.com/channels/guild-1/channel-1/message-1');
+    interaction.options.getChannel = jest.fn(() => null);
+
+    await cmd.execute(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
+    expect(targetMember.roles.add).toHaveBeenCalledWith(
+      'inactive-eu',
+      expect.stringContaining('Activity check')
+    );
     expect(interaction.editReply).toHaveBeenCalled();
   });
 });

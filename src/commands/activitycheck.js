@@ -9,6 +9,7 @@ const { getStaffRoleIds } = require('../lib/permissions');
 const { replyError } = require('../lib/embeds');
 
 const FALLBACK_OWNER_ID = '1381692847018868778';
+const MESSAGE_LINK_REGEX = /^https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/([^/]+)\/([^/]+)\/([^/?#]+)(?:[/?#].*)?$/i;
 
 function toIdSet(values) {
   if (!Array.isArray(values)) return new Set();
@@ -164,6 +165,25 @@ function buildPreserveRoleSet() {
   return preserve;
 }
 
+function parseMessageReference(rawValue) {
+  const value = rawValue == null ? '' : String(rawValue).trim();
+  if (!value) return null;
+
+  const match = value.match(MESSAGE_LINK_REGEX);
+  if (!match) {
+    return {
+      messageId: value,
+      channelId: null,
+      guildId: null
+    };
+  }
+  return {
+    guildId: match[1] === '@me' ? null : match[1],
+    channelId: match[2],
+    messageId: match[3]
+  };
+}
+
 module.exports = {
   data: { name: 'activitycheck' },
   async execute(interaction) {
@@ -187,12 +207,24 @@ module.exports = {
       return replyError(interaction, 'Unsupported activitycheck action.');
     }
 
-    const messageId = interaction.options.getString('messageid', true);
+    const messageRefRaw = interaction.options.getString('messageid', true);
+    const messageRef = parseMessageReference(messageRefRaw);
+    if (!messageRef || !messageRef.messageId) {
+      return replyError(interaction, 'Provide a valid message ID or Discord message link.');
+    }
+    if (messageRef.guildId && String(messageRef.guildId) !== String(interaction.guild.id)) {
+      return replyError(interaction, 'That message link points to a different guild.');
+    }
+
     const selectedChannel = interaction.options.getChannel('channel', false);
     const preview = interaction.options.getBoolean('preview') || false;
     const limit = interaction.options.getInteger('limit') || 0;
 
-    const channel = selectedChannel || interaction.channel;
+    let channel = selectedChannel || interaction.channel;
+    if (!selectedChannel && messageRef.channelId) {
+      channel = interaction.guild.channels.cache.get(messageRef.channelId)
+        || await interaction.guild.channels.fetch(messageRef.channelId).catch(() => null);
+    }
     if (!channel || typeof channel.isTextBased !== 'function' || !channel.isTextBased()) {
       return replyError(interaction, 'The target channel must be text-based.');
     }
@@ -202,6 +234,7 @@ module.exports = {
 
     await interaction.deferReply({ flags: 64 });
 
+    const messageId = messageRef.messageId;
     const message = await channel.messages.fetch(messageId).catch(() => null);
     if (!message) {
       return interaction.editReply({ content: `Could not find message \`${messageId}\` in <#${channel.id}>.` });
