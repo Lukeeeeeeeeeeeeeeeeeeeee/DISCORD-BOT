@@ -17,33 +17,41 @@ const BASE_ROLES = {
 
 const PATH_BUCKETS = [
   {
-    key: 'onboarding',
+    tier: 'MOD',
+    priority: 1,
+    key: 'mod_region',
     roles: {
-      AIR: '1473726598300700796',
-      FIRE: '1473726606634909829',
-      WATER: '1473726616025694419'
+      FIRE: '1473773213463875654',
+      WATER: '1473773221273796618',
+      AIR: '1473773230564180001'
     },
-    isEligible: (member) => hasRole(member, BASE_ROLES.ROOKIE)
+    isEligible: (member) => hasRole(member, BASE_ROLES.MOD)
   },
   {
-    key: 'member',
+    tier: 'HELPER_PLUS',
+    priority: 2,
+    key: 'helper_plus_region',
     roles: {
-      AIR: '1473726626733756438',
-      FIRE: '1473726632769622173',
-      WATER: '1473726640939991261'
+      FIRE: '1473773139652775968',
+      AIR: '1473773194552021107',
+      WATER: '1473773203905314871'
     },
-    isEligible: (member) => hasRole(member, BASE_ROLES.MEMBER)
+    isEligible: (member) => hasRole(member, BASE_ROLES.HELPER_PLUS)
   },
   {
-    key: 'inactive',
+    tier: 'HELPER',
+    priority: 3,
+    key: 'helper_region',
     roles: {
-      AIR: '1473726648712036496',
-      FIRE: '1473726655565529259',
-      WATER: '1473726663329316946'
+      FIRE: '1473773076092027091',
+      AIR: '1473773084430307390',
+      WATER: '1473773094429655124'
     },
-    isEligible: (member, sourceRoleId) => hasRole(member, sourceRoleId)
+    isEligible: (member) => hasRole(member, BASE_ROLES.HELPER)
   },
   {
+    tier: 'RECRUITER',
+    priority: 4,
     key: 'recruiter_region',
     roles: {
       AIR: '1473726967277686854',
@@ -59,33 +67,41 @@ const PATH_BUCKETS = [
     )
   },
   {
-    key: 'helper_region',
+    tier: 'MEMBER',
+    priority: 5,
+    key: 'member',
     roles: {
-      FIRE: '1473773076092027091',
-      AIR: '1473773084430307390',
-      WATER: '1473773094429655124'
+      AIR: '1473726626733756438',
+      FIRE: '1473726632769622173',
+      WATER: '1473726640939991261'
     },
-    isEligible: (member) => hasRole(member, BASE_ROLES.HELPER)
+    isEligible: (member) => hasRole(member, BASE_ROLES.MEMBER)
   },
   {
-    key: 'helper_plus_region',
+    tier: 'ROOKIE',
+    priority: 6,
+    key: 'onboarding',
     roles: {
-      FIRE: '1473773139652775968',
-      AIR: '1473773194552021107',
-      WATER: '1473773203905314871'
+      AIR: '1473726598300700796',
+      FIRE: '1473726606634909829',
+      WATER: '1473726616025694419'
     },
-    isEligible: (member) => hasRole(member, BASE_ROLES.HELPER_PLUS)
+    isEligible: (member) => hasRole(member, BASE_ROLES.ROOKIE)
   },
   {
-    key: 'mod_region',
+    tier: 'INACTIVE',
+    priority: 7,
+    key: 'inactive',
     roles: {
-      FIRE: '1473773213463875654',
-      WATER: '1473773221273796618',
-      AIR: '1473773230564180001'
+      AIR: '1473726648712036496',
+      FIRE: '1473726655565529259',
+      WATER: '1473726663329316946'
     },
-    isEligible: (member) => hasRole(member, BASE_ROLES.MOD)
+    isEligible: (member, sourceRoleId) => hasRole(member, sourceRoleId)
   }
 ];
+
+const PATH_BUCKET_BY_KEY = Object.fromEntries(PATH_BUCKETS.map((bucket) => [bucket.key, bucket]));
 
 function hasRole(member, roleId) {
   return Boolean(member && member.roles && member.roles.cache && roleId && member.roles.cache.has(roleId));
@@ -118,7 +134,14 @@ function collectAllPathRoleIds() {
   return ids;
 }
 
-function inferExistingPath(member) {
+function getHighestEligibleBucket(member, sourceRoleId) {
+  for (const bucket of PATH_BUCKETS) {
+    if (bucket.isEligible(member, sourceRoleId)) return bucket;
+  }
+  return null;
+}
+
+function inferExistingPathAcrossAllBuckets(member) {
   const counts = {
     FIRE: 0,
     WATER: 0,
@@ -146,6 +169,17 @@ function inferExistingPath(member) {
     }
   }
   return tied[0];
+}
+
+function inferPathWithinBucket(member, bucket) {
+  if (!member || !bucket) return null;
+  const matches = PATH_KEYS.filter((pathKey) => {
+    const roleId = bucket.roles && bucket.roles[pathKey];
+    return roleId && hasRole(member, roleId);
+  });
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) return matches[0];
+  return inferExistingPathAcrossAllBuckets(member);
 }
 
 function shuffleInPlace(items) {
@@ -179,26 +213,19 @@ function memberDisplay(member) {
   return String(member.id);
 }
 
-function buildMemberRolePlan(member, assignedPath, sourceRoleId, removeSourceRole) {
+function buildMemberRolePlan(member, assignedBucket, assignedPath, sourceRoleId, removeSourceRole) {
   const addSet = new Set();
   const removeSet = new Set();
+  const assignedRoleId = assignedBucket && assignedBucket.roles ? assignedBucket.roles[assignedPath] : null;
 
   for (const bucket of PATH_BUCKETS) {
     const roleIds = PATH_KEYS.map((pathKey) => bucket.roles[pathKey]).filter(Boolean);
-    const eligible = bucket.isEligible(member, sourceRoleId);
-    if (eligible) {
-      const targetRoleId = bucket.roles[assignedPath];
-      if (targetRoleId && !hasRole(member, targetRoleId)) addSet.add(targetRoleId);
-      for (const roleId of roleIds) {
-        if (roleId !== targetRoleId && hasRole(member, roleId)) removeSet.add(roleId);
-      }
-    } else {
-      // Cleanup any stale path-role from buckets the member should not be in.
-      for (const roleId of roleIds) {
-        if (hasRole(member, roleId)) removeSet.add(roleId);
-      }
+    for (const roleId of roleIds) {
+      if (roleId === assignedRoleId) continue;
+      if (hasRole(member, roleId)) removeSet.add(roleId);
     }
   }
+  if (assignedRoleId && !hasRole(member, assignedRoleId)) addSet.add(assignedRoleId);
 
   if (removeSourceRole && hasRole(member, sourceRoleId)) {
     removeSet.add(sourceRoleId);
@@ -270,29 +297,46 @@ module.exports = {
       return interaction.editReply({ content: `No members found in source role <@&${sourceRoleId}>.` });
     }
 
-    const assignmentByMemberId = new Map();
-    const pathCounts = {
-      FIRE: 0,
-      WATER: 0,
-      AIR: 0
-    };
-
-    const unresolved = [];
+    const tierGroups = new Map();
+    const memberTierById = new Map();
     for (const member of members) {
-      const existingPath = inferExistingPath(member);
-      if (existingPath) {
-        assignmentByMemberId.set(member.id, existingPath);
-        pathCounts[existingPath] += 1;
-      } else {
-        unresolved.push(member);
-      }
+      const bucket = getHighestEligibleBucket(member, sourceRoleId);
+      if (!bucket) continue;
+      memberTierById.set(member.id, bucket.key);
+      if (!tierGroups.has(bucket.key)) tierGroups.set(bucket.key, []);
+      tierGroups.get(bucket.key).push(member);
     }
 
-    shuffleInPlace(unresolved);
-    for (const member of unresolved) {
-      const assigned = pickLeastUsedPath(pathCounts);
-      assignmentByMemberId.set(member.id, assigned);
-      pathCounts[assigned] += 1;
+    const assignmentByMemberId = new Map();
+    const pathCountsGlobal = { FIRE: 0, WATER: 0, AIR: 0 };
+    const pathCountsByTier = new Map();
+
+    for (const [tierKey, tierMembers] of tierGroups.entries()) {
+      const bucket = PATH_BUCKET_BY_KEY[tierKey];
+      if (!bucket) continue;
+
+      const tierPathCounts = { FIRE: 0, WATER: 0, AIR: 0 };
+      pathCountsByTier.set(tierKey, tierPathCounts);
+
+      const unresolved = [];
+      for (const member of tierMembers) {
+        const existingPath = inferPathWithinBucket(member, bucket);
+        if (existingPath) {
+          assignmentByMemberId.set(member.id, { bucketKey: tierKey, path: existingPath });
+          tierPathCounts[existingPath] += 1;
+          pathCountsGlobal[existingPath] += 1;
+        } else {
+          unresolved.push(member);
+        }
+      }
+
+      shuffleInPlace(unresolved);
+      for (const member of unresolved) {
+        const assignedPath = pickLeastUsedPath(tierPathCounts);
+        assignmentByMemberId.set(member.id, { bucketKey: tierKey, path: assignedPath });
+        tierPathCounts[assignedPath] += 1;
+        pathCountsGlobal[assignedPath] += 1;
+      }
     }
 
     let changedMembers = 0;
@@ -303,8 +347,11 @@ module.exports = {
 
     const failures = [];
     for (const member of members) {
-      const assignedPath = assignmentByMemberId.get(member.id);
-      const plan = buildMemberRolePlan(member, assignedPath, sourceRoleId, removeSourceRole);
+      const assignment = assignmentByMemberId.get(member.id);
+      if (!assignment) continue;
+      const assignedBucket = PATH_BUCKET_BY_KEY[assignment.bucketKey];
+      const assignedPath = assignment.path;
+      const plan = buildMemberRolePlan(member, assignedBucket, assignedPath, sourceRoleId, removeSourceRole);
       addCount += plan.addRoleIds.length;
       removeCount += plan.removeRoleIds.length;
       if (plan.removeRoleIds.includes(sourceRoleId)) removedSourceCount += 1;
@@ -317,16 +364,18 @@ module.exports = {
 
       try {
         if (plan.addRoleIds.length) {
-          await member.roles.add(plan.addRoleIds, `One-time path balance (${assignedPath})`);
+          await member.roles.add(plan.addRoleIds, `One-time path balance (${assignedBucket ? assignedBucket.tier : 'UNKNOWN'}:${assignedPath})`);
         }
         if (plan.removeRoleIds.length) {
-          await member.roles.remove(plan.removeRoleIds, `One-time path balance (${assignedPath})`);
+          await member.roles.remove(plan.removeRoleIds, `One-time path balance (${assignedBucket ? assignedBucket.tier : 'UNKNOWN'}:${assignedPath})`);
         }
       } catch (error) {
         failed += 1;
         failures.push({
           memberId: member.id,
           member: memberDisplay(member),
+          tier: assignedBucket ? assignedBucket.tier : 'UNKNOWN',
+          path: assignedPath,
           error: String(error && error.message ? error.message : error)
         });
       }
@@ -343,12 +392,23 @@ module.exports = {
       }
     }
 
+    const tierSummary = PATH_BUCKETS
+      .map((bucket) => {
+        const tierMembers = tierGroups.get(bucket.key) || [];
+        if (!tierMembers.length) return null;
+        const c = pathCountsByTier.get(bucket.key) || { FIRE: 0, WATER: 0, AIR: 0 };
+        return `${bucket.tier}: **${tierMembers.length}** (F:${c.FIRE} W:${c.WATER} A:${c.AIR})`;
+      })
+      .filter(Boolean)
+      .join(' | ');
+
     const lines = [
       `**${preview ? 'Preview' : 'Done'}: Path Balance**`,
       `Source role: <@&${sourceRoleId}>`,
       `Processed members: **${members.length}**`,
       limit > 0 ? `Limit: **${limit}**` : null,
-      `Assigned paths: FIRE **${pathCounts.FIRE}**, WATER **${pathCounts.WATER}**, AIR **${pathCounts.AIR}**`,
+      `Assigned paths (global): FIRE **${pathCountsGlobal.FIRE}**, WATER **${pathCountsGlobal.WATER}**, AIR **${pathCountsGlobal.AIR}**`,
+      tierSummary ? `Tier distribution: ${tierSummary}` : null,
       `Members with role changes: **${changedMembers}**`,
       `Role adds: **${addCount}**`,
       `Role removals: **${removeCount}**`,
@@ -362,7 +422,7 @@ module.exports = {
 
     if (failures.length) {
       const sample = failures.slice(0, 10)
-        .map((item) => `- ${item.member}: ${item.error}`)
+        .map((item) => `- ${item.member} [${item.tier}/${item.path}]: ${item.error}`)
         .join('\n');
       lines.push(`Failure sample:\n${sample}`);
     }
@@ -370,4 +430,3 @@ module.exports = {
     return interaction.editReply({ content: lines.join('\n') });
   }
 };
-

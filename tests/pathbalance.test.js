@@ -143,7 +143,7 @@ describe('pathbalance command', () => {
 
     expect(ctx.interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining('Assigned paths: FIRE **2**, WATER **2**, AIR **2**')
+        content: expect.stringContaining('Assigned paths (global): FIRE **2**, WATER **2**, AIR **2**')
       })
     );
   });
@@ -183,5 +183,53 @@ describe('pathbalance command', () => {
     );
     expect(ctx.sourceRole.delete).toHaveBeenCalled();
   });
-});
 
+  test('uses highest tier only and strips lower-tier/inactive path roles', async () => {
+    const ctx = makeInteraction({
+      members: [makeMember(
+        'mixed1',
+        [
+          '1463200689252597770',
+          '1412808626099323004', // HELPER+ (highest for this user)
+          '1473726640939991261', // member WATER (lower tier, should be removed)
+          '1473726655565529259', // inactive FIRE (lower tier, should be removed)
+          '1473773076092027091' // helper FIRE (lower than helper+)
+        ],
+        new Collection()
+      )],
+      preview: false,
+      confirm: 'CONFIRM'
+    });
+
+    const member = makeMember(
+      'mixed1',
+      [
+        '1463200689252597770',
+        '1412808626099323004',
+        '1473726640939991261',
+        '1473726655565529259',
+        '1473773076092027091'
+      ],
+      ctx.roleMap
+    );
+    ctx.sourceRole.members.clear();
+    ctx.sourceRole.members.set(member.id, member);
+
+    await command.execute(ctx.interaction);
+
+    // Existing FIRE path hint should be preserved, but only in highest HELPER+ bucket.
+    expect(member.roles.add).toHaveBeenCalledWith(
+      expect.arrayContaining(['1473773139652775968']),
+      expect.stringContaining('One-time path balance')
+    );
+    expect(member.roles.remove).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        '1473726640939991261',
+        '1473726655565529259',
+        '1473773076092027091',
+        '1463200689252597770'
+      ]),
+      expect.stringContaining('One-time path balance')
+    );
+  });
+});
