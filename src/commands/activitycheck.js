@@ -10,6 +10,8 @@ const { replyError } = require('../lib/embeds');
 
 const FALLBACK_OWNER_ID = '1381692847018868778';
 const MESSAGE_LINK_REGEX = /^https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/([^/]+)\/([^/]+)\/([^/?#]+)(?:[/?#].*)?$/i;
+const REACTION_FETCH_PAGE_SIZE = 100;
+const REACTION_FETCH_MAX_PAGES = Number.parseInt(process.env.ACTIVITY_CHECK_REACTION_FETCH_MAX_PAGES || '50', 10);
 
 function toIdSet(values) {
   if (!Array.isArray(values)) return new Set();
@@ -114,11 +116,25 @@ async function getReactedUserIds(message) {
 
   for (const reaction of message.reactions.cache.values()) {
     if (!reaction || !reaction.users || typeof reaction.users.fetch !== 'function') continue;
-    const users = await reaction.users.fetch().catch(() => null);
-    if (!users || typeof users.values !== 'function') continue;
-    for (const user of users.values()) {
-      if (!user || user.bot) continue;
-      reacted.add(String(user.id));
+
+    let pageCount = 0;
+    let after = null;
+    while (pageCount < REACTION_FETCH_MAX_PAGES) {
+      const fetchOptions = { limit: REACTION_FETCH_PAGE_SIZE };
+      if (after) fetchOptions.after = after;
+      const users = await reaction.users.fetch(fetchOptions).catch(() => null);
+      if (!users || typeof users.values !== 'function' || users.size === 0) break;
+
+      for (const user of users.values()) {
+        if (!user || user.bot) continue;
+        reacted.add(String(user.id));
+      }
+
+      const keys = typeof users.keys === 'function' ? Array.from(users.keys()) : [];
+      const lastId = keys.length ? String(keys[keys.length - 1]) : null;
+      if (!lastId || users.size < REACTION_FETCH_PAGE_SIZE || lastId === after) break;
+      after = lastId;
+      pageCount += 1;
     }
   }
 

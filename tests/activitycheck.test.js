@@ -204,4 +204,42 @@ describe('activitycheck command', () => {
     );
     expect(interaction.editReply).toHaveBeenCalled();
   });
+
+  test('counts reacted users across paginated reaction user fetches', async () => {
+    const { interaction } = makeInteraction({ userId: 'owner-1', preview: true });
+
+    const page1 = new Collection();
+    for (let i = 1; i <= 100; i += 1) {
+      page1.set(`u${i}`, { id: `u${i}`, bot: false });
+    }
+    const page2 = new Collection();
+    for (let i = 101; i <= 185; i += 1) {
+      page2.set(`u${i}`, { id: `u${i}`, bot: false });
+    }
+
+    const fetchUsers = jest.fn(async (opts = {}) => {
+      if (!opts.after) return page1;
+      return page2;
+    });
+
+    const pagedMessage = {
+      id: 'message-1',
+      reactions: {
+        cache: new Collection([
+          ['emoji', { users: { fetch: fetchUsers } }]
+        ])
+      }
+    };
+
+    interaction.channel.messages.fetch = jest.fn(async () => pagedMessage);
+
+    await cmd.execute(interaction);
+
+    expect(fetchUsers).toHaveBeenCalledTimes(2);
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('Reacted users: **185**')
+      })
+    );
+  });
 });
