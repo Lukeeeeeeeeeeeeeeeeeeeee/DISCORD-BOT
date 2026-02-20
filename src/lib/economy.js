@@ -13,10 +13,13 @@ const ECONOMY_CONFIG = {
     CUSTOM: 50
   },
   MULTIPLIERS: {
-    'm1.15_14d': { value: 1.15, cost: 10, days: 14 },
-    'm1.25_14d': { value: 1.25, cost: 15, days: 14 },
-    'm1.5_7d': { value: 1.5, cost: 15, days: 7 },
-    'm2.0_7d': { value: 2.0, cost: 25, days: 7 }
+    'm1.5_7d': { value: 1.5, cost: 2, days: 7 },
+    'm1.75_7d': { value: 1.75, cost: 3, days: 7 },
+    'm2.0_7d': { value: 2.0, cost: 4, days: 7 },
+    'm2.5_7d': { value: 2.5, cost: 6, days: 7 },
+    'm1.5_14d': { value: 1.5, cost: 4, days: 14 },
+    'm1.75_14d': { value: 1.75, cost: 6, days: 14 },
+    'm2.0_14d': { value: 2.0, cost: 8, days: 14 }
   },
   STRENGTH_ALPHA: 0.18,
   STRENGTH_MIN: 1.0,
@@ -206,6 +209,61 @@ async function applyMultiplier(db, recruiterId, multiplierKey, opts = {}) {
   return cfg;
 } 
 
+async function applyCustomMultiplier(db, recruiterId, customConfig = {}, opts = {}) {
+  const value = Number(customConfig && customConfig.value);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error('Invalid custom multiplier value');
+  }
+
+  const now = Date.now();
+  const typeRaw = customConfig && customConfig.type ? String(customConfig.type).trim() : '';
+  const type = typeRaw || `event_x${formatPointsValue(value)}`;
+
+  let expiresAt = Number(customConfig && customConfig.expiresAt);
+  const days = Number(customConfig && customConfig.days);
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+    if (Number.isFinite(days) && days > 0) {
+      expiresAt = now + (days * 24 * 60 * 60 * 1000);
+    }
+  }
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+    throw new Error('Invalid custom multiplier expiry');
+  }
+
+  const guildId = resolveGuildId(opts.guild || opts.guildId);
+  try {
+    await db.run(
+      'INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      guildId,
+      recruiterId,
+      value,
+      type,
+      now,
+      Math.floor(expiresAt)
+    );
+  } catch (e) {
+    if (!isMissingGuildColumn(e)) {
+      logUnexpectedError('economy.applyCustomMultiplier', e, { recruiterId, type, value });
+      throw e;
+    }
+    await db.run(
+      'INSERT INTO multipliers (recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+      recruiterId,
+      value,
+      type,
+      now,
+      Math.floor(expiresAt)
+    );
+  }
+
+  return {
+    value,
+    type,
+    expiresAt: Math.floor(expiresAt),
+    days: Number.isFinite(days) && days > 0 ? days : null
+  };
+}
+
 async function resetMultipliers(db, recruiterId, opts = {}) {
   if (!db) return;
   const guildId = resolveGuildId(opts.guild || opts.guildId);
@@ -305,6 +363,7 @@ module.exports = {
   formatPointsValue,
   getActiveMultiplier,
   applyMultiplier,
+  applyCustomMultiplier,
   resetMultipliers,
   computeRetentionFromGuild
 };

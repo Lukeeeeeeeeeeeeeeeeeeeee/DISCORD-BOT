@@ -221,7 +221,7 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ embeds: [embed], flags: 64 });
       }
     } catch (err2) {
-      // If the interaction is expired, Discord returns code 10062 â€” ignore silently
+      // If the interaction is expired, Discord returns code 10062 - ignore silently
       if (isInteractionAckError(err2)) return;
       // otherwise log
       console.error('Failed to send error response for interaction:', err2);
@@ -591,7 +591,7 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     process.exit(1);
   }
   if (token.length < 40) {
-    console.error('FATAL: DISCORD_TOKEN appears too short â€” ensure you pasted the full bot token with no quotes or trailing spaces.');
+    console.error('FATAL: DISCORD_TOKEN appears too short - ensure you pasted the full bot token with no quotes or trailing spaces.');
     process.exit(1);
   }
 

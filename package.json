@@ -51,6 +51,9 @@
   "jest": {
     "setupFiles": [
       "<rootDir>/tests/setup-env.js"
+    ],
+    "testPathIgnorePatterns": [
+      "<rootDir>/DISCORD-BOT/"
     ]
   }
 }

@@ -262,7 +262,7 @@ describe('/recruit command', () => {
     const now = Date.now();
     await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, ?, 1, ?)', 'GLOBAL', 'R1', 'u10', 'EU', 'p1', now - (2 * 24 * 60 * 60 * 1000), 25);
     await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, ?, 1, ?)', 'GLOBAL', 'R1', 'u11', 'EU', 'p2', now - (10 * 24 * 60 * 60 * 1000), 25);
-    await db.run('INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'R1', 1.25, 'm1.25_14d', now - 1000, now + (14 * 24 * 60 * 60 * 1000));
+    await db.run('INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'R1', 1.75, 'm1.75_14d', now - 1000, now + (14 * 24 * 60 * 60 * 1000));
     await db.run('INSERT INTO purchases (guild_id, recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?, ?)', 'GLOBAL', 'R1', 'custom-role', 50, now - 2000);
 
     // Mock retention scan to return 0.75

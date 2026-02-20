@@ -34,6 +34,13 @@ const commands = [
     .addSubcommand(s => s.setName('multiplier-apply').setDescription('Admin: apply a multiplier')
       .addUserOption(o => o.setName('member').setDescription('Recruiter to apply').setRequired(true))
       .addStringOption(o => o.setName('item').setDescription('Multiplier key').setRequired(true)))
+    .addSubcommand(s => s.setName('multiplier-event').setDescription('Admin: create a custom event multiplier')
+      .addUserOption(o => o.setName('member').setDescription('Recruiter to apply this event multiplier to').setRequired(true))
+      .addNumberOption(o => o.setName('value').setDescription('Multiplier value (example: 1.75)').setRequired(true).setMinValue(1.0).setMaxValue(10.0))
+      .addNumberOption(o => o.setName('cost').setDescription('Point cost charged to that recruiter').setRequired(true).setMinValue(0).setMaxValue(1000))
+      .addIntegerOption(o => o.setName('duration_days').setDescription('Duration in days (optional if expiry_date is set)').setRequired(false).setMinValue(1).setMaxValue(365))
+      .addStringOption(o => o.setName('expiry_date').setDescription('Exact expiry date in YYYY-MM-DD (optional)').setRequired(false))
+      .addStringOption(o => o.setName('label').setDescription('Optional event label (for tracking/reporting)').setRequired(false)))
     .addSubcommand(s => s.setName('multiplier-reset').setDescription('Admin: reset a multiplier')
       .addUserOption(o => o.setName('member').setDescription('Recruiter to reset').setRequired(true)))
     .addSubcommand(s => s.setName('warn').setDescription('Admin: issue a warning to a recruiter').addUserOption(o => o.setName('member').setDescription('Recruiter to warn').setRequired(true)).addStringOption(o => o.setName('note').setDescription('Warning note (optional)')).addIntegerOption(o => o.setName('expires_days').setDescription('Expire after N days (optional, admin only)').setRequired(false)))
@@ -145,11 +152,11 @@ const commands = [
 async function registerCommands({ guildId = null, global = false } = {}) {
   const rawToken = process.env.DISCORD_TOKEN;
   const token = rawToken ? rawToken.trim().replace(/^"(.+)"$/, '$1') : null;
-  if (!token) throw new Error('DISCORD_TOKEN missing — cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
+  if (!token) throw new Error('DISCORD_TOKEN missing - cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
 
   const rest = new REST({ version: '10' }).setToken(token);
   const clientId = process.env.CLIENT_ID;
-  if (!clientId) throw new Error('CLIENT_ID missing — set CLIENT_ID in .env');
+  if (!clientId) throw new Error('CLIENT_ID missing - set CLIENT_ID in .env');
 
   console.log('Started refreshing application (/) commands.');
   if (global) {
@@ -186,11 +193,11 @@ if (require.main === module) {
       await registerCommands({ guildId, global: useGlobal });
     } catch (error) {
       if (error && error.message && error.message.includes('DISCORD_TOKEN missing')) {
-        console.error('DISCORD_TOKEN missing — cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
+        console.error('DISCORD_TOKEN missing - cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
         process.exit(1);
       }
       if (error && error.message && error.message.includes('CLIENT_ID missing')) {
-        console.error('CLIENT_ID missing — set CLIENT_ID in .env and try again.');
+        console.error('CLIENT_ID missing - set CLIENT_ID in .env and try again.');
         process.exit(1);
       }
       if (error && error.code === 'TokenInvalid') {

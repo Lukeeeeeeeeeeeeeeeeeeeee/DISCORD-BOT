@@ -117,6 +117,39 @@ async function computeRetentionCounts({ db, guild, recruiterId, cohortStartMs, c
     return { cohortSize, retained: members.size, sampled };
 }
 
+function parseExpiryDateToUtcMs(rawDate) {
+    if (!rawDate) return null;
+    const value = String(rawDate).trim();
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const utcMs = Date.UTC(year, month - 1, day, 23, 59, 59, 999);
+    return Number.isFinite(utcMs) ? utcMs : null;
+}
+
+function buildEventMultiplierType({ label, value, durationDays, expiresAt }) {
+    const normalizedLabel = label == null
+        ? ''
+        : String(label)
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]+/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+|_+$/g, '');
+    if (normalizedLabel) return `event_${normalizedLabel}`.slice(0, 80);
+
+    const valuePart = String(formatPointsValue(value)).replace('.', '_');
+    if (Number.isFinite(durationDays) && durationDays > 0) {
+        return `event_x${valuePart}_${Math.floor(durationDays)}d`;
+    }
+    const isoDate = new Date(expiresAt).toISOString().slice(0, 10);
+    return `event_x${valuePart}_${isoDate}`;
+}
+
 module.exports = {
     data: { name: 'recruiter' },
     async execute(interaction) {
@@ -131,7 +164,7 @@ module.exports = {
                     .setTitle('Available Multipliers')
                     .setDescription(
                         Object.entries(ECONOMY_CONFIG.MULTIPLIERS)
-                            .map(([k, v]) => `**${k}** — ×${v.value} for ${v.days}d — **${formatPointsValue(v.cost)}** pts`)
+                            .map(([k, v]) => `**${k}** - x${v.value} for ${v.days}d - **${formatPointsValue(v.cost)}** pts`)
                             .join('\n') || 'None available'
                     )
                     .setColor(0x00AAFF)
@@ -158,7 +191,7 @@ module.exports = {
 
                 const embed = new EmbedBuilder()
                     .setTitle(clampText(`Multiplier for ${target.tag}`, 256))
-                    .setDescription(active && active.type ? `Active: **${active.type}** — ×${active.value}` : 'No active multiplier.')
+                    .setDescription(active && active.type ? `Active: **${active.type}** - x${active.value}` : 'No active multiplier.')
                     .setColor(0x00AAFF)
                     .setTimestamp();
 
@@ -188,7 +221,7 @@ module.exports = {
                     embed.setDescription(
                         rows
                             .slice(0, 25)
-                            .map(r => `<@${r.recruiter_id}> — **${r.type || 'unknown'}** ×${r.value} (exp ${formatDiscordTimestamp(r.expires_at, 'R')})`)
+                            .map(r => `<@${r.recruiter_id}> - **${r.type || 'unknown'}** x${r.value} (exp ${formatDiscordTimestamp(r.expires_at, 'R')})`)
                             .join('\n')
                     );
                 }
@@ -254,6 +287,99 @@ module.exports = {
                 console.error('Failed to apply multiplier', e);
                 return replyError(interaction, 'Failed to apply multiplier.');
             }
+        }
+
+        if (sub === 'multiplier-event') {
+            if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin/Staff only.');
+
+            const target = interaction.options.getUser('member');
+            const value = interaction.options.getNumber('value');
+            const cost = interaction.options.getNumber('cost');
+            const durationDays = interaction.options.getInteger('duration_days');
+            const expiryDateRaw = interaction.options.getString('expiry_date');
+            const label = interaction.options.getString('label');
+
+            if (!target || !Number.isFinite(value) || value <= 0) {
+                return replyError(interaction, 'Missing target or invalid multiplier value.');
+            }
+            if (!Number.isFinite(cost) || cost < 0) {
+                return replyError(interaction, 'Invalid cost value.');
+            }
+
+            const now = Date.now();
+            let expiresAt = parseExpiryDateToUtcMs(expiryDateRaw);
+            if (!expiresAt && Number.isFinite(durationDays) && durationDays > 0) {
+                expiresAt = now + (durationDays * 24 * 60 * 60 * 1000);
+            }
+            if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+                return replyError(interaction, 'Set a future expiry via duration_days or expiry_date (YYYY-MM-DD).');
+            }
+
+            const type = buildEventMultiplierType({
+                label,
+                value,
+                durationDays,
+                expiresAt
+            });
+
+            try {
+                const { applyCustomMultiplier } = require('../../lib/economy');
+                await db.run('BEGIN TRANSACTION');
+                try {
+                    if (cost > 0) {
+                        await db.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)', guildId, target.id);
+                        await db.run('UPDATE recruiters SET points = points - ? WHERE guild_id = ? AND id = ? AND points >= ?', cost, guildId, target.id, cost);
+                        const updated = await db.get('SELECT changes() AS c');
+                        if (!updated || Number(updated.c || 0) === 0) {
+                            throw new Error('INSUFFICIENT_POINTS');
+                        }
+                        await db.run(
+                            'INSERT INTO purchases (guild_id, recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?, ?)',
+                            guildId,
+                            target.id,
+                            `event:${type}`,
+                            cost,
+                            Date.now()
+                        );
+                    }
+
+                    await applyCustomMultiplier(
+                        db,
+                        target.id,
+                        {
+                            value,
+                            type,
+                            expiresAt,
+                            days: Number.isFinite(durationDays) ? durationDays : null
+                        },
+                        { guildId }
+                    );
+                    await db.run('COMMIT');
+                } catch (e) {
+                    await db.run('ROLLBACK');
+                    throw e;
+                }
+            } catch (e) {
+                if (String((e && e.message) || '') === 'INSUFFICIENT_POINTS') {
+                    return replyError(interaction, `Target user does not have enough points for cost ${formatPointsValue(cost)}.`);
+                }
+                console.error('Failed to create event multiplier', e);
+                return replyError(interaction, 'Failed to create event multiplier.');
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('Event Multiplier Created')
+                .addFields(
+                    { name: 'Target', value: `<@${target.id}>`, inline: true },
+                    { name: 'Value', value: `x${formatPointsValue(value)}`, inline: true },
+                    { name: 'Cost', value: `${formatPointsValue(cost)} pts`, inline: true },
+                    { name: 'Expires', value: formatDiscordTimestamp(expiresAt, 'F'), inline: false },
+                    { name: 'Type', value: type, inline: false }
+                )
+                .setColor(0x00AAFF)
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [embed] });
         }
 
         if (sub === 'multiplier-reset') {
@@ -416,7 +542,7 @@ module.exports = {
             if (!Number.isFinite(minReq)) minReq = 2;
 
             const recentText = recruits.length
-                ? recruits.map(r => `<@${r.recruited_id}> (${formatDiscordTimestamp(r.created_at, 'R')}) — ${formatPointsValue(r.points || 0)} pts`).join('\n')
+                ? recruits.map(r => `<@${r.recruited_id}> (${formatDiscordTimestamp(r.created_at, 'R')}) - ${formatPointsValue(r.points || 0)} pts`).join('\n')
                 : 'None';
 
             const pointsValue = (member.id === TESTING_USER_ID)
@@ -443,7 +569,7 @@ module.exports = {
                 .setTitle(clampText(`Recruiter: ${member.tag}`, 256))
                 .addFields(
                     { name: 'Points', value: `${pointsValue}`, inline: true },
-                    { name: 'Active Multiplier', value: mul && mul.type ? `${mul.type} — ×${mul.value}` : 'None', inline: true },
+                    { name: 'Active Multiplier', value: mul && mul.type ? `${mul.type} - x${mul.value}` : 'None', inline: true },
                     { name: 'Total recruits (all time)', value: `${totalAll}`, inline: true },
                     { name: 'Recruits (7 days)', value: `${stats7d.recruits7d}`, inline: true },
                     { name: 'Verify rate (7d)', value: formatPct(stats7d.verifyRate), inline: true },
@@ -529,7 +655,7 @@ module.exports = {
                 embed.addFields({
                     name: `Longest retained recruits (top ${topRetained.length})`,
                     value: topRetained
-                        .map(r => `<@${r.recruitedId}> — ${r.days}d (recruited <t:${toUnixSeconds(r.createdAt)}:R>)`)
+                        .map(r => `<@${r.recruitedId}> - ${r.days}d (recruited <t:${toUnixSeconds(r.createdAt)}:R>)`)
                         .join('\n'),
                     inline: false
                 });
@@ -539,30 +665,30 @@ module.exports = {
             if (purchases.length) {
                 embed.addFields({
                     name: 'Recent purchases',
-                    value: sanitizeForEmbed(purchases.map(p => `${p.item} — ${formatPointsValue(p.cost)} pts`).join('\n'))
+                    value: sanitizeForEmbed(purchases.map(p => `${p.item} - ${formatPointsValue(p.cost)} pts`).join('\n'))
                 });
             }
             if (multipliers.length) {
                 embed.addFields({
                     name: 'Multipliers (recent)',
-                    value: sanitizeForEmbed(multipliers.slice(0, 3).map(m => `${m.type} — ×${m.value} (exp ${formatDiscordTimestamp(m.expires_at, 'R')})`).join('\n'))
+                    value: sanitizeForEmbed(multipliers.slice(0, 3).map(m => `${m.type} - x${m.value} (exp ${formatDiscordTimestamp(m.expires_at, 'R')})`).join('\n'))
                 });
             }
             if (recentFlags.length) {
                 embed.addFields({
                     name: 'Recent flags',
-                    value: sanitizeForEmbed(recentFlags.map(f => `${formatDiscordTimestamp(f.created_at, 'R')} — ${f.reason}`).join('\n'))
+                    value: sanitizeForEmbed(recentFlags.map(f => `${formatDiscordTimestamp(f.created_at, 'R')} - ${f.reason}`).join('\n'))
                 });
             }
             if (recentWarnings.length) {
                 embed.addFields({
                     name: 'Recent warnings',
-                    value: sanitizeForEmbed(recentWarnings.map(w => `${formatDiscordTimestamp(w.created_at, 'R')} — ${w.note || ''}`).join('\n'))
+                    value: sanitizeForEmbed(recentWarnings.map(w => `${formatDiscordTimestamp(w.created_at, 'R')} - ${w.note || ''}`).join('\n'))
                 });
             }
 
             // Additional info footnote
-            embed.setFooter({ text: `7-Day Retention: ${Math.round(stats7d.retention * 100)}% • Last recruit: ${lastTs ? formatUtcDate(lastTs) : 'Never'}` });
+            embed.setFooter({ text: `7-Day Retention: ${Math.round(stats7d.retention * 100)}% - Last recruit: ${lastTs ? formatUtcDate(lastTs) : 'Never'}` });
 
             return respond({ embeds: [embed] });
         }
@@ -642,10 +768,10 @@ module.exports = {
                 const econ = require('../../lib/economy');
                 const { ECONOMY_CONFIG } = econ;
                 const multiplierItems = Object.entries(ECONOMY_CONFIG.MULTIPLIERS)
-                    .map(([k, v]) => `**${k}** — ×${v.value} for ${v.days}d — **${formatPointsValue(v.cost)}** pts`)
+                    .map(([k, v]) => `**${k}** - x${v.value} for ${v.days}d - **${formatPointsValue(v.cost)}** pts`)
                     .join('\n');
                 const purchaseItems = Object.entries(PURCHASE_ITEMS)
-                    .map(([k, c]) => `**${k}** — **${formatPointsValue(c)}** pts`)
+                    .map(([k, c]) => `**${k}** - **${formatPointsValue(c)}** pts`)
                     .join('\n');
                 const embed = new EmbedBuilder()
                     .setTitle('?? Available Items')
@@ -882,3 +1008,4 @@ module.exports = {
 
     }
 };
+
