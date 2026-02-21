@@ -7,7 +7,6 @@ function createGuildMemberAddHandler({
   trackInviteUsage,
   db
 } = {}) {
-  const { buildJoinWelcomeMessage } = require('../lib/join-welcome');
   return async function onGuildMemberAdd(member) {
     if (!isSystemsReady || !isSystemsReady()) return;
     try {
@@ -18,19 +17,6 @@ function createGuildMemberAddHandler({
       });
     } catch (e) {
       console.error('Failed to record join analytics:', e);
-    }
-
-    try {
-      if (member && member.user && !member.user.bot) {
-        await member.send({
-          content: buildJoinWelcomeMessage(),
-          allowedMentions: { parse: [] }
-        }).catch((err) => {
-          console.error('Failed to DM join welcome message:', err);
-        });
-      }
-    } catch (e) {
-      console.error('Failed to send join welcome DM:', e);
     }
 
     try {

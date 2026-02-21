@@ -156,8 +156,12 @@ describe('/recruit command', () => {
     const recPoints = rec.points || 0;
     expect(recruiterRow.points).toBe(recPoints);
 
-    // Recruit command no longer DMs directly (welcome DM is now sent on guildMemberAdd)
-    expect(guildMember.send).not.toHaveBeenCalled();
+    // Welcome DM should be sent once recruit completes, with resolved team name
+    expect(guildMember.send).toHaveBeenCalled();
+    const dmArg = guildMember.send.mock.calls[0][0];
+    const dmContent = typeof dmArg === 'string' ? dmArg : dmArg.content;
+    expect(dmContent).toContain('**Fire**');
+    expect(dmContent).not.toContain('[team]');
 
     // channels should NOT have a per-recruit send (leaderboards are updated via upsert)
     const chOverall = channelsCache.get(require('../src/constants').CHANNELS.INVITES_OVERALL);

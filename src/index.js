@@ -14,7 +14,6 @@ const runtime = require('./lib/runtime');
 const { logUnexpectedError, logRuntimeEvent, getCommandCategory, getInteractionMeta } = require('./lib/logger');
 const { preloadLocales } = require('./lib/i18n');
 const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
-const { buildJoinWelcomeMessage } = require('./lib/join-welcome');
 const { startHealthServer } = require('./lib/health-server');
 const { loadCommandsIntoCollection } = require('./lib/command-loader');
 
@@ -328,19 +327,6 @@ client.on('guildMemberAdd', async (member) => {
     await analytics.recordJoin({ guildId: member.guild.id, userId: member.id, joinedAt: member.joinedAt ? member.joinedAt.getTime() : Date.now() });
   } catch (e) {
     console.error('Failed to record join analytics:', e);
-  }
-
-  try {
-    if (member && member.user && !member.user.bot) {
-      await member.send({
-        content: buildJoinWelcomeMessage(),
-        allowedMentions: { parse: [] }
-      }).catch((err) => {
-        console.error('Failed to DM join welcome message:', err);
-      });
-    }
-  } catch (e) {
-    console.error('Failed to send join welcome DM:', e);
   }
 
   try {

@@ -1,4 +1,4 @@
-const JOIN_WELCOME_MESSAGE = `**Welcome to REVOL!** You've been recruited in **[team]**. Put **REVOL** at the top of your server list and keep it unmuted (see README).
+const RECRUIT_WELCOME_MESSAGE = `**Welcome to REVOL!** You've been recruited in **[team]**. Put **REVOL** at the top of your server list and keep it unmuted (see README).
 
 **ROOKIE INFO**
 You start as **Rookie**. Earn **Member** for full access by collecting **10 points**.
@@ -16,10 +16,11 @@ Any questions? Ask in the **Questions** channel or the person who recruited you 
 
 Good luck and welcome to REVOL!`;
 
-function buildJoinWelcomeMessage() {
-  return JOIN_WELCOME_MESSAGE;
+function buildRecruitWelcomeMessage(teamName) {
+  const safeTeam = teamName == null ? 'Unknown' : String(teamName).trim();
+  return RECRUIT_WELCOME_MESSAGE.replace('[team]', safeTeam || 'Unknown');
 }
 
 module.exports = {
-  buildJoinWelcomeMessage
+  buildRecruitWelcomeMessage
 };

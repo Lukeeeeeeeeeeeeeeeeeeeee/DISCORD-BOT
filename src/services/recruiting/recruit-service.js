@@ -9,6 +9,7 @@ const { PermissionsBitField } = require('discord.js');
 const { getRegionInfo, getTeamLabel } = require('../../lib/regions');
 const { replyError } = require('../../lib/embeds');
 const defaultDb = require('../../db_async');
+const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
@@ -616,6 +617,17 @@ async function execute(interaction, _client, dbHandle = null) {
         }
       } catch (e) {
         console.error('Failed updating leaderboards:', e);
+      }
+
+      try {
+        await recruitedGuildMember.send({
+          content: buildRecruitWelcomeMessage(teamName),
+          allowedMentions: { parse: [] }
+        }).catch((err) => {
+          console.error('Failed to DM rookie welcome message:', err);
+        });
+      } catch (e) {
+        void e;
       }
 
       return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.` });
