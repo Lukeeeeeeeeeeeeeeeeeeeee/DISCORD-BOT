@@ -61,6 +61,18 @@ module.exports = {
 
         const recruiterRoleId = RECRUITER_ROLE_IDS[region];
         const recruiterRole = recruiterRoleId ? interaction.guild.roles.cache.get(recruiterRoleId) : null;
+        if (!recruiterRoleId && dbIds.length === 0) {
+          return replyError(
+            interaction,
+            `Recruiter role for ${region} is not configured. Set RECRUITER_ROLE_IDS.${region}.`
+          );
+        }
+        if (recruiterRoleId && !recruiterRole && dbIds.length === 0) {
+          return replyError(
+            interaction,
+            `Configured recruiter role for ${region} was not found in this server. Check RECRUITER_ROLE_IDS.${region}.`
+          );
+        }
         const allRecruiterIds = new Set();
         const roleMembers = recruiterRole && recruiterRole.members ? recruiterRole.members : null;
         const totalRoleMembers = roleMembers ? roleMembers.size : 0;
@@ -196,6 +208,9 @@ module.exports = {
       } catch (e) {
         console.error('Failed to load recruiter IDs for leaderboard', e);
       }
+      if (recruiterRoleIds.length === 0 && dbIds.length === 0) {
+        return replyError(interaction, 'No recruiter roles are configured. Set RECRUITER_ROLE_IDS for EU/NA/AS.');
+      }
       if (totalRoleMembers === 0 && recruiterRoleIds.length) {
         await warmMemberCacheIfNeeded(interaction.guild, totalRoleMembers, 'global', {
           force: dbIds.length === 0
@@ -309,6 +324,7 @@ module.exports = {
       });
       if (!allowed) return null;
       try {
+        await interaction.deferReply();
         const scheduler = require('../../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);
         await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
@@ -334,7 +350,7 @@ module.exports = {
           summary.push('Duplicate details (first 5):');
           summary.push(...sample);
         }
-        return interaction.reply({ content: summary.join('\n'), allowedMentions: { parse: [] } });
+        return interaction.editReply({ content: summary.join('\n'), allowedMentions: { parse: [] } });
       } catch (e) {
         console.error(e);
         return replyError(interaction, 'Failed to initialize leaderboards.');

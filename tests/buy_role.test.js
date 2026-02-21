@@ -51,7 +51,7 @@ describe('buy role items', () => {
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalled();
     const rec = await require('../src/db_async').get('SELECT * FROM recruiters WHERE id = ?', 'RBUY');
-    expect(rec.points).toBe(5); // 30 - 25
+    expect(rec.points).toBe(15); // 30 - 15
     expect(member.roles.add).toHaveBeenCalled();
   });
 });

@@ -156,8 +156,8 @@ describe('/recruit command', () => {
     const recPoints = rec.points || 0;
     expect(recruiterRow.points).toBe(recPoints);
 
-    // DM to recruited member attempted
-    expect(guildMember.send).toHaveBeenCalled();
+    // Recruit command no longer DMs directly (welcome DM is now sent on guildMemberAdd)
+    expect(guildMember.send).not.toHaveBeenCalled();
 
     // channels should NOT have a per-recruit send (leaderboards are updated via upsert)
     const chOverall = channelsCache.get(require('../src/constants').CHANNELS.INVITES_OVERALL);

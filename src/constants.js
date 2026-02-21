@@ -84,12 +84,12 @@ const BASE = {
     AS: { name: 'Air', emoji: '�️', color: 0x8E44AD, thumbnail: '' }
   },
   PURCHASE_ITEMS: {
-    'nickname': 30,
-    'custom-vc': 25,
-    'custom-role': 50,
-    'custom-suggestion': 100,
-    'vip-role': 25,
-    'mvp-role': 35
+    'nickname': 10,
+    'custom-vc': 20,
+    'custom-role': 25,
+    'custom-suggestion': 30,
+    'vip-role': 15,
+    'mvp-role': 20
   }
 };
 

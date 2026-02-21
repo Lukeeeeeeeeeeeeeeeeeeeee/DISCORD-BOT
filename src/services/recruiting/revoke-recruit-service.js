@@ -99,23 +99,6 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
     });
   }
 
-  // DM the revoked member
-  try {
-    const dmEmbed = new EmbedBuilder()
-      .setTitle('🚫 Your Recruit Status Has Been Revoked')
-      .setDescription(`Your recruit status in **${recruit.region}** has been revoked.`)
-      .addFields(
-        { name: 'Reason', value: reason, inline: false },
-        { name: 'Revoked By', value: `<@${interaction.user.id}>`, inline: true }
-      )
-      .setColor(0xFF4444)
-      .setTimestamp();
-    await targetMember.send({ embeds: [dmEmbed] }).catch(err => {
-      console.error('Failed to DM recruit revocation:', err);
-    });
-  } catch (dmError) {
-    console.error('Failed to DM revoked member:', dmError);
-  }
 
   console.info('Recruit revoked', {
     recruitedId: member.id,
