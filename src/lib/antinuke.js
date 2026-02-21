@@ -1152,7 +1152,11 @@ class AntiNuke {
       const payload = normalized.payload || { roles: normalized.roles || [], channels: normalized.channels || [] };
       normalized.counts = {
         roles: payload.roles ? payload.roles.length : 0,
-        channels: payload.channels ? payload.channels.length : 0
+        channels: payload.channels ? payload.channels.length : 0,
+        threads: payload.threads ? payload.threads.length : 0,
+        emojis: payload.emojis ? payload.emojis.length : 0,
+        stickers: payload.stickers ? payload.stickers.length : 0,
+        bans: payload.bans ? payload.bans.length : 0
       };
       if (!normalized.payload) {
         normalized.payload = payload;
@@ -2556,33 +2560,208 @@ class AntiNuke {
 
   // Create backup
   async createBackup(guild, options = {}) {
+    if (!guild || !guild.id) {
+      throw new Error('Invalid guild context for backup creation');
+    }
+
     const type = options.type || 'full';
     const manual = !!options.manual;
     const executorId = options.executorId || null;
-    const snapshot = {
-      timestamp: Date.now(),
-      roles: guild.roles.cache.map(role => ({
-        id: role.id,
-        name: role.name,
-        permissions: role.permissions.bitfield.toString(),
-        position: role.position,
-        color: role.color,
-        hoist: role.hoist,
-        mentionable: role.mentionable
-      })),
-      channels: guild.channels.cache.map(channel => ({
+
+    const toArray = (source) => {
+      if (!source) return [];
+      if (Array.isArray(source)) return source;
+      if (typeof source.values === 'function') return Array.from(source.values());
+      if (typeof source.map === 'function') return source.map(item => item);
+      if (typeof source.forEach === 'function') {
+        const out = [];
+        source.forEach((value) => out.push(value));
+        return out;
+      }
+      return [];
+    };
+
+    const isThreadType = (channelType) => channelType === 10 || channelType === 11 || channelType === 12;
+
+    const serializeOverwrites = (channel) => toArray(channel && channel.permissionOverwrites && channel.permissionOverwrites.cache).map(overwrite => ({
+      id: overwrite.id,
+      type: overwrite.type,
+      allow: overwrite && overwrite.allow && overwrite.allow.bitfield != null
+        ? overwrite.allow.bitfield.toString()
+        : '0',
+      deny: overwrite && overwrite.deny && overwrite.deny.bitfield != null
+        ? overwrite.deny.bitfield.toString()
+        : '0'
+    }));
+
+    const serializeChannel = (channel) => {
+      const rawTags = Array.isArray(channel && channel.availableTags) ? channel.availableTags : [];
+      const availableTags = rawTags.map(tag => ({
+        id: tag && tag.id ? String(tag.id) : null,
+        name: tag && tag.name ? String(tag.name) : 'tag',
+        moderated: !!(tag && tag.moderated),
+        emojiId: tag && tag.emojiId ? String(tag.emojiId) : null,
+        emojiName: tag && tag.emojiName ? String(tag.emojiName) : null
+      }));
+
+      const defaultReactionEmoji = channel && channel.defaultReactionEmoji
+        ? {
+          emojiId: channel.defaultReactionEmoji.emojiId ? String(channel.defaultReactionEmoji.emojiId) : null,
+          emojiName: channel.defaultReactionEmoji.emojiName ? String(channel.defaultReactionEmoji.emojiName) : null
+        }
+        : null;
+
+      return {
         id: channel.id,
         name: channel.name,
         type: channel.type,
         position: channel.position,
         parentId: channel.parentId,
-        permissionOverwrites: Array.from(channel.permissionOverwrites.cache.values()).map(overwrite => ({
-          id: overwrite.id,
-          type: overwrite.type,
-          allow: overwrite.allow.bitfield.toString(),
-          deny: overwrite.deny.bitfield.toString()
-        }))
-      }))
+        topic: channel.topic != null ? channel.topic : null,
+        nsfw: channel.nsfw != null ? !!channel.nsfw : null,
+        rateLimitPerUser: Number.isFinite(channel.rateLimitPerUser) ? channel.rateLimitPerUser : null,
+        bitrate: Number.isFinite(channel.bitrate) ? channel.bitrate : null,
+        userLimit: Number.isFinite(channel.userLimit) ? channel.userLimit : null,
+        rtcRegion: channel.rtcRegion != null ? channel.rtcRegion : null,
+        videoQualityMode: channel.videoQualityMode != null ? channel.videoQualityMode : null,
+        defaultAutoArchiveDuration: Number.isFinite(channel.defaultAutoArchiveDuration) ? channel.defaultAutoArchiveDuration : null,
+        defaultThreadRateLimitPerUser: Number.isFinite(channel.defaultThreadRateLimitPerUser) ? channel.defaultThreadRateLimitPerUser : null,
+        defaultSortOrder: channel.defaultSortOrder != null ? channel.defaultSortOrder : null,
+        defaultForumLayout: channel.defaultForumLayout != null ? channel.defaultForumLayout : null,
+        defaultReactionEmoji,
+        availableTags,
+        permissionOverwrites: serializeOverwrites(channel)
+      };
+    };
+
+    const serializeThread = (thread) => ({
+      id: thread.id,
+      name: thread.name,
+      type: thread.type,
+      parentId: thread.parentId || null,
+      archived: !!thread.archived,
+      autoArchiveDuration: Number.isFinite(thread.autoArchiveDuration) ? thread.autoArchiveDuration : null,
+      rateLimitPerUser: Number.isFinite(thread.rateLimitPerUser) ? thread.rateLimitPerUser : null,
+      locked: !!thread.locked,
+      invitable: thread.invitable != null ? !!thread.invitable : null,
+      createdTimestamp: Number.isFinite(thread.createdTimestamp) ? thread.createdTimestamp : null
+    });
+
+    const roleItems = toArray(guild.roles && guild.roles.cache);
+    const baseChannelItems = toArray(guild.channels && guild.channels.cache);
+    const threadById = new Map();
+    const channelItems = [];
+
+    for (const channel of baseChannelItems) {
+      if (!channel || !channel.id) continue;
+      if (isThreadType(channel.type)) {
+        threadById.set(channel.id, serializeThread(channel));
+        continue;
+      }
+      channelItems.push(channel);
+    }
+
+    if (guild.channels && typeof guild.channels.fetchActiveThreads === 'function') {
+      try {
+        const activeThreads = await guild.channels.fetchActiveThreads();
+        const activeList = toArray(activeThreads && activeThreads.threads);
+        for (const thread of activeList) {
+          if (!thread || !thread.id) continue;
+          if (!threadById.has(thread.id)) {
+            threadById.set(thread.id, serializeThread(thread));
+          }
+        }
+      } catch (e) {
+        console.error('Backup: failed to fetch active threads', { guildId: guild.id, error: e });
+      }
+    }
+
+    let bans = [];
+    if (guild.bans && typeof guild.bans.fetch === 'function') {
+      try {
+        const fetchedBans = await guild.bans.fetch();
+        bans = toArray(fetchedBans).map((entry) => ({
+          userId: entry && entry.user && entry.user.id ? String(entry.user.id) : null,
+          reason: entry && entry.reason ? String(entry.reason) : null
+        })).filter(entry => !!entry.userId);
+      } catch (e) {
+        console.error('Backup: failed to fetch ban list', { guildId: guild.id, error: e });
+      }
+    }
+
+    let onboarding = null;
+    if (typeof guild.fetchOnboarding === 'function') {
+      try {
+        const onboardingData = await guild.fetchOnboarding();
+        if (onboardingData) {
+          onboarding = typeof onboardingData.toJSON === 'function'
+            ? onboardingData.toJSON()
+            : { ...onboardingData };
+        }
+      } catch (e) {
+        console.error('Backup: failed to fetch onboarding configuration', { guildId: guild.id, error: e });
+      }
+    }
+
+    const emojiItems = toArray(guild.emojis && guild.emojis.cache);
+    const stickerItems = toArray(guild.stickers && guild.stickers.cache);
+
+    const guildMeta = {
+      id: guild.id,
+      name: guild.name || null,
+      description: guild.description != null ? guild.description : null,
+      preferredLocale: guild.preferredLocale != null ? guild.preferredLocale : null,
+      verificationLevel: guild.verificationLevel != null ? guild.verificationLevel : null,
+      explicitContentFilter: guild.explicitContentFilter != null ? guild.explicitContentFilter : null,
+      defaultMessageNotifications: guild.defaultMessageNotifications != null ? guild.defaultMessageNotifications : null,
+      afkTimeout: Number.isFinite(guild.afkTimeout) ? guild.afkTimeout : null,
+      afkChannelId: guild.afkChannelId || null,
+      systemChannelId: guild.systemChannelId || null,
+      rulesChannelId: guild.rulesChannelId || null,
+      publicUpdatesChannelId: guild.publicUpdatesChannelId || null,
+      safetyAlertsChannelId: guild.safetyAlertsChannelId || null,
+      iconURL: typeof guild.iconURL === 'function' ? guild.iconURL({ forceStatic: false, size: 4096 }) : null,
+      bannerURL: typeof guild.bannerURL === 'function' ? guild.bannerURL({ forceStatic: false, size: 4096 }) : null,
+      splashURL: typeof guild.splashURL === 'function' ? guild.splashURL({ forceStatic: false, size: 4096 }) : null,
+      discoverySplashURL: typeof guild.discoverySplashURL === 'function' ? guild.discoverySplashURL({ forceStatic: false, size: 4096 }) : null
+    };
+
+    const snapshot = {
+      timestamp: Date.now(),
+      guildMeta,
+      roles: roleItems.map(role => ({
+        id: role.id,
+        name: role.name,
+        permissions: role && role.permissions && role.permissions.bitfield != null
+          ? role.permissions.bitfield.toString()
+          : '0',
+        position: role.position,
+        color: role.color,
+        hoist: role.hoist,
+        mentionable: role.mentionable
+      })),
+      channels: channelItems.map(serializeChannel),
+      threads: Array.from(threadById.values()),
+      emojis: emojiItems.map((emoji) => ({
+        id: emoji.id,
+        name: emoji.name,
+        animated: !!emoji.animated,
+        url: typeof emoji.imageURL === 'function'
+          ? emoji.imageURL({ extension: emoji.animated ? 'gif' : 'png', size: 4096, forceStatic: false })
+          : null,
+        roles: toArray(emoji.roles && emoji.roles.cache).map(role => role.id)
+      })),
+      stickers: stickerItems.map((sticker) => ({
+        id: sticker.id,
+        name: sticker.name || null,
+        description: sticker.description || null,
+        tags: sticker.tags || null,
+        format: sticker.format || null,
+        type: sticker.type || null,
+        url: sticker.url || null
+      })),
+      bans,
+      onboarding
     };
 
     const entryId = this.generateBackupId(guild.id);
@@ -2593,7 +2772,11 @@ class AntiNuke {
       timestamp: snapshot.timestamp,
       counts: {
         roles: snapshot.roles.length,
-        channels: snapshot.channels.length
+        channels: snapshot.channels.length,
+        threads: (snapshot.threads || []).length,
+        emojis: (snapshot.emojis || []).length,
+        stickers: (snapshot.stickers || []).length,
+        bans: (snapshot.bans || []).length
       },
       ...encrypted,
       payload: encrypted.encrypted ? null : snapshot
@@ -2621,6 +2804,10 @@ class AntiNuke {
       backupId: entry.id,
       rolesCount: snapshot.roles.length,
       channelsCount: snapshot.channels.length,
+      threadsCount: (snapshot.threads || []).length,
+      emojisCount: (snapshot.emojis || []).length,
+      stickersCount: (snapshot.stickers || []).length,
+      bansCount: (snapshot.bans || []).length,
       encrypted: entry.encrypted || false
     });
     this.saveData();
@@ -2662,7 +2849,9 @@ class AntiNuke {
 
   // Log action
   async logAction(guildId, actionData) {
-    const guild = this.client.guilds.cache.get(guildId);
+    const guildCache = this.client && this.client.guilds && this.client.guilds.cache;
+    if (!guildCache || typeof guildCache.get !== 'function') return;
+    const guild = guildCache.get(guildId);
     if (!guild) return;
 
     const traceId = actionData.traceId || this.createTraceId();
@@ -3515,6 +3704,10 @@ class AntiNuke {
     const backupTimestamp = latestBackup ? latestBackup.timestamp : null;
     const backupRoles = latestBackup && latestBackup.counts ? latestBackup.counts.roles : 0;
     const backupChannels = latestBackup && latestBackup.counts ? latestBackup.counts.channels : 0;
+    const backupThreads = latestBackup && latestBackup.counts ? latestBackup.counts.threads || 0 : 0;
+    const backupEmojis = latestBackup && latestBackup.counts ? latestBackup.counts.emojis || 0 : 0;
+    const backupStickers = latestBackup && latestBackup.counts ? latestBackup.counts.stickers || 0 : 0;
+    const backupBans = latestBackup && latestBackup.counts ? latestBackup.counts.bans || 0 : 0;
     const backupId = latestBackup ? latestBackup.id : null;
     const backupEncrypted = latestBackup ? !!latestBackup.encrypted : false;
     const pendingWhitelist = this.pendingWhitelist.get(guildId);
@@ -3546,6 +3739,10 @@ class AntiNuke {
       backupTimestamp,
       backupRoles,
       backupChannels,
+      backupThreads,
+      backupEmojis,
+      backupStickers,
+      backupBans,
       backupId,
       backupEncrypted,
       logChannel: this.logChannels.get(guildId) || null,
@@ -3636,17 +3833,26 @@ class AntiNuke {
 
     const force = !!options.force;
     const executorId = options.executorId || null;
-    const lockdownUntil = this.emergencyLockdownUntil.get(guildId) || null;
-    if (!force && this.emergencyMode.get(guildId) && lockdownUntil && Date.now() < lockdownUntil) {
-      if (!this.isOwner(executorId)) {
-        throw new Error('Emergency lockdown is still active; only the bot owner can recover early.');
-      }
-    }
-    if (!force && !this.emergencyMode.get(guildId)) {
-      throw new Error('Server is not in emergency mode');
+    const sourceGuildId = options.sourceGuildId ? String(options.sourceGuildId) : guildId;
+    const isCrossGuildRecover = sourceGuildId !== guildId;
+
+    if (isCrossGuildRecover && !this.isOwner(executorId)) {
+      throw new Error('Cross-server recovery is restricted to the bot owner.');
     }
 
-    const snapshot = this.getBackupSnapshot(guildId, backupId);
+    const lockdownUntil = this.emergencyLockdownUntil.get(guildId) || null;
+    if (!isCrossGuildRecover) {
+      if (!force && this.emergencyMode.get(guildId) && lockdownUntil && Date.now() < lockdownUntil) {
+        if (!this.isOwner(executorId)) {
+          throw new Error('Emergency lockdown is still active; only the bot owner can recover early.');
+        }
+      }
+      if (!force && !this.emergencyMode.get(guildId)) {
+        throw new Error('Server is not in emergency mode');
+      }
+    }
+
+    const snapshot = this.getBackupSnapshot(sourceGuildId, backupId);
     if (!snapshot) {
       throw new Error('Backup not found');
     }
@@ -3654,7 +3860,34 @@ class AntiNuke {
     const traceId = options.traceId || this.createTraceId();
 
     try {
+      const toArray = (source) => {
+        if (!source) return [];
+        if (Array.isArray(source)) return source;
+        if (typeof source.values === 'function') return Array.from(source.values());
+        if (typeof source.forEach === 'function') {
+          const out = [];
+          source.forEach((value) => out.push(value));
+          return out;
+        }
+        return [];
+      };
+
+      const isThreadType = (channelType) => channelType === 10 || channelType === 11 || channelType === 12;
+
+      const toImageBuffer = async (url) => {
+        if (!url || typeof fetch !== 'function') return null;
+        try {
+          const response = await fetch(url);
+          if (!response || !response.ok) return null;
+          const arrayBuffer = await response.arrayBuffer();
+          return Buffer.from(arrayBuffer);
+        } catch (_e) {
+          return null;
+        }
+      };
+
       let rolesRestored = 0;
+      let rolesCreated = 0;
       let rolesSkipped = 0;
       let rolesFailed = 0;
       let channelsRestored = 0;
@@ -3662,14 +3895,126 @@ class AntiNuke {
       let channelsMissing = 0;
       let channelsCreated = 0;
       let channelsReused = 0;
+      let threadsCreated = 0;
+      let threadsFailed = 0;
+      let threadsMissing = 0;
+      let emojisRestored = 0;
+      let emojisFailed = 0;
+      let stickersRestored = 0;
+      let stickersFailed = 0;
+      let bansRestored = 0;
+      let bansFailed = 0;
+      let onboardingRestored = false;
+      let guildMetaRestored = false;
 
       const recoveryMapping = this.getRecoveryMapping(guildId);
+      const mapRoleId = (rawId) => {
+        if (!rawId) return rawId;
+        const mapped = recoveryMapping && recoveryMapping.roles ? recoveryMapping.roles.get(String(rawId)) : null;
+        return mapped || String(rawId);
+      };
+      const mapChannelId = (rawId) => {
+        if (!rawId) return rawId;
+        const mapped = recoveryMapping && recoveryMapping.channels ? recoveryMapping.channels.get(String(rawId)) : null;
+        return mapped || String(rawId);
+      };
+      const resolveOverwriteTargetId = (overwrite) => {
+        if (!overwrite || !overwrite.id) return null;
+        const rawType = overwrite.type;
+        const normalizedType = rawType === 0 || rawType === 'role' ? 'role' : rawType === 1 || rawType === 'member' ? 'member' : null;
+        if (normalizedType === 'role') {
+          const mappedRoleId = mapRoleId(overwrite.id);
+          return guild.roles && guild.roles.cache && guild.roles.cache.has(mappedRoleId)
+            ? mappedRoleId
+            : null;
+        }
+        return String(overwrite.id);
+      };
+      const sourceEveryoneRoleId = snapshot && snapshot.guildMeta && snapshot.guildMeta.id
+        ? String(snapshot.guildMeta.id)
+        : String(sourceGuildId);
+      if (recoveryMapping && recoveryMapping.roles && guild.roles && guild.roles.everyone) {
+        recoveryMapping.roles.set(sourceEveryoneRoleId, String(guild.roles.everyone.id));
+        recoveryMapping.roles.set(String(sourceGuildId), String(guild.roles.everyone.id));
+      }
+
+      if (options.restoreGuildMeta !== false && snapshot.guildMeta && typeof guild.edit === 'function') {
+        try {
+          const meta = snapshot.guildMeta;
+          const guildEditPayload = {};
+          if (meta.name) guildEditPayload.name = meta.name;
+          if (meta.description !== undefined) guildEditPayload.description = meta.description;
+          if (meta.preferredLocale !== undefined) guildEditPayload.preferredLocale = meta.preferredLocale;
+          if (meta.verificationLevel !== undefined) guildEditPayload.verificationLevel = meta.verificationLevel;
+          if (meta.explicitContentFilter !== undefined) guildEditPayload.explicitContentFilter = meta.explicitContentFilter;
+          if (meta.defaultMessageNotifications !== undefined) guildEditPayload.defaultMessageNotifications = meta.defaultMessageNotifications;
+          if (Number.isFinite(meta.afkTimeout)) guildEditPayload.afkTimeout = meta.afkTimeout;
+          if (meta.afkChannelId) guildEditPayload.afkChannel = mapChannelId(meta.afkChannelId);
+          if (meta.systemChannelId) guildEditPayload.systemChannel = mapChannelId(meta.systemChannelId);
+          if (meta.rulesChannelId) guildEditPayload.rulesChannel = mapChannelId(meta.rulesChannelId);
+          if (meta.publicUpdatesChannelId) guildEditPayload.publicUpdatesChannel = mapChannelId(meta.publicUpdatesChannelId);
+          if (meta.safetyAlertsChannelId) guildEditPayload.safetyAlertsChannel = mapChannelId(meta.safetyAlertsChannelId);
+
+          if (options.restoreGuildAssets !== false) {
+            const [icon, banner, splash, discoverySplash] = await Promise.all([
+              toImageBuffer(meta.iconURL),
+              toImageBuffer(meta.bannerURL),
+              toImageBuffer(meta.splashURL),
+              toImageBuffer(meta.discoverySplashURL)
+            ]);
+            if (icon) guildEditPayload.icon = icon;
+            if (banner) guildEditPayload.banner = banner;
+            if (splash) guildEditPayload.splash = splash;
+            if (discoverySplash) guildEditPayload.discoverySplash = discoverySplash;
+          }
+
+          if (Object.keys(guildEditPayload).length > 0) {
+            await guild.edit(guildEditPayload);
+            guildMetaRestored = true;
+          }
+        } catch (e) {
+          console.error('Emergency recover: failed to restore guild metadata', { guildId, sourceGuildId, error: e });
+        }
+      }
 
       // Restore roles (permissions in batches; positions in a bulk call)
       const rolePermissionTasks = [];
       const positionUpdates = [];
-      for (const roleData of snapshot.roles || []) {
-        const role = guild.roles.cache.get(roleData.id);
+      const sortedRoles = [...(snapshot.roles || [])].sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
+      for (const roleData of sortedRoles) {
+        if (!roleData || !roleData.id) continue;
+        const isSourceEveryone = String(roleData.id) === sourceEveryoneRoleId;
+
+        let role = isSourceEveryone && guild.roles && guild.roles.everyone
+          ? guild.roles.everyone
+          : guild.roles.cache.get(roleData.id);
+        if (!role && recoveryMapping && recoveryMapping.roles) {
+          const mappedRoleId = recoveryMapping.roles.get(roleData.id);
+          if (mappedRoleId) {
+            role = guild.roles.cache.get(mappedRoleId) || null;
+          }
+        }
+
+        if (!role && !isSourceEveryone && options.recreateMissingRoles !== false && guild.roles && typeof guild.roles.create === 'function') {
+          try {
+            role = await guild.roles.create({
+              name: roleData.name || 'Recovered Role',
+              color: roleData.color,
+              hoist: !!roleData.hoist,
+              mentionable: !!roleData.mentionable,
+              permissions: roleData.permissions || '0',
+              reason: `Recovered from anti-nuke backup (${sourceGuildId})`
+            });
+            rolesCreated++;
+          } catch (e) {
+            console.error('Emergency recover: failed to recreate role', { roleId: roleData.id, error: e });
+          }
+        }
+
+        if (role && recoveryMapping && recoveryMapping.roles) {
+          recoveryMapping.roles.set(String(roleData.id), String(role.id));
+        }
+
         if (!role) continue;
         if (!role.editable) {
           rolesSkipped++;
@@ -3678,7 +4023,13 @@ class AntiNuke {
 
         rolePermissionTasks.push(async () => {
           try {
-            await role.setPermissions(roleData.permissions);
+            await role.edit({
+              name: roleData.name || role.name,
+              color: roleData.color,
+              hoist: !!roleData.hoist,
+              mentionable: !!roleData.mentionable,
+              permissions: roleData.permissions || role.permissions
+            });
             rolesRestored++;
           } catch (e) {
             rolesFailed++;
@@ -3708,6 +4059,8 @@ class AntiNuke {
 
       // Restore channel permissions
       for (const channelData of snapshot.channels || []) {
+        if (!channelData || isThreadType(channelData.type)) continue;
+
         let channel = guild.channels.cache.get(channelData.id);
         if (!channel && recoveryMapping && recoveryMapping.channels) {
           const mappedId = recoveryMapping.channels.get(channelData.id);
@@ -3724,11 +4077,12 @@ class AntiNuke {
           const overwritePayload = (channelData.permissionOverwrites || [])
             .filter(ow => ow && ow.id)
             .map(ow => ({
-              id: ow.id,
+              id: resolveOverwriteTargetId(ow),
               allow: ow.allow,
               deny: ow.deny,
               type: ow.type
-            }));
+            }))
+            .filter(ow => !!ow.id);
 
           if (!channel && options.recreateMissingChannels !== false) {
             try {
@@ -3738,12 +4092,29 @@ class AntiNuke {
               };
               if (Number.isFinite(channelData.position)) createPayload.position = channelData.position;
               if (channelData.parentId) {
-                const parent = guild.channels.cache.get(channelData.parentId);
+                const parent = guild.channels.cache.get(mapChannelId(channelData.parentId));
                 if (parent) createPayload.parent = parent;
               }
               if (channelData.topic != null) createPayload.topic = channelData.topic;
               if (channelData.nsfw != null) createPayload.nsfw = channelData.nsfw;
               if (channelData.rateLimitPerUser != null) createPayload.rateLimitPerUser = channelData.rateLimitPerUser;
+              if (channelData.bitrate != null) createPayload.bitrate = channelData.bitrate;
+              if (channelData.userLimit != null) createPayload.userLimit = channelData.userLimit;
+              if (channelData.rtcRegion != null) createPayload.rtcRegion = channelData.rtcRegion;
+              if (channelData.videoQualityMode != null) createPayload.videoQualityMode = channelData.videoQualityMode;
+              if (channelData.defaultAutoArchiveDuration != null) createPayload.defaultAutoArchiveDuration = channelData.defaultAutoArchiveDuration;
+              if (channelData.defaultThreadRateLimitPerUser != null) createPayload.defaultThreadRateLimitPerUser = channelData.defaultThreadRateLimitPerUser;
+              if (channelData.defaultSortOrder != null) createPayload.defaultSortOrder = channelData.defaultSortOrder;
+              if (channelData.defaultForumLayout != null) createPayload.defaultForumLayout = channelData.defaultForumLayout;
+              if (channelData.defaultReactionEmoji != null) createPayload.defaultReactionEmoji = channelData.defaultReactionEmoji;
+              if (Array.isArray(channelData.availableTags) && channelData.availableTags.length) {
+                createPayload.availableTags = channelData.availableTags.map(tag => ({
+                  name: tag.name || 'tag',
+                  moderated: !!tag.moderated,
+                  emojiId: tag.emojiId || null,
+                  emojiName: tag.emojiName || null
+                }));
+              }
               if (overwritePayload.length) createPayload.permissionOverwrites = overwritePayload;
 
               channel = await guild.channels.create(createPayload);
@@ -3765,11 +4136,158 @@ class AntiNuke {
 
           // Apply full overwrite set in a single request to avoid a mid-run "public channel" state.
           // This replaces channel overwrites without first deleting them one-by-one.
-          await channel.permissionOverwrites.set(overwritePayload);
+          if (channel.permissionOverwrites && typeof channel.permissionOverwrites.set === 'function') {
+            await channel.permissionOverwrites.set(overwritePayload);
+          }
           channelsRestored++;
         } catch (e) {
           channelsFailed++;
-          console.error('Emergency recover: failed to restore channel overwrites', { channelId: channel.id, error: e });
+          console.error('Emergency recover: failed to restore channel overwrites', {
+            channelId: channel && channel.id ? channel.id : channelData.id,
+            error: e
+          });
+        }
+      }
+
+      if (options.restoreThreads !== false) {
+        for (const threadData of snapshot.threads || []) {
+          if (!threadData || !threadData.parentId) {
+            threadsMissing++;
+            continue;
+          }
+
+          const mappedParentId = mapChannelId(threadData.parentId);
+          const parent = mappedParentId ? guild.channels.cache.get(mappedParentId) : null;
+          if (!parent || !parent.threads || typeof parent.threads.create !== 'function') {
+            threadsMissing++;
+            continue;
+          }
+
+          try {
+            const threadPayload = {
+              name: threadData.name || 'Recovered Thread',
+              reason: `Recovered from anti-nuke backup (${sourceGuildId})`
+            };
+            if (threadData.autoArchiveDuration != null) threadPayload.autoArchiveDuration = threadData.autoArchiveDuration;
+            if (threadData.rateLimitPerUser != null) threadPayload.rateLimitPerUser = threadData.rateLimitPerUser;
+            if (threadData.type != null && threadData.type !== 10) threadPayload.type = threadData.type;
+            if (threadData.invitable != null) threadPayload.invitable = !!threadData.invitable;
+            if (parent.type === 15) {
+              threadPayload.message = { content: 'Recovered forum post placeholder.' };
+            }
+
+            const thread = await parent.threads.create(threadPayload);
+            threadsCreated++;
+            if (recoveryMapping && recoveryMapping.channels && thread && thread.id && threadData.id) {
+              recoveryMapping.channels.set(String(threadData.id), String(thread.id));
+            }
+          } catch (e) {
+            threadsFailed++;
+            console.error('Emergency recover: failed to recreate thread', { threadId: threadData.id, error: e });
+          }
+        }
+      }
+
+      if (options.restoreAssets !== false) {
+        if (guild.emojis && typeof guild.emojis.create === 'function') {
+          const existingEmojiNames = new Set(toArray(guild.emojis.cache).map(emoji => emoji.name).filter(Boolean));
+          for (const emojiData of snapshot.emojis || []) {
+            if (!emojiData || !emojiData.name || !emojiData.url) continue;
+            if (existingEmojiNames.has(emojiData.name)) continue;
+            try {
+              const roleIds = (emojiData.roles || [])
+                .map(roleId => mapRoleId(roleId))
+                .filter(roleId => guild.roles.cache.has(roleId));
+              await guild.emojis.create({
+                attachment: emojiData.url,
+                name: emojiData.name,
+                roles: roleIds.length ? roleIds : undefined,
+                reason: `Recovered from anti-nuke backup (${sourceGuildId})`
+              });
+              existingEmojiNames.add(emojiData.name);
+              emojisRestored++;
+            } catch (e) {
+              emojisFailed++;
+              console.error('Emergency recover: failed to recreate emoji', { emojiName: emojiData.name, error: e });
+            }
+          }
+        }
+
+        if (guild.stickers && typeof guild.stickers.create === 'function') {
+          const existingStickerNames = new Set(toArray(guild.stickers.cache).map(sticker => sticker.name).filter(Boolean));
+          for (const stickerData of snapshot.stickers || []) {
+            if (!stickerData || !stickerData.name || !stickerData.url || !stickerData.tags) continue;
+            if (existingStickerNames.has(stickerData.name)) continue;
+            try {
+              await guild.stickers.create({
+                file: stickerData.url,
+                name: stickerData.name,
+                description: stickerData.description || undefined,
+                tags: stickerData.tags,
+                reason: `Recovered from anti-nuke backup (${sourceGuildId})`
+              });
+              existingStickerNames.add(stickerData.name);
+              stickersRestored++;
+            } catch (e) {
+              stickersFailed++;
+              console.error('Emergency recover: failed to recreate sticker', { stickerName: stickerData.name, error: e });
+            }
+          }
+        }
+      }
+
+      if (options.restoreBans !== false && guild.bans && typeof guild.bans.fetch === 'function' && typeof guild.bans.create === 'function') {
+        let existingBanIds = new Set();
+        try {
+          const fetchedBans = await guild.bans.fetch();
+          existingBanIds = new Set(toArray(fetchedBans).map(entry => entry && entry.user && entry.user.id).filter(Boolean));
+        } catch (e) {
+          console.error('Emergency recover: failed to fetch current bans', { error: e });
+        }
+
+        for (const banData of snapshot.bans || []) {
+          if (!banData || !banData.userId) continue;
+          if (existingBanIds.has(banData.userId)) continue;
+          try {
+            await guild.bans.create(banData.userId, {
+              reason: banData.reason || `Recovered from anti-nuke backup (${sourceGuildId})`
+            });
+            existingBanIds.add(banData.userId);
+            bansRestored++;
+          } catch (e) {
+            bansFailed++;
+            console.error('Emergency recover: failed to restore ban', { userId: banData.userId, error: e });
+          }
+        }
+      }
+
+      if (options.restoreOnboarding !== false && snapshot.onboarding && typeof guild.editOnboarding === 'function') {
+        try {
+          const onboardingPayload = JSON.parse(JSON.stringify(snapshot.onboarding));
+          if (Array.isArray(onboardingPayload.defaultChannelIds)) {
+            onboardingPayload.defaultChannelIds = onboardingPayload.defaultChannelIds.map(mapChannelId).filter(Boolean);
+          }
+          if (Array.isArray(onboardingPayload.prompts)) {
+            onboardingPayload.prompts = onboardingPayload.prompts.map((prompt) => {
+              if (!prompt || !Array.isArray(prompt.options)) return prompt;
+              const nextOptions = prompt.options.map((opt) => {
+                if (!opt) return opt;
+                const next = { ...opt };
+                if (Array.isArray(next.channelIds)) {
+                  next.channelIds = next.channelIds.map(mapChannelId).filter(Boolean);
+                }
+                if (Array.isArray(next.roleIds)) {
+                  next.roleIds = next.roleIds.map(mapRoleId).filter(Boolean);
+                }
+                return next;
+              });
+              return { ...prompt, options: nextOptions };
+            });
+          }
+          await guild.editOnboarding(onboardingPayload);
+          onboardingRestored = true;
+        } catch (e) {
+          console.error('Emergency recover: failed to restore onboarding configuration', { error: e });
         }
       }
 
@@ -3782,21 +4300,36 @@ class AntiNuke {
         type: 'emergency_recover',
         success: true,
         traceId,
-        backupId: backupId || this.getBackupStore(guildId).latestId,
+        backupId: backupId || this.getBackupStore(sourceGuildId).latestId,
+        sourceGuildId,
         actionTaken: 'restore_backup',
         result: 'recovered'
       });
 
       return {
         success: true,
+        sourceGuildId,
+        isCrossGuildRecover,
         rolesRestored,
+        rolesCreated,
         rolesSkipped,
         rolesFailed,
         channelsRestored,
         channelsFailed,
         channelsMissing,
         channelsCreated,
-        channelsReused
+        channelsReused,
+        threadsCreated,
+        threadsFailed,
+        threadsMissing,
+        emojisRestored,
+        emojisFailed,
+        stickersRestored,
+        stickersFailed,
+        bansRestored,
+        bansFailed,
+        onboardingRestored,
+        guildMetaRestored
       };
 
     } catch (error) {
@@ -3804,6 +4337,7 @@ class AntiNuke {
         type: 'emergency_recover_failed',
         error: error.message,
         traceId,
+        sourceGuildId,
         backupId: backupId || null,
         actionTaken: 'restore_backup',
         result: 'failed'

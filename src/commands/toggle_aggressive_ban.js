@@ -1,12 +1,11 @@
 const { EmbedBuilder } = require('discord.js');
-const { ensureCommandAccess } = require('../lib/command-auth');
 const { buildErrorEmbed } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
 
 module.exports = {
   data: {
     name: 'toggle_aggressive_ban',
-    description: 'Enable or disable aggressive anti-nuke bans (Admin only)',
+    description: 'Enable or disable aggressive anti-nuke bans (Owner only)',
     options: [
       {
         name: 'enabled',
@@ -17,16 +16,15 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    const allowed = await ensureCommandAccess(interaction, {
-      allowStaff: false,
-      deniedMessage: 'Administrator permission required.',
-      flags: 64
-    });
-    if (!allowed) return null;
-
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
       return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
+    }
+    if (!antiNuke.isOwner || !antiNuke.isOwner(interaction.user.id)) {
+      return interaction.reply({
+        embeds: [buildErrorEmbed('This dangerous anti-nuke command is restricted to the bot owner.')],
+        flags: 64
+      });
     }
 
     if (typeof interaction.deferReply === 'function') {

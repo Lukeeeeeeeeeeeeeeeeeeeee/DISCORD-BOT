@@ -43,6 +43,34 @@
 - PR template enforces rollback/testing checklist:
   - `.github/pull_request_template.md`
 
+## Backup/Recovery Hardening (2026-02-21)
+- Backups now capture extended snapshot data:
+  - Server metadata (name/settings/icon/banner)
+  - Roles/channels/overwrites
+  - Threads/forums metadata
+  - Emojis/stickers
+  - Ban list
+  - Onboarding configuration
+- Recovery supports cross-server clone-style restore:
+  - Run `/emergency_recover source_guild_id:<SOURCE_GUILD_ID>` in target server.
+- Dangerous anti-nuke commands are owner-only at execution time:
+  - `/emergency_recover`
+  - `/simulate_attack`
+  - `/toggle_strict_mode`
+  - `/toggle_aggressive_ban`
+  - `/set_quarantine_options`
+  - Whitelist add/remove remains owner-only.
+- Added safety guard for backup/logging crash:
+  - Prevents `Cannot read properties of undefined (reading 'cache')` when client cache is unavailable.
+
+### Post-Deploy Checklist
+- Set `ANTINUKE_OWNER_ID` (or `OWNER_ID`) to the bot owner user ID.
+- Re-register slash commands after deploy (`src/register-commands.js`).
+- Validate in staging:
+  - `/force_backup` creates backup with expanded counts.
+  - `/view_backups` shows threads/emojis/stickers/bans counts.
+  - `/emergency_recover source_guild_id:<id>` works for owner and blocks non-owner.
+
 ## Remaining Follow-ups
 - Resolve lint warnings:
   - `src/commands/recruiting/recruitment_report.js` (`resolveGuildId` unused)

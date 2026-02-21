@@ -24,47 +24,53 @@ module.exports = {
     try {
       await interaction.deferReply({ flags: 64 });
 
-      // Create backup
       const backup = await antiNuke.createBackup(interaction.guild, {
         type: 'full',
         manual: true,
         executorId: interaction.user.id
       });
-      
+
+      const snapshotCounts = backup && backup.counts
+        ? `${backup.counts.roles || 0} roles, ${backup.counts.channels || 0} channels, ${backup.counts.threads || 0} threads, ${backup.counts.emojis || 0} emojis, ${backup.counts.stickers || 0} stickers, ${backup.counts.bans || 0} bans`
+        : 'Unknown';
+
       const embed = new EmbedBuilder()
         .setColor('#00FF00')
-        .setTitle('✅ Manual Backup Created')
+        .setTitle('Manual Backup Created')
         .setDescription('Server backup has been successfully created.')
         .addFields(
           { name: 'Server', value: interaction.guild.name, inline: true },
           { name: 'Created By', value: interaction.user.tag, inline: true },
-          { name: 'Backup Time', value: `<t:${Math.floor(Date.now()/1000)}:F>`, inline: true },
-          { name: 'Backup ID', value: backup ? backup.id : 'Unknown', inline: true }
+          { name: 'Backup Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
+          { name: 'Backup ID', value: backup ? backup.id : 'Unknown', inline: true },
+          { name: 'Snapshot Counts', value: snapshotCounts, inline: false }
         )
-        .addFields(
-          {
-            name: '💾 What Was Backed Up',
-            value: '• All role data (permissions, colors, positions)\n• All channel data (names, types, categories)\n• Channel permission overwrites\n• Server settings and metadata',
-            inline: false
-          }
-        )
+        .addFields({
+          name: 'What Was Backed Up',
+          value: [
+            '- Server metadata (name/settings/icon/banner)',
+            '- Roles/channels/permission overwrites',
+            '- Active threads and forum metadata',
+            '- Emojis and stickers',
+            '- Ban list and onboarding config'
+          ].join('\n'),
+          inline: false
+        })
         .setFooter({ text: 'This backup can be used for emergency recovery' })
         .setTimestamp();
 
-      // Log the backup creation
       antiNuke.logAction(interaction.guild.id, {
         type: 'manual_backup_created',
         executorId: interaction.user.id
       });
 
       await interaction.editReply({ embeds: [embed] });
-
     } catch (error) {
       console.error('Force backup error:', error);
-      
+
       const embed = new EmbedBuilder()
         .setColor('#FF0000')
-        .setTitle('❌ Backup Creation Failed')
+        .setTitle('Backup Creation Failed')
         .setDescription(`Failed to create backup: ${error.message}`)
         .setTimestamp();
 

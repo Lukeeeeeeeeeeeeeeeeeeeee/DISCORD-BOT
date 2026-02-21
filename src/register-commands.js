@@ -3,17 +3,35 @@ const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 
-const { REGIONS, REGION_INFO, PURCHASE_ITEMS } = require('./constants');
+const {
+  REGIONS,
+  REGION_INFO,
+  PURCHASE_ITEMS,
+  APPROVAL_ONLY_ITEMS
+} = require('./constants');
 const { ECONOMY_CONFIG, formatPointsValue } = require('./lib/economy');
+const BUY_ITEM_LABELS = {
+  'custom-nickname': 'Custom nickname',
+  'vip': 'VIP',
+  'mvp': 'MVP',
+  'custom-vc': 'Custom VC',
+  'custom-role': 'Custom role',
+  'custom-suggestion': 'Custom suggestion'
+};
 const BUY_ITEM_CHOICES = [
   ...Object.entries(ECONOMY_CONFIG && ECONOMY_CONFIG.MULTIPLIERS ? ECONOMY_CONFIG.MULTIPLIERS : {})
     .map(([key, cfg]) => ({
-      name: `${key} (x${cfg.value} ${cfg.days}d, ${formatPointsValue(cfg.cost)} pts)`,
+      name: `${formatPointsValue(cfg.value)}x - ${cfg.days} days (${formatPointsValue(cfg.cost)} pts)`,
       value: key
     })),
   ...Object.entries(PURCHASE_ITEMS || {})
     .map(([key, cost]) => ({
-      name: `${key} (${formatPointsValue(cost)} pts)`,
+      name: `${BUY_ITEM_LABELS[key] || key} (${formatPointsValue(cost)} pts)`,
+      value: key
+    })),
+  ...Object.entries(APPROVAL_ONLY_ITEMS || {})
+    .map(([key]) => ({
+      name: `${BUY_ITEM_LABELS[key] || key} (staff approval required)`,
       value: key
     }))
 ];
@@ -108,18 +126,19 @@ const commands = [
     .addUserOption(opt => opt.setName('user').setDescription('User to check').setRequired(true)),
   new SlashCommandBuilder().setName('reset_scores').setDescription('Reset beast mode scores (Admin only)')
     .addUserOption(opt => opt.setName('user').setDescription('User to reset (optional - resets all if not provided)')),
-  new SlashCommandBuilder().setName('whitelist').setDescription('Manage anti-nuke whitelist (Admin only)')
+  new SlashCommandBuilder().setName('whitelist').setDescription('Manage anti-nuke whitelist (List: Admin, Modify: Owner)')
     .addStringOption(opt => opt.setName('action').setDescription('Action to perform').setRequired(true)
       .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }))
     .addUserOption(opt => opt.setName('user').setDescription('User to add/remove (not required for list)')),
   new SlashCommandBuilder().setName('set_log_channel').setDescription('Configure anti-nuke log channel (Admin only)')
     .addChannelOption(opt => opt.setName('channel').setDescription('Channel to set as log channel').setRequired(true)),
-  new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover from emergency lockdown (Admin only)')
+    new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover or clone server from backup (Owner only)')
     .addStringOption(opt => opt.setName('backup_id').setDescription('Backup ID to restore (optional)').setRequired(false))
+    .addStringOption(opt => opt.setName('source_guild_id').setDescription('Source guild backup to restore from (owner only)').setRequired(false))
     .addBooleanOption(opt => opt.setName('force').setDescription('Force recovery even if not in emergency mode (owner only)').setRequired(false)),
   new SlashCommandBuilder().setName('force_backup').setDescription('Create manual backup of server (Admin only)'),
   new SlashCommandBuilder().setName('view_backups').setDescription('View backup information (Admin only)'),
-  new SlashCommandBuilder().setName('simulate_attack').setDescription('Simulate anti-nuke triggers (Admin only)')
+  new SlashCommandBuilder().setName('simulate_attack').setDescription('Simulate anti-nuke triggers (Owner only)')
     .addStringOption(opt => opt.setName('type').setDescription('Action type to simulate').setRequired(true)
       .addChoices(
         { name: 'ban', value: 'ban' },
@@ -132,10 +151,10 @@ const commands = [
       ))
     .addIntegerOption(opt => opt.setName('count').setDescription('Number of simulated actions').setRequired(true))
     .addIntegerOption(opt => opt.setName('window_seconds').setDescription('Window in seconds').setRequired(true)),
-  new SlashCommandBuilder().setName('toggle_strict_mode').setDescription('Enable or disable anti-nuke strict mode (Admin only)')
+  new SlashCommandBuilder().setName('toggle_strict_mode').setDescription('Enable or disable anti-nuke strict mode (Owner only)')
     .addBooleanOption(opt => opt.setName('enabled').setDescription('Enable strict mode').setRequired(true))
     .addIntegerOption(opt => opt.setName('duration_minutes').setDescription('Optional auto-disable duration in minutes').setRequired(false)),
-  new SlashCommandBuilder().setName('set_quarantine_options').setDescription('Configure anti-nuke quarantine options (Admin only)')
+  new SlashCommandBuilder().setName('set_quarantine_options').setDescription('Configure anti-nuke quarantine options (Owner only)')
     .addStringOption(opt => opt.setName('mode').setDescription('Quarantine mode').setRequired(true)
       .addChoices(
         { name: 'quarantine', value: 'quarantine' },
@@ -144,7 +163,7 @@ const commands = [
       ))
     .addBooleanOption(opt => opt.setName('preserve_view').setDescription('Preserve view/read permissions during quarantine').setRequired(false))
     .addIntegerOption(opt => opt.setName('duration_hours').setDescription('Quarantine duration in hours').setRequired(false)),
-  new SlashCommandBuilder().setName('toggle_aggressive_ban').setDescription('Enable or disable aggressive anti-nuke bans (Admin only)')
+  new SlashCommandBuilder().setName('toggle_aggressive_ban').setDescription('Enable or disable aggressive anti-nuke bans (Owner only)')
     .addBooleanOption(opt => opt.setName('enabled').setDescription('Enable aggressive bans').setRequired(true)),
   new SlashCommandBuilder().setName('export_logs').setDescription('Export recent anti-nuke logs (Admin only)')
     .addIntegerOption(opt => opt.setName('limit').setDescription('Number of log entries to export (max 200)').setRequired(false))

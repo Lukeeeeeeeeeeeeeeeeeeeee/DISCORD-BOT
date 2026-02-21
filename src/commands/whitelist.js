@@ -6,7 +6,7 @@ const { replyError } = require('../lib/embeds');
 module.exports = {
   data: {
     name: 'whitelist',
-    description: 'Manage anti-nuke whitelist (Admin only)',
+    description: 'Manage anti-nuke whitelist (List: Admin, Modify: Owner)',
     options: [
       {
         name: 'action',
@@ -42,6 +42,11 @@ module.exports = {
 
     const action = interaction.options.getString('action');
     const targetUser = interaction.options.getUser('user');
+    const isOwner = antiNuke.isOwner && antiNuke.isOwner(interaction.user.id);
+
+    if (action !== 'list' && !isOwner) {
+      return replyError(interaction, 'Whitelist modifications are restricted to the bot owner.', { flags: 64 });
+    }
 
     try {
       switch (action) {
