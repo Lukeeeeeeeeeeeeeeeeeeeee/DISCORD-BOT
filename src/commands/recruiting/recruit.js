@@ -496,18 +496,31 @@ module.exports = {
           console.error('Failed updating leaderboards:', e);
         }
 
+        let dmFailure = null;
         try {
           await recruitedGuildMember.send({
             content: buildRecruitWelcomeMessage(teamName),
             allowedMentions: { parse: [] }
-          }).catch((err) => {
-            console.error('Failed to DM rookie welcome message:', err);
           });
-        } catch (e) {
-          void e;
+        } catch (err) {
+          const code = err && (err.code ?? err.rawError?.code);
+          const isBlocked = code === 50007 || code === 50013 || code === 50001;
+          dmFailure = isBlocked ? 'blocked' : 'error';
+          const tag = member && (member.tag || member.username) ? (member.tag || member.username) : member.id;
+          if (isBlocked) {
+            console.log(`Rookie welcome DM skipped for ${tag} (${member.id}) - DMs closed or blocked.`);
+          } else {
+            console.error('Failed to DM rookie welcome message:', err);
+          }
         }
 
-        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.` });
+        const dmNote = dmFailure === 'blocked'
+          ? ' Note: I could not DM them (their DMs are closed).'
+          : dmFailure === 'error'
+            ? ' Note: I could not DM them due to an unexpected error.'
+            : '';
+
+        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.${dmNote}` });
       } catch (err) {
         console.error('Recruit command error:', err);
 
