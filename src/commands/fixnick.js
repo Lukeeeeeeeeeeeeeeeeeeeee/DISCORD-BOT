@@ -1,5 +1,5 @@
 const { AttachmentBuilder } = require('discord.js');
-const { GUILD_ID, ROLE_IDS, REGION_ROLE_IDS, TESTING_USER_ID } = require('../constants');
+const { GUILD_ID, ROLE_IDS, REGION_ROLE_IDS, ACTIVITY_CHECK, TESTING_USER_ID } = require('../constants');
 const { replyError } = require('../lib/embeds');
 
 const OWNER_FALLBACK_ID = '1381692847018868778';
@@ -19,6 +19,19 @@ function buildRegionLookup() {
     return map;
 }
 const REGION_BY_ROLE_ID = buildRegionLookup();
+
+// ── Inactive role lookup ────────────────────────────────────────────
+function buildInactiveRoleSet() {
+    const ids = new Set();
+    const map = ACTIVITY_CHECK && ACTIVITY_CHECK.TEAM_TO_INACTIVE_ROLE;
+    if (map && typeof map === 'object') {
+        for (const roleId of Object.values(map)) {
+            if (roleId) ids.add(String(roleId));
+        }
+    }
+    return ids;
+}
+const INACTIVE_ROLE_IDS = buildInactiveRoleSet();
 
 // ── Owner gate ──────────────────────────────────────────────────────
 function getOwnerIdSet() {
@@ -99,6 +112,22 @@ function computeNickname(member) {
         // Discord limit: 32 characters
         if (newNick.length > 32) {
             const maxIgn = 32 - prefix.length - 3; // 3 = ' | '
+            newNick = `${prefix} | ${ign.substring(0, maxIgn)}`;
+        }
+        return { newNick, prefix, ign, skipReason: null };
+    }
+
+    // Inactive members: anyone with an inactive team role → 0/2 | IGN
+    const isInactive = INACTIVE_ROLE_IDS.size > 0 && Array.from(INACTIVE_ROLE_IDS).some(id => hasRole(member, id));
+    if (isInactive) {
+        const ign = extractIgn(getSourceName(member));
+        if (!ign) {
+            return { skipReason: 'Could not determine IGN' };
+        }
+        const prefix = '0/2';
+        let newNick = `${prefix} | ${ign}`;
+        if (newNick.length > 32) {
+            const maxIgn = 32 - prefix.length - 3;
             newNick = `${prefix} | ${ign.substring(0, maxIgn)}`;
         }
         return { newNick, prefix, ign, skipReason: null };

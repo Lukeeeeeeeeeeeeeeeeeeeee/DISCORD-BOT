@@ -77,6 +77,14 @@ const commands = [
       .addUserOption(opt => opt.setName('member').setDescription('Rookie member').setRequired(true))
       .addNumberOption(opt => opt.setName('points').setDescription('Points to remove').setRequired(true).setMinValue(0.1)))
     .addSubcommand(s => s.setName('reset-all').setDescription('Reset all rookie points to 0 (admin only)')),
+  new SlashCommandBuilder().setName('inactivepoints').setDescription('Manage inactive member event points (Helper+ of same team)')
+    .addSubcommand(s => s.setName('add').setDescription('Add event points to an inactive member')
+      .addUserOption(opt => opt.setName('member').setDescription('Inactive member').setRequired(true))
+      .addNumberOption(opt => opt.setName('points').setDescription('Points to add').setRequired(true).setMinValue(0.5).setMaxValue(2)))
+    .addSubcommand(s => s.setName('remove').setDescription('Remove event points from an inactive member')
+      .addUserOption(opt => opt.setName('member').setDescription('Inactive member').setRequired(true))
+      .addNumberOption(opt => opt.setName('points').setDescription('Points to remove').setRequired(true).setMinValue(0.5).setMaxValue(2)))
+    .addSubcommand(s => s.setName('reset-all').setDescription('Reset all inactive points to 0 (admin only)')),
   new SlashCommandBuilder().setName('rookie_promote').setDescription('Verify and promote a rookie (MOD+ only)')
     .addUserOption(opt => opt.setName('member').setDescription('Rookie to promote').setRequired(true)),
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
