@@ -53,7 +53,7 @@ describe('multiplier purchase and admin application', () => {
     expect(row.type).toBe('m1.5_14d');
 
     const rec = await db.get('SELECT * FROM recruiters WHERE id = ?', 'R1');
-    expect(rec.points).toBe(46); // cost 4
+    expect(rec.points).toBe(44); // cost 6
 
     await db.close();
   });
@@ -98,6 +98,48 @@ describe('multiplier purchase and admin application', () => {
     await cmd.execute(interactionReset);
     row = await db.get('SELECT * FROM multipliers WHERE recruiter_id = ?', 'R2');
     expect(row).toBeUndefined();
+
+    await db.close();
+  });
+
+  test('recruiter cannot buy the same multiplier while it is active', async () => {
+    const db = await makeDb(dbPath);
+    await db.run(
+      'INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, 0, 0, 4)',
+      'GLOBAL',
+      'R1',
+      50
+    );
+
+    const reply = jest.fn();
+    const options = {
+      getSubcommand: () => 'buy',
+      getString: (_k) => 'm1.5_7d'
+    };
+    const interaction = {
+      options,
+      user: { id: 'R1' },
+      reply,
+      member: { permissions: { has: () => true } },
+      guild: { id: 'GLOBAL' }
+    };
+
+    const cmd = require('../src/commands/recruiting/recruiter.js');
+    await cmd.execute(interaction);
+    await cmd.execute(interaction);
+
+    const multiplierRows = await db.all('SELECT * FROM multipliers WHERE guild_id = ? AND recruiter_id = ?', 'GLOBAL', 'R1');
+    expect(multiplierRows.length).toBe(1);
+
+    const purchaseRows = await db.all('SELECT * FROM purchases WHERE guild_id = ? AND recruiter_id = ?', 'GLOBAL', 'R1');
+    expect(purchaseRows.length).toBe(1);
+
+    const rec = await db.get('SELECT * FROM recruiters WHERE guild_id = ? AND id = ?', 'GLOBAL', 'R1');
+    expect(rec.points).toBe(48);
+
+    expect(reply).toHaveBeenCalledTimes(2);
+    const secondReply = reply.mock.calls[1][0];
+    expect(secondReply.embeds[0].data.description).toContain('already active');
 
     await db.close();
   });

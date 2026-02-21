@@ -104,6 +104,8 @@ const commands = [
     .addBooleanOption(opt => opt.setName('remove_source_role').setDescription('Remove source role from processed members (default true)').setRequired(false))
     .addBooleanOption(opt => opt.setName('delete_source_role').setDescription('Delete source role after completion (default true)').setRequired(false))
     .addStringOption(opt => opt.setName('confirm').setDescription('Type CONFIRM for live execution').setRequired(false)),
+  new SlashCommandBuilder().setName('fixnick').setDescription('Owner-only: fix all member nicknames to REGION | IGN or 0/10 | IGN')
+    .addBooleanOption(opt => opt.setName('preview').setDescription('Preview mode (default true)').setRequired(false)),
   new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
     .addSubcommand(s => s.setName('show').setDescription('Show leaderboard').addStringOption(opt => opt.setName('region').setDescription('Region or all').setRequired(false)
@@ -132,7 +134,7 @@ const commands = [
     .addUserOption(opt => opt.setName('user').setDescription('User to add/remove (not required for list)')),
   new SlashCommandBuilder().setName('set_log_channel').setDescription('Configure anti-nuke log channel (Admin only)')
     .addChannelOption(opt => opt.setName('channel').setDescription('Channel to set as log channel').setRequired(true)),
-    new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover or clone server from backup (Owner only)')
+  new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover or clone server from backup (Owner only)')
     .addStringOption(opt => opt.setName('backup_id').setDescription('Backup ID to restore (optional)').setRequired(false))
     .addStringOption(opt => opt.setName('source_guild_id').setDescription('Source guild backup to restore from (owner only)').setRequired(false))
     .addBooleanOption(opt => opt.setName('force').setDescription('Force recovery even if not in emergency mode (owner only)').setRequired(false)),

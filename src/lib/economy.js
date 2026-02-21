@@ -17,8 +17,7 @@ const ECONOMY_CONFIG = {
     'm1.75_7d': { value: 1.75, cost: 3, days: 7 },
     'm2.0_7d': { value: 2.0, cost: 4, days: 7 },
     'm2.5_7d': { value: 2.5, cost: 6, days: 7 },
-    'm1.5_14d': { value: 1.5, cost: 4, days: 14 },
-    'm1.75_14d': { value: 1.75, cost: 6, days: 14 },
+    'm1.5_14d': { value: 1.5, cost: 6, days: 14 },
     'm2.0_14d': { value: 2.0, cost: 8, days: 14 }
   },
   STRENGTH_ALPHA: 0.18,

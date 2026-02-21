@@ -1,5 +1,10 @@
 const { EmbedBuilder, PermissionsBitField } = require('discord.js');
-const { PURCHASE_ITEMS, ROLE_IDS } = require('../../constants');
+const {
+  PURCHASE_ITEMS,
+  APPROVAL_ONLY_ITEMS,
+  PURCHASE_ITEM_ALIASES,
+  ROLE_IDS
+} = require('../../constants');
 const { hasRecruiterOrStaffPermissions, getMemberRoleIds } = require('../../lib/permissions');
 const { formatPointsValue, ECONOMY_CONFIG, applyMultiplier } = require('../../lib/economy');
 const { replyError } = require('../../lib/embeds');
@@ -7,6 +12,30 @@ const { logUnexpectedError } = require('../../lib/logger');
 const { postPurchaseLog } = require('../../lib/recruiter-helpers');
 const { withTransaction } = require('../../lib/transactions');
 const { changeRecruiterPoints } = require('./ledger-service');
+
+const PURCHASE_ITEM_LABELS = Object.freeze({
+  'custom-nickname': 'Custom nickname',
+  'vip': 'VIP',
+  'mvp': 'MVP',
+  'custom-vc': 'Custom VC',
+  'custom-role': 'Custom role',
+  'custom-suggestion': 'Custom suggestion'
+});
+
+function normalizePurchaseItemKey(item) {
+  if (!item) return '';
+  const value = String(item).trim();
+  if (!value) return '';
+  if (PURCHASE_ITEM_ALIASES && PURCHASE_ITEM_ALIASES[value]) {
+    return PURCHASE_ITEM_ALIASES[value];
+  }
+  return value;
+}
+
+function getPurchaseItemLabel(itemKey) {
+  if (!itemKey) return 'Unknown item';
+  return PURCHASE_ITEM_LABELS[itemKey] || itemKey;
+}
 
 async function hasActiveMultiplierOfType(conn, { guildId, userId, type, nowTs = Date.now() }) {
   if (!conn || !userId || !type) return false;
@@ -39,7 +68,8 @@ async function hasActiveMultiplierOfType(conn, { guildId, userId, type, nowTs = 
 }
 
 async function handleBuy({ interaction, db, guildId }) {
-  const item = interaction.options.getString('item');
+  const requestedItem = interaction.options.getString('item');
+  const item = normalizePurchaseItemKey(requestedItem);
   const userId = interaction.user.id;
   const isTest = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
 
@@ -123,19 +153,34 @@ async function handleBuy({ interaction, db, guildId }) {
     return interaction.reply({ embeds: [embed] });
   }
 
+  if (APPROVAL_ONLY_ITEMS && APPROVAL_ONLY_ITEMS[item]) {
+    const label = getPurchaseItemLabel(item);
+    const approvalNote = String(APPROVAL_ONLY_ITEMS[item]);
+    const embed = new EmbedBuilder()
+      .setTitle('Approval Required')
+      .setDescription(`**${label}** is staff-approved only.\n${approvalNote}\n\nNo points were deducted.`)
+      .setColor(0x00AAFF)
+      .setTimestamp();
+    return interaction.reply({ embeds: [embed] });
+  }
+
   const cost = PURCHASE_ITEMS[item];
-  if (!cost) {
+  if (!Number.isFinite(cost)) {
     const multiplierItems = Object.entries(ECONOMY_CONFIG.MULTIPLIERS)
-      .map(([k, v]) => `**${k}** - x${v.value} for ${v.days}d - **${formatPointsValue(v.cost)}** pts`)
+      .map(([k, v]) => `**${formatPointsValue(v.value)}x - ${v.days} days** - **${formatPointsValue(v.cost)}** pts (\`${k}\`)`)
       .join('\n');
     const purchaseItems = Object.entries(PURCHASE_ITEMS)
-      .map(([k, c]) => `**${k}** - **${formatPointsValue(c)}** pts`)
+      .map(([k, c]) => `**${getPurchaseItemLabel(k)}** - **${formatPointsValue(c)}** pts (\`${k}\`)`)
+      .join('\n');
+    const approvalOnlyItems = Object.entries(APPROVAL_ONLY_ITEMS || {})
+      .map(([k, note]) => `**${getPurchaseItemLabel(k)}** - ${String(note)} (\`${k}\`)`)
       .join('\n');
     const embed = new EmbedBuilder()
       .setTitle('Available Items')
       .addFields(
         { name: 'Multipliers', value: multiplierItems || 'None available', inline: false },
-        { name: 'Other Items', value: purchaseItems || 'None available', inline: false }
+        { name: 'Rewards', value: purchaseItems || 'None available', inline: false },
+        { name: 'Staff approval', value: approvalOnlyItems || 'None', inline: false }
       )
       .setColor(0x00AAFF)
       .setFooter({ text: 'Use /recruiter buy <item_name> to purchase' })
@@ -146,8 +191,8 @@ async function handleBuy({ interaction, db, guildId }) {
   if (points < cost) return replyError(interaction, 'Not enough points.');
 
   const roleGrantMap = {
-    'vip-role': ROLE_IDS.VIP,
-    'mvp-role': ROLE_IDS.MVP
+    'vip': ROLE_IDS.VIP,
+    'mvp': ROLE_IDS.MVP
   };
   const grantRoleId = roleGrantMap[item] || null;
   let memberRec = null;
@@ -288,7 +333,7 @@ async function handleBuy({ interaction, db, guildId }) {
 
   const embed = new EmbedBuilder()
     .setTitle('Purchase Complete')
-    .setDescription(`Purchased **${item}** for **${formatPointsValue(cost)}** points.`)
+    .setDescription(`Purchased **${getPurchaseItemLabel(item)}** for **${formatPointsValue(cost)}** points.`)
     .setColor(0x00AAFF)
     .setTimestamp();
   return interaction.reply({ embeds: [embed] });

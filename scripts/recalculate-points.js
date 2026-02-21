@@ -38,7 +38,7 @@ async function main() {
         }
       }
 
-      const points = Math.floor(1 * (multiplierValue || 1.0));
+      const points = Math.round((1 * (multiplierValue || 1.0)) * 100) / 100;
       await db.run('UPDATE recruits SET points = ? WHERE id = ?', points, r.id);
 
       earnedByRecruiter.set(r.recruiter_id, (earnedByRecruiter.get(r.recruiter_id) || 0) + points);
@@ -55,7 +55,7 @@ async function main() {
     await db.run('UPDATE recruiters SET points = 0');
     for (const [recruiterId, earned] of earnedByRecruiter.entries()) {
       const spent = spentByRecruiter.get(recruiterId) || 0;
-      const newBalance = Math.max(0, Math.floor((earned || 0) - (spent || 0)));
+      const newBalance = Math.max(0, Math.round(((earned || 0) - (spent || 0)) * 100) / 100);
       await db.run('INSERT OR IGNORE INTO recruiters (id, points, warnings, promoted, channel_base) VALUES (?, 0, 0, 0, 4)', recruiterId);
       await db.run('UPDATE recruiters SET points = ? WHERE id = ?', newBalance, recruiterId);
     }

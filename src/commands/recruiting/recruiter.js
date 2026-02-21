@@ -1,6 +1,13 @@
 const db = require('../../db_async');
 const { EmbedBuilder, PermissionsBitField } = require('discord.js');
-const { PURCHASE_ITEMS, ROLE_IDS, RECRUITER_ROLE_IDS, TESTING_USER_ID } = require('../../constants');
+const {
+  PURCHASE_ITEMS,
+  APPROVAL_ONLY_ITEMS,
+  PURCHASE_ITEM_ALIASES,
+  ROLE_IDS,
+  RECRUITER_ROLE_IDS,
+  TESTING_USER_ID
+} = require('../../constants');
 const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions, hasAdministrator, getMemberRoleIds } = require('../../lib/permissions');
 const { formatPointsValue } = require('../../lib/economy');
 const { formatDiscordTimestamp, formatUtcDate } = require('../../lib/time');
@@ -9,6 +16,15 @@ const { replyError } = require('../../lib/embeds');
 const { logUnexpectedError } = require('../../lib/logger');
 const { resolveGuildId } = require('../../lib/guild');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
+const { handleBuy } = require('../../services/recruiting/recruiter-buy-service');
+const {
+  handleMultiplierList,
+  handleMultiplierView,
+  handleMultiplierActive,
+  handleMultiplierApply,
+  handleMultiplierEvent,
+  handleMultiplierReset
+} = require('../../services/recruiting/recruiter-multiplier-service');
 const {
   calculate7DayStats,
   getPreviousMinReq,
@@ -34,6 +50,30 @@ function safeDaysLeftFromEndDate(endDateStr) {
 function formatPct(x) {
   if (!Number.isFinite(x)) return '0%';
   return `${Math.round(Math.max(0, Math.min(1, x)) * 100)}%`;
+}
+
+const PURCHASE_ITEM_LABELS = Object.freeze({
+  'custom-nickname': 'Custom nickname',
+  'vip': 'VIP',
+  'mvp': 'MVP',
+  'custom-vc': 'Custom VC',
+  'custom-role': 'Custom role',
+  'custom-suggestion': 'Custom suggestion'
+});
+
+function normalizePurchaseItemKey(item) {
+  if (!item) return '';
+  const value = String(item).trim();
+  if (!value) return '';
+  if (PURCHASE_ITEM_ALIASES && PURCHASE_ITEM_ALIASES[value]) {
+    return PURCHASE_ITEM_ALIASES[value];
+  }
+  return value;
+}
+
+function getPurchaseItemLabel(itemKey) {
+  if (!itemKey) return 'Unknown item';
+  return PURCHASE_ITEM_LABELS[itemKey] || itemKey;
 }
 
 function hasRecruiterRole(member) {
@@ -157,6 +197,34 @@ module.exports = {
         const sub = interaction.options.getSubcommand();
         const guildId = resolveGuildId(interaction.guild || interaction);
 
+        if (sub === 'buy') {
+            return handleBuy({ interaction, db, guildId });
+        }
+
+        if (sub === 'multiplier-list') {
+            return handleMultiplierList({ interaction });
+        }
+
+        if (sub === 'multiplier-view') {
+            return handleMultiplierView({ interaction, db, guildId });
+        }
+
+        if (sub === 'multiplier-active') {
+            return handleMultiplierActive({ interaction, db, guildId });
+        }
+
+        if (sub === 'multiplier-apply') {
+            return handleMultiplierApply({ interaction, db, guildId });
+        }
+
+        if (sub === 'multiplier-event') {
+            return handleMultiplierEvent({ interaction, db, guildId });
+        }
+
+        if (sub === 'multiplier-reset') {
+            return handleMultiplierReset({ interaction, db, guildId });
+        }
+
         if (sub === 'multiplier-list') {
             try {
                 const { ECONOMY_CONFIG } = require('../../lib/economy');
@@ -164,7 +232,7 @@ module.exports = {
                     .setTitle('Available Multipliers')
                     .setDescription(
                         Object.entries(ECONOMY_CONFIG.MULTIPLIERS)
-                            .map(([k, v]) => `**${k}** - x${v.value} for ${v.days}d - **${formatPointsValue(v.cost)}** pts`)
+                            .map(([k, v]) => `**${formatPointsValue(v.value)}x - ${v.days} days** - **${formatPointsValue(v.cost)}** pts (\`${k}\`)`)
                             .join('\n') || 'None available'
                     )
                     .setColor(0x00AAFF)
@@ -694,7 +762,8 @@ module.exports = {
         }
 
         if (sub === 'buy') {
-            const item = interaction.options.getString('item');
+            const requestedItem = interaction.options.getString('item');
+            const item = normalizePurchaseItemKey(requestedItem);
             const userId = interaction.user.id;
             const isTest = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
 
@@ -734,7 +803,9 @@ module.exports = {
             }
 
             const rec = await db.get('SELECT * FROM recruiters WHERE guild_id = ? AND id = ?', guildId, userId);
-            const points = (userId === TESTING_USER_ID) ? 999999999 : (rec ? rec.points : 0);
+            const points = (userId === TESTING_USER_ID)
+                ? 999999999
+                : Number(rec && rec.points ? rec.points : 0);
 
             // Check if item is a multiplier type
             const { ECONOMY_CONFIG, applyMultiplier } = require('../../lib/economy');
@@ -762,22 +833,35 @@ module.exports = {
                 return interaction.reply({ embeds: [embed] });
             }
 
+            if (APPROVAL_ONLY_ITEMS && APPROVAL_ONLY_ITEMS[item]) {
+                const label = getPurchaseItemLabel(item);
+                const approvalNote = String(APPROVAL_ONLY_ITEMS[item]);
+                const embed = new EmbedBuilder()
+                    .setTitle('Approval Required')
+                    .setDescription(`**${label}** is staff-approved only.\n${approvalNote}\n\nNo points were deducted.`)
+                    .setColor(0x00AAFF)
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed] });
+            }
+
             const cost = PURCHASE_ITEMS[item];
-            if (!cost) {
+            if (!Number.isFinite(cost)) {
                 // Show available items if item not found
-                const econ = require('../../lib/economy');
-                const { ECONOMY_CONFIG } = econ;
                 const multiplierItems = Object.entries(ECONOMY_CONFIG.MULTIPLIERS)
-                    .map(([k, v]) => `**${k}** - x${v.value} for ${v.days}d - **${formatPointsValue(v.cost)}** pts`)
+                    .map(([k, v]) => `**${formatPointsValue(v.value)}x - ${v.days} days** - **${formatPointsValue(v.cost)}** pts (\`${k}\`)`)
                     .join('\n');
                 const purchaseItems = Object.entries(PURCHASE_ITEMS)
-                    .map(([k, c]) => `**${k}** - **${formatPointsValue(c)}** pts`)
+                    .map(([k, c]) => `**${getPurchaseItemLabel(k)}** - **${formatPointsValue(c)}** pts (\`${k}\`)`)
+                    .join('\n');
+                const approvalOnlyItems = Object.entries(APPROVAL_ONLY_ITEMS || {})
+                    .map(([k, note]) => `**${getPurchaseItemLabel(k)}** - ${String(note)} (\`${k}\`)`)
                     .join('\n');
                 const embed = new EmbedBuilder()
-                    .setTitle('?? Available Items')
+                    .setTitle('Available Items')
                     .addFields(
                         { name: 'Multipliers', value: multiplierItems || 'None available', inline: false },
-                        { name: 'Other Items', value: purchaseItems || 'None available', inline: false }
+                        { name: 'Rewards', value: purchaseItems || 'None available', inline: false },
+                        { name: 'Staff approval', value: approvalOnlyItems || 'None', inline: false }
                     )
                     .setColor(0x00AAFF)
                     .setFooter({ text: 'Use /recruiter buy <item_name> to purchase' })
@@ -788,8 +872,8 @@ module.exports = {
             if (points < cost) return replyError(interaction, 'Not enough points.');
 
             const roleGrantMap = {
-                'vip-role': ROLE_IDS.VIP,
-                'mvp-role': ROLE_IDS.MVP
+                'vip': ROLE_IDS.VIP,
+                'mvp': ROLE_IDS.MVP
             };
             const grantRoleId = roleGrantMap[item] || null;
             let memberRec = null;
@@ -860,7 +944,7 @@ module.exports = {
 
             const embed = new EmbedBuilder()
                 .setTitle('Purchase Complete')
-                .setDescription(`Purchased **${item}** for **${formatPointsValue(cost)}** points.`)
+                .setDescription(`Purchased **${getPurchaseItemLabel(item)}** for **${formatPointsValue(cost)}** points.`)
                 .setColor(0x00AAFF)
                 .setTimestamp();
             return interaction.reply({ embeds: [embed] });

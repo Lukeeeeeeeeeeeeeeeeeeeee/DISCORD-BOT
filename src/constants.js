@@ -84,12 +84,19 @@ const BASE = {
     AS: { name: 'Air', emoji: '�️', color: 0x8E44AD, thumbnail: '' }
   },
   PURCHASE_ITEMS: {
-    'nickname': 10,
+    'custom-nickname': 10,
+    'vip': 15,
+    'mvp': 20,
     'custom-vc': 20,
     'custom-role': 25,
-    'custom-suggestion': 30,
-    'vip-role': 15,
-    'mvp-role': 20
+  },
+  APPROVAL_ONLY_ITEMS: {
+    'custom-suggestion': 'Must be approved by staff; anything except allies/enemies.'
+  },
+  PURCHASE_ITEM_ALIASES: {
+    'nickname': 'custom-nickname',
+    'vip-role': 'vip',
+    'mvp-role': 'mvp'
   }
 };
 
@@ -336,7 +343,9 @@ function normalizeConfig(rawConfig) {
     'REPEATED_FLAGS_TO_WARN',
     'ESCALATION_WINDOW_WEEKS',
     'REGIONS',
-    'PURCHASE_ITEMS'
+    'PURCHASE_ITEMS',
+    'APPROVAL_ONLY_ITEMS',
+    'PURCHASE_ITEM_ALIASES'
   ];
   for (const key of passthroughKeys) {
     if (rawConfig[key] !== undefined) normalized[key] = rawConfig[key];

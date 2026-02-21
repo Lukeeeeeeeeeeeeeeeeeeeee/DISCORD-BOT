@@ -2,9 +2,9 @@ jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
-function makeInteraction() {
+function makeInteraction(item = 'vip-role') {
   const reply = jest.fn();
-  const options = { getSubcommand: () => 'buy', getString: (_k) => 'vip-role' };
+  const options = { getSubcommand: () => 'buy', getString: (_k) => item };
   const member = {
     id: 'RBUY',
     roles: { add: jest.fn().mockResolvedValue(true) }
@@ -50,8 +50,22 @@ describe('buy role items', () => {
     const cmd = require('../src/commands/recruiting/recruiter.js');
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalled();
-    const rec = await require('../src/db_async').get('SELECT * FROM recruiters WHERE id = ?', 'RBUY');
+    const rec = await db.get('SELECT * FROM recruiters WHERE guild_id = ? AND id = ?', 'GLOBAL', 'RBUY');
     expect(rec.points).toBe(15); // 30 - 15
     expect(member.roles.add).toHaveBeenCalled();
+  });
+
+  test('custom-suggestion requires approval and does not deduct points', async () => {
+    const { interaction, member } = makeInteraction('custom-suggestion');
+    const cmd = require('../src/commands/recruiting/recruiter.js');
+    await cmd.execute(interaction);
+
+    expect(interaction.reply).toHaveBeenCalled();
+    const arg = interaction.reply.mock.calls[0][0];
+    expect(arg.embeds[0].data.title).toBe('Approval Required');
+
+    const rec = await db.get('SELECT * FROM recruiters WHERE guild_id = ? AND id = ?', 'GLOBAL', 'RBUY');
+    expect(rec.points).toBe(30);
+    expect(member.roles.add).not.toHaveBeenCalled();
   });
 });

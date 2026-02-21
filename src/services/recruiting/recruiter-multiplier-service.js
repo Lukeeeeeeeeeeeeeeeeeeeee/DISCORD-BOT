@@ -54,7 +54,7 @@ async function handleMultiplierList({ interaction }) {
       .setTitle('Available Multipliers')
       .setDescription(
         Object.entries(ECONOMY_CONFIG.MULTIPLIERS)
-          .map(([k, v]) => `**${k}** - x${v.value} for ${v.days}d - **${formatPointsValue(v.cost)}** pts`)
+          .map(([k, v]) => `**${formatPointsValue(v.value)}x - ${v.days} days** - **${formatPointsValue(v.cost)}** pts (\`${k}\`)`)
           .join('\n') || 'None available'
       )
       .setColor(0x00AAFF)
