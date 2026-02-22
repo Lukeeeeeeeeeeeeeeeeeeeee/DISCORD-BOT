@@ -52,6 +52,34 @@ describe('command loader', () => {
     );
   });
 
+  test('sends compatibility shim notices to onInfo when provided', () => {
+    writeFile(
+      tempRoot,
+      'commands/recruiting/recruiter.js',
+      `module.exports = { data: { name: 'recruiter' }, execute: async () => {} };`
+    );
+    writeFile(
+      tempRoot,
+      'commands/recruiter.js',
+      `module.exports = require('./recruiting/recruiter');`
+    );
+
+    const commands = new Collection();
+    const onInfo = jest.fn();
+    const onWarn = jest.fn();
+    loadCommandsIntoCollection({
+      commandsPath,
+      collection: commands,
+      onInfo,
+      onWarn
+    });
+
+    expect(onInfo).toHaveBeenCalledWith(
+      'Skipping compatibility command shim: recruiter.js -> recruiting/recruiter.js'
+    );
+    expect(onWarn).not.toHaveBeenCalled();
+  });
+
   test('keeps duplicate command detection for real conflicts', () => {
     writeFile(
       tempRoot,

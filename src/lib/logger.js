@@ -60,8 +60,21 @@ function logUnexpectedError(scope, error, meta = {}) {
   });
 }
 
-function logRuntimeEvent(level, scope, message, meta = {}) {
+function normalizeRuntimeEventLevel(level, scope, message) {
   const normalizedLevel = String(level || 'info').toLowerCase();
+  if (
+    normalizedLevel === 'warn'
+    && scope === 'startup.commands'
+    && typeof message === 'string'
+    && message.startsWith('Skipping compatibility command shim:')
+  ) {
+    return 'info';
+  }
+  return normalizedLevel;
+}
+
+function logRuntimeEvent(level, scope, message, meta = {}) {
+  const normalizedLevel = normalizeRuntimeEventLevel(level, scope, message);
   const payload = {
     scope,
     message,

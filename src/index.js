@@ -85,6 +85,9 @@ const commandsPath = path.join(__dirname, 'commands');
 const { loadErrors: commandLoadErrors } = loadCommandsIntoCollection({
   commandsPath,
   collection: client.commands,
+  onInfo: (message) => {
+    logRuntimeEvent('info', 'startup.commands', message);
+  },
   onWarn: (message) => {
     logRuntimeEvent('warn', 'startup.commands', message);
   }

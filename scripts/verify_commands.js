@@ -24,6 +24,9 @@ try {
     onLoad: ({ commandName, relPath }) => {
       console.log(`Loaded command: ${commandName} from ${relPath}`);
     },
+    onInfo: (message) => {
+      console.log(message);
+    },
     onWarn: (message) => {
       console.warn(message);
     }

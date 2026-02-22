@@ -73,7 +73,8 @@ function loadCommandsIntoCollection({
   commandsPath,
   collection,
   onLoad = null,
-  onWarn = null
+  onWarn = null,
+  onInfo = null
 } = {}) {
   if (!commandsPath) {
     throw new Error('commandsPath is required');
@@ -108,8 +109,11 @@ function loadCommandsIntoCollection({
         file: relPath,
         target: proxyTarget.relativeTarget
       });
-      if (typeof onWarn === 'function') {
-        onWarn(`Skipping compatibility command shim: ${relPath} -> ${proxyTarget.relativeTarget}`);
+      const shimMessage = `Skipping compatibility command shim: ${relPath} -> ${proxyTarget.relativeTarget}`;
+      if (typeof onInfo === 'function') {
+        onInfo(shimMessage);
+      } else if (typeof onWarn === 'function') {
+        onWarn(shimMessage);
       }
       continue;
     }
