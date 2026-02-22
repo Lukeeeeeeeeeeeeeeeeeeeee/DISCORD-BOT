@@ -18,8 +18,16 @@ const { replyError } = require('../../lib/embeds');
 const { resolveGuildId } = require('../../lib/guild');
 const { getAverageWeeklyRecruits, getAverageWeeklyRecruitsMap, formatPct } = require('../../lib/recruiter-helpers');
 const { runWithConcurrency } = require('../../lib/concurrency');
+const { logUnexpectedError } = require('../../lib/logger');
 
 const REPORT_CONCURRENCY = Number.parseInt(process.env.RECRUITMENT_REPORT_CONCURRENCY || '6', 10);
+
+function reportRecruitmentReportServiceError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'recruitment-report',
+    ...meta
+  });
+}
 
 function chunkLines(lines, maxLen = 1024) {
   const chunks = [];
@@ -119,7 +127,10 @@ async function resolveRecruiterIdsForTeam({ guild, team, db, guildId }) {
         }
       }
     } catch (e) {
-      console.error('Failed to resolve recruiter members for report', e);
+      reportRecruitmentReportServiceError('service.recruitmentReport.resolveRecruiters', e, {
+        guildId,
+        team: region || 'ALL'
+      });
     }
   }
 
@@ -161,7 +172,10 @@ async function execute(interaction, _client, dbHandle = null) {
     return replyError(interaction, `No recruiters found for ${team}.`);
   }
   const recruiterMemberMap = await fetchMembersByIds(interaction.guild, recruiterIds).catch(err => {
-    console.error('Failed to fetch recruiter members for recruitment report:', err);
+    reportRecruitmentReportServiceError('service.recruitmentReport.fetchMembers', err, {
+      guildId,
+      team
+    });
     return new Map();
   });
 
@@ -297,7 +311,10 @@ async function execute(interaction, _client, dbHandle = null) {
   for (const entry of rawResults) {
     if (!entry) continue;
     if (entry.ok === false && entry.error) {
-      console.error('Recruitment report member computation failed:', entry.error);
+      reportRecruitmentReportServiceError('service.recruitmentReport.computeMember', entry.error, {
+        guildId,
+        team
+      });
       continue;
     }
     results.push(entry);

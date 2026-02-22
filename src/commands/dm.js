@@ -4,6 +4,7 @@ const path = require('path');
 const { CHANNELS } = require('../constants');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { replyError } = require('../lib/embeds');
+const { logUnexpectedError, logRuntimeEvent } = require('../lib/logger');
 
 // Tunables
 const HARD_MAX = 1000; // absolute hard cap (allows batching up to 1000)
@@ -30,7 +31,10 @@ function readHistory() {
     if (!parsed.campaigns || typeof parsed.campaigns !== 'object') parsed.campaigns = {};
     return parsed;
   } catch (err) {
-    console.error('Failed to read DM history:', err);
+    void logUnexpectedError('command.dm.history.read', err, {
+      command: 'dm',
+      historyFile
+    });
     return { campaigns: {} };
   }
 }
@@ -51,7 +55,10 @@ function writeHistory(history) {
     fs.mkdirSync(path.dirname(historyFile), { recursive: true });
     fs.writeFileSync(historyFile, JSON.stringify(history, null, 2), 'utf8');
   } catch (err) {
-    console.error('Failed to write DM history:', err);
+    void logUnexpectedError('command.dm.history.write', err, {
+      command: 'dm',
+      historyFile
+    });
   }
 }
 
@@ -315,14 +322,24 @@ module.exports = {
       let auditCh = null;
       if (auditChId) {
         auditCh = await interaction.guild.channels.fetch(auditChId).catch(err => {
-          console.error('Failed to fetch DM audit channel:', err);
+          void logUnexpectedError('command.dm.audit.fetchChannel', err, {
+            command: 'dm',
+            guildId: interaction.guild.id,
+            channelId: auditChId
+          });
           return null;
         });
       }
 
       if (auditCh && auditCh.send) {
         await auditCh.send(`DM broadcast queued by <@${interaction.user.id}> to **${targetLabel}**: ${recipients.length} unsent recipients in ${batches.length} batch(es). Skipped ${alreadySentCount} already-sent${scannedSentCount ? ` (${scannedSentCount} detected from DM history)` : ''} and ${offset} offset.`)
-          .catch(err => console.error('Failed to post DM audit start:', err));
+          .catch((err) => {
+            void logUnexpectedError('command.dm.audit.start', err, {
+              command: 'dm',
+              guildId: interaction.guild.id,
+              channelId: auditCh.id
+            });
+          });
       }
 
       const getRetryAfterMs = (error, fallbackMs) => {
@@ -377,7 +394,13 @@ module.exports = {
         // log batch results
         if (auditCh && auditCh.send) {
           await auditCh.send(`DM batch ${b + 1}/${batches.length} by <@${interaction.user.id}> to **${targetLabel}**: attempted ${batch.length}, sent ${batchSent}, failed ${batchFailed}, retries ${batchRetries}. Total so far: sent ${totalSent}, failed ${totalFailed}, retries ${totalRetries}.`).catch(err => {
-            console.error('Failed to post DM batch audit:', err);
+            void logUnexpectedError('command.dm.audit.batch', err, {
+              command: 'dm',
+              guildId: interaction.guild.id,
+              channelId: auditCh.id,
+              batch: b + 1,
+              totalBatches: batches.length
+            });
           });
         }
 
@@ -388,7 +411,11 @@ module.exports = {
       // final audit
       if (auditCh && auditCh.send) {
         await auditCh.send(`DM broadcast completed by <@${interaction.user.id}> to **${targetLabel}**: attempted ${recipients.length}, sent ${totalSent}, failed ${totalFailed}, total retries ${totalRetries}.`).catch(err => {
-          console.error('Failed to post DM completion audit:', err);
+          void logUnexpectedError('command.dm.audit.complete', err, {
+            command: 'dm',
+            guildId: interaction.guild.id,
+            channelId: auditCh.id
+          });
         });
       }
 
@@ -404,8 +431,20 @@ module.exports = {
         },
         sentIds
       );
+      void logRuntimeEvent('info', 'command.dm.broadcast.complete', 'DM broadcast completed', {
+        command: 'dm',
+        guildId: interaction.guild.id,
+        requestedBy: interaction.user.id,
+        attempted: recipients.length,
+        sent: totalSent,
+        failed: totalFailed
+      });
     })().catch(err => {
-      console.error('DM broadcast job failed:', err);
+      void logUnexpectedError('command.dm.broadcast.job', err, {
+        command: 'dm',
+        guildId: interaction.guild.id,
+        requestedBy: interaction.user.id
+      });
     });
 
     return interaction.editReply({

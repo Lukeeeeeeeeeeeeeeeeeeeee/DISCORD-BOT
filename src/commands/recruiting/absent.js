@@ -4,6 +4,7 @@ const { hasModPlusPermissions } = require('../../lib/recruiting-system');
 const { formatUtcDateOnly } = require('../../lib/time');
 const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
+const { logUnexpectedError } = require('../../lib/logger');
 
 module.exports = {
   data: {
@@ -103,8 +104,16 @@ module.exports = {
       return respond({ embeds: [embed] });
 
     } catch (error) {
-      console.error('Error setting absence:', error);
-      return replyError(interaction, 'Failed to set absence. Please try again later.');
+      const dispatchResult = await logUnexpectedError('command.absent.execute', error, {
+        command: 'absent',
+        guildId,
+        targetId,
+        actorId: interaction.user ? interaction.user.id : null
+      });
+      return replyError(
+        interaction,
+        `Failed to set absence. Please try again later.${dispatchResult && dispatchResult.supportId ? ` Support ID: \`${dispatchResult.supportId}\`.` : ''}`
+      );
     }
   }
 };

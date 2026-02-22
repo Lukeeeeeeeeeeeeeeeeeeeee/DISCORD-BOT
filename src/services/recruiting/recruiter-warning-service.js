@@ -4,8 +4,16 @@ const { replyError } = require('../../lib/embeds');
 const { formatDiscordTimestamp } = require('../../lib/time');
 const { withTransaction } = require('../../lib/transactions');
 const { createResponder } = require('../../lib/respond');
+const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../../constants');
 const scheduler = require('../../scheduler');
+
+function reportWarningServiceError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'recruiter',
+    ...meta
+  });
+}
 
 function hasRecruiterRole(member) {
   if (!member || !member.roles || !member.roles.cache) return false;
@@ -63,11 +71,11 @@ async function handleWarn({ interaction, db, guildId }) {
       const m = await interaction.guild.members.fetch(member.id).catch(() => null);
       if (m) {
         await m.send({ embeds: [warnEmbed] }).catch(err => {
-          console.error('Failed to DM recruiter warning:', err);
+          reportWarningServiceError('service.recruiter.warning.dmRecruiter', err, { recruiterId: member.id });
         });
       }
     } catch (e) {
-      console.error('Failed to DM warned member', { memberId: member.id, error: e });
+      reportWarningServiceError('service.recruiter.warning.dmWarnedMember', e, { recruiterId: member.id });
     }
 
     const ch = interaction.guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS);
@@ -82,21 +90,30 @@ async function handleWarn({ interaction, db, guildId }) {
         .setColor(0xFF4400)
         .setTimestamp();
       if (expiredAt) staffEmbed.addFields({ name: 'Expires', value: formatDiscordTimestamp(expiredAt, 'R'), inline: true });
-      ch.send({ embeds: [staffEmbed] }).catch((e) => console.error('Failed to post warning to channel', { channelId: ch.id, error: e }));
+      ch.send({ embeds: [staffEmbed] }).catch((e) => {
+        reportWarningServiceError('service.recruiter.warning.postChannel', e, { recruiterId: member.id, channelId: ch.id });
+      });
     }
 
     try {
       await scheduler.recomputeLeaderboards(db, interaction.guild);
       await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
     } catch (e) {
-      console.error('Failed to update leaderboards after warning:', e);
+      reportWarningServiceError('service.recruiter.warning.recomputeLeaderboards', e, { recruiterId: member.id, guildId });
     }
 
-    console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note, expiredAt });
+    void logRuntimeEvent('info', 'service.recruiter.warning.issued', 'Warning issued', {
+      command: 'recruiter',
+      recruiterId: member.id,
+      by: interaction.user.id,
+      guildId,
+      note,
+      expiredAt
+    });
 
     return respond({ content: `Warning issued to ${member.tag}.` });
   } catch (e) {
-    console.error('Failed to issue warning', { error: e });
+    reportWarningServiceError('service.recruiter.warning.issue', e, { recruiterId: member.id, guildId });
     return respond({ content: 'Failed to issue warning.' });
   }
 }
@@ -132,7 +149,7 @@ async function handleWarningsRevoke({ interaction, db, guildId }) {
       await scheduler.recomputeLeaderboards(db, interaction.guild);
       await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
     } catch (e) {
-      console.error('Failed to update leaderboards after warning revocation:', e);
+      reportWarningServiceError('service.recruiter.warning.revoke.recomputeLeaderboards', e, { recruiterId: member.id, guildId });
     }
 
     return respond({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}.` });
@@ -140,7 +157,7 @@ async function handleWarningsRevoke({ interaction, db, guildId }) {
     if (e && e.message && e.message.includes('Warning #') && e.message.includes('not found')) {
       return respond({ content: e.message });
     }
-    console.error('Failed to revoke warnings', { error: e });
+    reportWarningServiceError('service.recruiter.warning.revoke', e, { recruiterId: member.id, guildId });
     return respond({ content: 'Failed to revoke warnings.' });
   }
 }

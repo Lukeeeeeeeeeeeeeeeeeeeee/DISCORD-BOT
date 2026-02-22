@@ -7,11 +7,19 @@ const {
 } = require('../constants');
 const { getStaffRoleIds } = require('../lib/permissions');
 const { replyError } = require('../lib/embeds');
+const { logUnexpectedError } = require('../lib/logger');
 
 const FALLBACK_OWNER_ID = '1381692847018868778';
 const MESSAGE_LINK_REGEX = /^https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/([^/]+)\/([^/]+)\/([^/?#]+)(?:[/?#].*)?$/i;
 const REACTION_FETCH_PAGE_SIZE = 100;
 const REACTION_FETCH_MAX_PAGES = Number.parseInt(process.env.ACTIVITY_CHECK_REACTION_FETCH_MAX_PAGES || '50', 10);
+
+function reportActivityCheckError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'activitycheck',
+    ...meta
+  });
+}
 
 function toIdSet(values) {
   if (!Array.isArray(values)) return new Set();
@@ -426,11 +434,10 @@ module.exports = {
         changed += 1;
       } catch (error) {
         failed += 1;
-        console.error('Activity check role update failed', {
+        reportActivityCheckError('command.activitycheck.roleUpdate', error, {
           memberId: member.id,
           guildId: interaction.guild.id,
-          messageId: message.id,
-          error
+          messageId: message.id
         });
       }
     }

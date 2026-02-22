@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { replyError } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
+const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -66,12 +67,16 @@ module.exports = {
 
       await interaction.editReply({ embeds: [embed] });
     } catch (error) {
-      console.error('Force backup error:', error);
+      const dispatchResult = await logUnexpectedError('command.forceBackup.execute', error, {
+        command: 'force_backup',
+        guildId: interaction.guild ? interaction.guild.id : null,
+        actorId: interaction.user ? interaction.user.id : null
+      });
 
       const embed = new EmbedBuilder()
         .setColor('#FF0000')
         .setTitle('Backup Creation Failed')
-        .setDescription(`Failed to create backup: ${error.message}`)
+        .setDescription(`Failed to create backup: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`)
         .setTimestamp();
 
       if (interaction.replied || interaction.deferred) {

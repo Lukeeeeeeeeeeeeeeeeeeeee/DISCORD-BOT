@@ -1,3 +1,5 @@
+const { AECS, CodexError } = require('./aecs');
+
 function formatErrorForLog(error) {
   if (!error) return { message: 'Unknown error' };
   if (error instanceof Error) {
@@ -11,26 +13,86 @@ function formatErrorForLog(error) {
   return { message: String(error) };
 }
 
-function logUnexpectedError(scope, error, meta = {}) {
+function inferCodeFromScope(scope, error) {
+  const value = String(scope || '').toLowerCase();
+  const message = error instanceof Error ? String(error.message || '').toLowerCase() : String(error || '').toLowerCase();
+
+  if (value.startsWith('command') || value.includes('interaction')) return 'CMD-500';
+  if (value.startsWith('scheduler') || value.includes('weekly') || value.includes('cron')) return 'SCH-500';
+  if (value.includes('db') || message.includes('sqlite') || message.includes('constraint')) return 'DB-500';
+  return 'SYS-500';
+}
+
+function toMeta(scope, error, meta) {
   const payload = {
     scope,
-    ...meta,
-    error: formatErrorForLog(error)
+    ...(meta || {})
   };
-  console.error('Unexpected error', payload);
+
+  if (error instanceof Error) {
+    payload.name = error.name;
+    payload.message = error.message;
+    if (error.code !== undefined) payload.errorCode = String(error.code);
+  } else if (error !== undefined && error !== null) {
+    payload.message = String(error);
+  }
+
+  return payload;
+}
+
+function logUnexpectedError(scope, error, meta = {}) {
+  const code = inferCodeFromScope(scope, error);
+  const codex = error instanceof CodexError
+    ? error
+    : CodexError.fromUnknown(error, code, toMeta(scope, error, meta));
+
+  return AECS.dispatch(codex, {
+    scope,
+    meta: toMeta(scope, error, meta)
+  }).catch((dispatchError) => {
+    const payload = {
+      scope,
+      error: formatErrorForLog(error),
+      dispatchError: formatErrorForLog(dispatchError)
+    };
+    console.error('Unexpected error (AECS dispatch failed)', payload);
+    return { supportId: null, suppressed: false, record: null };
+  });
 }
 
 function logRuntimeEvent(level, scope, message, meta = {}) {
-  const payload = { scope, message, ...meta };
-  if (level === 'warn') {
-    console.warn('Runtime event', payload);
-    return;
-  }
-  if (level === 'error') {
-    console.error('Runtime event', payload);
-    return;
-  }
-  console.log('Runtime event', payload);
+  const normalizedLevel = String(level || 'info').toLowerCase();
+  const payload = {
+    scope,
+    message,
+    level: normalizedLevel,
+    ...(meta || {})
+  };
+
+  const code = normalizedLevel === 'error' ? 'SYS-500' : (normalizedLevel === 'warn' ? 'SYS-210' : 'SYS-110');
+  const codex = new CodexError(code, payload, { message: String(message || 'Runtime event') });
+
+  return AECS.dispatch(codex, {
+    scope: scope || 'runtime',
+    meta: payload
+  }).catch((dispatchError) => {
+    const fallback = {
+      scope,
+      message,
+      level: normalizedLevel,
+      meta,
+      dispatchError: formatErrorForLog(dispatchError)
+    };
+    if (normalizedLevel === 'error') {
+      console.error('Runtime event', fallback);
+      return;
+    }
+    if (normalizedLevel === 'warn') {
+      console.warn('Runtime event', fallback);
+      return;
+    }
+    console.log('Runtime event', fallback);
+  });
 }
 
 const ANTINUKE_COMMANDS = new Set([
@@ -67,7 +129,7 @@ function getInteractionMeta(interaction) {
     if (interaction.options && typeof interaction.options.getSubcommand === 'function') {
       subcommand = interaction.options.getSubcommand(false);
     }
-  } catch (e) {
+  } catch (_error) {
     subcommand = null;
   }
   return {
@@ -83,5 +145,6 @@ module.exports = {
   logUnexpectedError,
   logRuntimeEvent,
   getCommandCategory,
-  getInteractionMeta
+  getInteractionMeta,
+  formatErrorForLog
 };

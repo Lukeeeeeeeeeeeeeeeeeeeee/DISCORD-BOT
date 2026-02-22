@@ -15,6 +15,14 @@ const { getWeekStartUtcTs } = require('../../lib/week');
 const { clampText } = require('../../lib/text');
 const { getTeamLabel, normalizeRegionInput } = require('../../lib/regions');
 const { replyError } = require('../../lib/embeds');
+const { logUnexpectedError } = require('../../lib/logger');
+
+function reportRecruitmentReportCommandError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'recruitment_report',
+    ...meta
+  });
+}
 
 function chunkLines(lines, maxLen = 1024) {
   const chunks = [];
@@ -107,7 +115,7 @@ function getPerformanceCategory({ percentile, warnings, recruits7d, minReq, abse
   return { bucket: 'PASSING', label: '✅ Passing', color: 0x00AAFF };
 }
 
-async function resolveRecruiterIdsForTeam(guild, team, db) {
+async function resolveRecruiterIdsForTeam(guild, team, db, guildId) {
   const ids = new Set();
 
   const addRoleMembers = (roleId) => {
@@ -148,7 +156,10 @@ async function resolveRecruiterIdsForTeam(guild, team, db) {
         }
       }
     } catch (e) {
-      console.error('Failed to resolve recruiter members for report', e);
+      reportRecruitmentReportCommandError('command.recruitmentReport.resolveRecruiters', e, {
+        guildId,
+        team: region || 'ALL'
+      });
     }
   }
 
@@ -168,6 +179,7 @@ module.exports = {
     if (!interaction.guild) {
       return replyError(interaction, 'This command can only be used in a server.');
     }
+    const guildId = interaction.guild.id;
 
     const rawTeam = interaction.options && typeof interaction.options.getString === 'function'
       ? interaction.options.getString('team')
@@ -192,7 +204,10 @@ module.exports = {
       try {
         if (interaction.guild.members && typeof interaction.guild.members.fetch === 'function') {
           await interaction.guild.members.fetch().catch(err => {
-            console.error('Failed to prime member cache for recruitment report:', err);
+            reportRecruitmentReportCommandError('command.recruitmentReport.primeMemberCache', err, {
+              guildId,
+              team
+            });
           });
         }
       } catch (e) {
@@ -200,7 +215,7 @@ module.exports = {
       }
     }
 
-    const recruiterIds = await resolveRecruiterIdsForTeam(interaction.guild, team, db);
+    const recruiterIds = await resolveRecruiterIdsForTeam(interaction.guild, team, db, guildId);
     if (!recruiterIds.length) {
       return replyError(interaction, `No recruiters found for ${team}.`);
     }

@@ -5,6 +5,14 @@ const recruitsRepo = require('../../repos/recruits-repo');
 const { withTransaction } = require('../../lib/transactions');
 const { changeRecruiterPoints } = require('./ledger-service');
 const scheduler = require('../../scheduler');
+const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
+
+function reportRevokeRecruitServiceError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'revoke-recruit',
+    ...meta
+  });
+}
 
 async function revokeRecruit({ interaction, db, guildId, member, reason }) {
   // Validate member exists
@@ -62,11 +70,17 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
     );
     if (targetMember.manageable && canManageNicknames) {
       await targetMember.setNickname(null).catch(err => {
-        console.error('Failed to clear recruit nickname:', err);
+        reportRevokeRecruitServiceError('service.revokeRecruit.clearNickname', err, {
+          guildId,
+          recruitedId: member.id
+        });
       });
     }
   } catch (roleError) {
-    console.error('Failed to remove roles:', roleError);
+    reportRevokeRecruitServiceError('service.revokeRecruit.removeRoles', roleError, {
+      guildId,
+      recruitedId: member.id
+    });
   }
 
   // Update leaderboards to reflect the change
@@ -76,7 +90,10 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
       await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
     }
   } catch (e) {
-    console.error('Failed to update leaderboards after recruit revocation:', e);
+    reportRevokeRecruitServiceError('service.revokeRecruit.recomputeLeaderboards', e, {
+      guildId,
+      recruitedId: member.id
+    });
   }
 
   // Post notification to invite channels
@@ -95,17 +112,21 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
   const logChannel = interaction.guild.channels.cache.get(CHANNELS.ECONOMY_NOTIFICATIONS);
   if (logChannel) {
     await logChannel.send({ embeds: [embed] }).catch(err => {
-      console.error('Failed to log recruit revocation:', err);
+      reportRevokeRecruitServiceError('service.revokeRecruit.logChannel', err, {
+        guildId,
+        recruitedId: member.id,
+        channelId: CHANNELS.ECONOMY_NOTIFICATIONS
+      });
     });
   }
 
-
-  console.info('Recruit revoked', {
+  void logRuntimeEvent('info', 'service.revokeRecruit.completed', 'Recruit revoked', {
     recruitedId: member.id,
     recruiterId: recruit.recruiter_id,
     region: recruit.region,
     by: interaction.user.id,
-    reason
+    reason,
+    guildId
   });
 
   return null;

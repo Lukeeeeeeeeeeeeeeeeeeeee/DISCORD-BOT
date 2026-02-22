@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { buildErrorEmbed } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
+const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -93,9 +94,17 @@ module.exports = {
       }
 
     } catch (error) {
-      console.error('Score reset error:', error);
-      
-      const embed = buildErrorEmbed(`Failed to reset scores: ${error.message}`, 'Score Reset Failed');
+      const dispatchResult = await logUnexpectedError('command.resetScores.execute', error, {
+        command: 'reset_scores',
+        guildId: interaction.guild ? interaction.guild.id : null,
+        actorId: interaction.user ? interaction.user.id : null,
+        targetUserId: targetUser ? targetUser.id : null
+      });
+
+      const embed = buildErrorEmbed(
+        `Failed to reset scores: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`,
+        'Score Reset Failed'
+      );
       return respond({ embeds: [embed] });
     }
   }

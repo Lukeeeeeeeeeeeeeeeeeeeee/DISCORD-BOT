@@ -1,5 +1,6 @@
 const http = require('http');
 const url = require('url');
+const { AECS } = require('./aecs');
 
 function getHealthPath() {
   const raw = String(process.env.HEALTHCHECK_PATH || '').trim();
@@ -11,7 +12,7 @@ async function checkDb(db) {
   try {
     await db.get('SELECT 1');
     return true;
-  } catch (e) {
+  } catch (_error) {
     return false;
   }
 }
@@ -28,11 +29,19 @@ function startHealthServer({ db, port }) {
     }
 
     const dbOk = await checkDb(db);
+    let aecs = null;
+    try {
+      aecs = AECS.getMetrics();
+    } catch (_error) {
+      aecs = null;
+    }
+
     const payload = {
       status: dbOk ? 'ok' : 'degraded',
       db: dbOk ? 'ok' : 'error',
       uptimeSec: Math.round(process.uptime()),
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      aecs
     };
 
     res.statusCode = dbOk ? 200 : 503;

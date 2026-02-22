@@ -5,6 +5,7 @@ const { getRoleLevel } = require('../../lib/recruiting-system');
 const { hasAdministrator } = require('../../lib/permissions');
 const { addInactivePoints, formatPoints, hasInactiveRole, resolveInactiveTeam } = require('../../lib/inactive-points');
 const { replyError } = require('../../lib/embeds');
+const { logUnexpectedError } = require('../../lib/logger');
 
 // ── Permission: Helper+ of SAME team, or MOD+ for any team ─────────
 function getCallerTeam(member) {
@@ -69,8 +70,14 @@ module.exports = {
                     interaction.guild.id
                 );
             } catch (error) {
-                console.error('Failed to reset inactive points:', error);
-                return interaction.editReply({ content: 'Failed to reset inactive points.' });
+                const dispatchResult = await logUnexpectedError('command.inactivepoints.resetAll', error, {
+                    command: 'inactivepoints',
+                    guildId: interaction.guild ? interaction.guild.id : null,
+                    actorId: interaction.user ? interaction.user.id : null
+                });
+                return interaction.editReply({
+                    content: `Failed to reset inactive points.${dispatchResult && dispatchResult.supportId ? ` Support ID: ${dispatchResult.supportId}.` : ''}`
+                });
             }
 
             const updatedRows = Number(result && Number.isFinite(result.changes) ? result.changes : 0);
@@ -134,13 +141,27 @@ module.exports = {
         }
 
         const delta = sub === 'remove' ? -rawPoints : rawPoints;
-        const result = await addInactivePoints({
-            db,
-            member: targetMember,
-            delta,
-            guild: interaction.guild,
-            verifierId: interaction.user.id
-        });
+        let result;
+        try {
+            result = await addInactivePoints({
+                db,
+                member: targetMember,
+                delta,
+                guild: interaction.guild,
+                verifierId: interaction.user.id
+            });
+        } catch (error) {
+            const dispatchResult = await logUnexpectedError('command.inactivepoints.addOrRemove', error, {
+                command: 'inactivepoints',
+                guildId: interaction.guild ? interaction.guild.id : null,
+                actorId: interaction.user ? interaction.user.id : null,
+                memberId: targetUser.id,
+                delta
+            });
+            return interaction.editReply({
+                content: `Failed to update inactive points.${dispatchResult && dispatchResult.supportId ? ` Support ID: ${dispatchResult.supportId}.` : ''}`
+            });
+        }
 
         if (result.promoted) {
             return interaction.editReply({

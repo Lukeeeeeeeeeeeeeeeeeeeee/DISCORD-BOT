@@ -269,7 +269,7 @@ async function handleBuy({ interaction, db, guildId }) {
             minPoints: 0
           });
         }).catch(refundErr => {
-          console.error('Failed to refund purchase after role grant failure:', refundErr);
+          void logUnexpectedError('economy.buyItemRefundRoleGrantFailure', refundErr, { userId, item, guildId });
         });
       }
       logUnexpectedError('economy.buyItemRoleGrant', e, { userId, item });
@@ -289,7 +289,7 @@ async function handleBuy({ interaction, db, guildId }) {
       });
     } catch (e) {
       await memberRec.roles.remove(grantRoleId).catch(err => {
-        console.error('Failed to rollback role grant after purchase ledger error:', err);
+        void logUnexpectedError('economy.buyItemRollbackRoleGrant', err, { userId, item, guildId });
       });
       if (reserved) {
         await withTransaction(db, async (tx) => {
@@ -303,7 +303,7 @@ async function handleBuy({ interaction, db, guildId }) {
             minPoints: 0
           });
         }).catch(refundErr => {
-          console.error('Failed to refund purchase after persistence failure:', refundErr);
+          void logUnexpectedError('economy.buyItemRefundPersistenceFailure', refundErr, { userId, item, guildId });
         });
       }
       logUnexpectedError('economy.buyItemPersist', e, { userId, item });

@@ -7,11 +7,19 @@ const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
+const { logUnexpectedError } = require('../../lib/logger');
 
 const FULL_FETCH_MAX = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_MAX || '5000', 10);
 const FULL_FETCH_COOLDOWN_MS = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_COOLDOWN_MS || '600000', 10);
 const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
 let lastFullFetchAt = 0;
+
+function reportLeaderboardCommandError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'leaderboard',
+    ...meta
+  });
+}
 
 async function warmMemberCacheIfNeeded(guild, totalRoleMembers, reason, options = {}) {
   if (!guild || !guild.members || typeof guild.members.fetch !== 'function') return false;
@@ -32,7 +40,11 @@ async function warmMemberCacheIfNeeded(guild, totalRoleMembers, reason, options 
     const hint = e && (e.code === 50001 || e.code === 50013)
       ? ' Check Server Members intent and bot permissions.'
       : '';
-    console.error('Failed to warm member cache for leaderboard', { reason, error: e, hint });
+    reportLeaderboardCommandError('command.leaderboard.warmMemberCache', e, {
+      reason,
+      hint,
+      guildId: guild ? guild.id : null
+    });
     return false;
   }
 }
@@ -56,7 +68,10 @@ module.exports = {
           const dbRows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
           dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
         } catch (e) {
-          console.error('Failed to load recruiter IDs for leaderboard', e);
+          reportLeaderboardCommandError('command.leaderboard.loadRecruiterIds.region', e, {
+            guildId,
+            region
+          });
         }
 
         const recruiterRoleId = RECRUITER_ROLE_IDS[region];
@@ -101,7 +116,10 @@ module.exports = {
             dbIds.forEach(id => allRecruiterIds.add(id));
           }
         } catch (e) {
-          console.error('Failed to resolve recruiter members for leaderboard', e);
+          reportLeaderboardCommandError('command.leaderboard.resolveMembers.region', e, {
+            guildId,
+            region
+          });
         }
 
         const recruiterMembers = Array.from(allRecruiterIds);
@@ -206,7 +224,7 @@ module.exports = {
         const dbRows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
         dbIds = (dbRows || []).map(r => r.id).filter(Boolean);
       } catch (e) {
-        console.error('Failed to load recruiter IDs for leaderboard', e);
+        reportLeaderboardCommandError('command.leaderboard.loadRecruiterIds.global', e, { guildId });
       }
       if (recruiterRoleIds.length === 0 && dbIds.length === 0) {
         return replyError(interaction, 'No recruiter roles are configured. Set RECRUITER_ROLE_IDS for EU/NA/AS.');
@@ -239,7 +257,7 @@ module.exports = {
           dbIds.forEach(id => allRecruiterIds.add(id));
         }
       } catch (e) {
-        console.error('Failed to resolve recruiter members for global leaderboard', e);
+        reportLeaderboardCommandError('command.leaderboard.resolveMembers.global', e, { guildId });
       }
 
       const recruiterMembers = Array.from(allRecruiterIds);
@@ -352,7 +370,7 @@ module.exports = {
         }
         return interaction.editReply({ content: summary.join('\n'), allowedMentions: { parse: [] } });
       } catch (e) {
-        console.error(e);
+        reportLeaderboardCommandError('command.leaderboard.init', e, { guildId });
         return replyError(interaction, 'Failed to initialize leaderboards.');
       }
     }

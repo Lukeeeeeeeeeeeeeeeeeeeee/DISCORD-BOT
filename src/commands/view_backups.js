@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { buildErrorEmbed } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
+const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -118,8 +119,15 @@ module.exports = {
 
       return respond({ embeds: [embed] });
     } catch (error) {
-      console.error('View backups error:', error);
-      const embed = buildErrorEmbed(`Error: ${error.message}`, 'Failed to View Backups');
+      const dispatchResult = await logUnexpectedError('command.viewBackups.execute', error, {
+        command: 'view_backups',
+        guildId: interaction.guild ? interaction.guild.id : null,
+        actorId: interaction.user ? interaction.user.id : null
+      });
+      const embed = buildErrorEmbed(
+        `Error: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`,
+        'Failed to View Backups'
+      );
       return respond({ embeds: [embed] });
     }
   }

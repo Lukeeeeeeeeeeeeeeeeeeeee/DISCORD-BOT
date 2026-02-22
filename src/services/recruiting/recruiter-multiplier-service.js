@@ -10,6 +10,14 @@ const {
 const { replyError } = require('../../lib/embeds');
 const { formatDiscordTimestamp } = require('../../lib/time');
 const { hasAdministrator } = require('../../lib/permissions');
+const { logUnexpectedError } = require('../../lib/logger');
+
+function reportMultiplierServiceError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'recruiter',
+    ...meta
+  });
+}
 
 function resolveServiceGuildId(guildId, interaction) {
   return guildId || (interaction && interaction.guild && interaction.guild.id) || process.env.GUILD_ID || 'GLOBAL';
@@ -62,7 +70,7 @@ async function handleMultiplierList({ interaction }) {
 
     return interaction.reply({ embeds: [embed] });
   } catch (e) {
-    console.error('Failed to show multiplier list', e);
+    reportMultiplierServiceError('service.recruiter.multiplier.list', e);
     return replyError(interaction, 'Failed to show multipliers.');
   }
 }
@@ -86,7 +94,10 @@ async function handleMultiplierView({ interaction, db, guildId }) {
 
     return interaction.reply({ embeds: [embed] });
   } catch (e) {
-    console.error('Failed to show multiplier view', e);
+    reportMultiplierServiceError('service.recruiter.multiplier.view', e, {
+      targetId: target ? target.id : null,
+      guildId: resolvedGuildId
+    });
     return replyError(interaction, 'Failed to show multiplier.');
   }
 }
@@ -118,7 +129,7 @@ async function handleMultiplierActive({ interaction, db, guildId }) {
 
     return interaction.reply({ embeds: [embed] });
   } catch (e) {
-    console.error('Failed to show active multipliers', e);
+    reportMultiplierServiceError('service.recruiter.multiplier.active', e, { guildId: resolvedGuildId });
     return replyError(interaction, 'Failed to show active multipliers.');
   }
 }
@@ -161,7 +172,11 @@ async function handleMultiplierApply({ interaction, db, guildId }) {
       .setTimestamp();
     return interaction.reply({ embeds: [embed] });
   } catch (e) {
-    console.error('Failed to apply multiplier', e);
+    reportMultiplierServiceError('service.recruiter.multiplier.apply', e, {
+      guildId: resolvedGuildId,
+      targetId: target ? target.id : null,
+      type
+    });
     return replyError(interaction, 'Failed to apply multiplier.');
   }
 }
@@ -192,7 +207,10 @@ async function handleMultiplierReset({ interaction, db, guildId }) {
       .setTimestamp();
     return interaction.reply({ embeds: [embed] });
   } catch (e) {
-    console.error('Failed to reset multipliers', e);
+    reportMultiplierServiceError('service.recruiter.multiplier.reset', e, {
+      guildId: resolvedGuildId,
+      targetId: target ? target.id : null
+    });
     return replyError(interaction, 'Failed to reset multipliers.');
   }
 }
@@ -281,7 +299,11 @@ async function handleMultiplierEvent({ interaction, db, guildId }) {
     if (String((e && e.message) || '') === 'INSUFFICIENT_POINTS') {
       return replyError(interaction, `Target user does not have enough points for cost ${formatPointsValue(cost)}.`);
     }
-    console.error('Failed to create event multiplier', e);
+    reportMultiplierServiceError('service.recruiter.multiplier.event', e, {
+      guildId: resolvedGuildId,
+      targetId: target ? target.id : null,
+      type
+    });
     return replyError(interaction, 'Failed to create event multiplier.');
   }
 

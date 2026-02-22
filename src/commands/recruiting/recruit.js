@@ -11,6 +11,7 @@ const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
+const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
@@ -21,6 +22,13 @@ function inferTeamFromRecruiter(member) {
   if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA && member.roles.cache.has(RECRUITER_ROLE_IDS.NA)) return 'NA';
   if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS && member.roles.cache.has(RECRUITER_ROLE_IDS.AS)) return 'AS';
   return null;
+}
+
+function reportRecruitError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'recruit',
+    ...meta
+  });
 }
 
 function inferRegionTagFromMember(member) {
@@ -144,7 +152,7 @@ async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
       roleBase
     });
   } catch (e) {
-    console.error('Failed to store weekly calc after trial promotion:', e);
+    reportRecruitError('command.recruit.storeWeeklyCalcAfterPromotion', e);
   }
 }
 
@@ -281,17 +289,17 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
   }
 
   await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER).catch(err => {
-    console.error('Failed to remove trial recruiter role:', err);
+    reportRecruitError('command.recruit.trialPromotion.removeTrialRole', err);
   });
   await recruiterMember.roles.add(ROLE_IDS.AUTO_PROMOTE_ROLE).catch(err => {
-    console.error('Failed to add auto promote role:', err);
+    reportRecruitError('command.recruit.trialPromotion.addAutoPromoteRole', err);
   });
   await recruiterMember.roles.add(ROLE_IDS.RECRUITER).catch(err => {
-    console.error('Failed to add recruiter role:', err);
+    reportRecruitError('command.recruit.trialPromotion.addRecruiterRole', err);
   });
   if (recruiterRoleId) {
     await recruiterMember.roles.add(recruiterRoleId).catch(err => {
-      console.error('Failed to add region recruiter role:', err);
+      reportRecruitError('command.recruit.trialPromotion.addRegionRole', err);
     });
   }
 
@@ -304,7 +312,7 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
   await storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember);
 
   await db.run('DELETE FROM trial_fast_track WHERE guild_id = ? AND recruiter_id = ?', guildId, recruiterMember.id).catch(err => {
-    console.error('Failed to clear trial fast track row:', err);
+    reportRecruitError('command.recruit.trialPromotion.clearFastTrack', err);
   });
   return { promoted: true };
 }
@@ -416,7 +424,7 @@ module.exports = {
         // set nickname
         if (recruitedGuildMember.manageable) {
           await recruitedGuildMember.setNickname(`${ign}${nicknameSuffix}`).catch(err => {
-            console.error('Failed to set recruit nickname:', err);
+            reportRecruitError('command.recruit.setNickname', err);
           });
         }
 
@@ -429,7 +437,7 @@ module.exports = {
             Date.now()
           );
         } catch (e) {
-          console.error('Failed to initialize rookie points:', e);
+          reportRecruitError('command.recruit.initRookiePoints', e);
         }
 
 
@@ -483,7 +491,7 @@ module.exports = {
             await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id);
           }
         } catch (e) {
-          console.error('Trial fast-track update failed:', e);
+          reportRecruitError('command.recruit.trialFastTrack', e);
         }
 
         try {
@@ -493,7 +501,7 @@ module.exports = {
             await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
           }
         } catch (e) {
-          console.error('Failed updating leaderboards:', e);
+          reportRecruitError('command.recruit.recomputeLeaderboards', e);
         }
 
         let dmFailure = null;
@@ -508,9 +516,14 @@ module.exports = {
           dmFailure = isBlocked ? 'blocked' : 'error';
           const tag = member && (member.tag || member.username) ? (member.tag || member.username) : member.id;
           if (isBlocked) {
-            console.log(`Rookie welcome DM skipped for ${tag} (${member.id}) - DMs closed or blocked.`);
+            void logRuntimeEvent('warn', 'command.recruit.welcomeDm.skipped', 'Rookie welcome DM skipped (DM blocked/closed)', {
+              command: 'recruit',
+              guildId,
+              recruitedId: member.id,
+              tag
+            });
           } else {
-            console.error('Failed to DM rookie welcome message:', err);
+            reportRecruitError('command.recruit.welcomeDm.send', err);
           }
         }
 
@@ -522,7 +535,11 @@ module.exports = {
 
         return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.${dmNote}` });
       } catch (err) {
-        console.error('Recruit command error:', err);
+        const dispatchResult = await logUnexpectedError('command.recruit.execute.inner', err, {
+          command: 'recruit',
+          guildId,
+          recruiterId: interaction.user.id
+        });
 
         // Handle specific errors
         if (err && err.message && err.message.includes('UNIQUE constraint failed')) {
@@ -538,11 +555,15 @@ module.exports = {
         }
 
         // Generic error
-        return replyError(interaction, 'An error occurred while processing the recruit command. Please try again later.');
+        return replyError(interaction, `An error occurred while processing the recruit command. Please try again later.${dispatchResult && dispatchResult.supportId ? ` Support ID: \`${dispatchResult.supportId}\`.` : ''}`);
       }
     } catch (err) {
-      console.error('Recruit command error:', err);
-      return replyError(interaction, 'An error occurred while processing the recruit command. Please try again later.');
+      const dispatchResult = await logUnexpectedError('command.recruit.execute.outer', err, {
+        command: 'recruit',
+        guildId: interaction.guild ? interaction.guild.id : null,
+        recruiterId: interaction.user ? interaction.user.id : null
+      });
+      return replyError(interaction, `An error occurred while processing the recruit command. Please try again later.${dispatchResult && dispatchResult.supportId ? ` Support ID: \`${dispatchResult.supportId}\`.` : ''}`);
     }
   }
 };

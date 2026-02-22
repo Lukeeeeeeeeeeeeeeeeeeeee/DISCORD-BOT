@@ -12,6 +12,7 @@ const { createVoiceStateUpdateHandler } = require('./events/voice-state-update')
 const analytics = require('./lib/analytics');
 const runtime = require('./lib/runtime');
 const { logUnexpectedError, logRuntimeEvent, getCommandCategory, getInteractionMeta } = require('./lib/logger');
+const { AECS, CodexError, provisionTelemetryWebhooks } = require('./lib/aecs');
 const { preloadLocales } = require('./lib/i18n');
 const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
 const { startHealthServer } = require('./lib/health-server');
@@ -45,6 +46,7 @@ const client = new Client({ intents });
 client.commands = new Collection();
 runtime.setClient(client);
 runtime.setDb(db);
+AECS.init();
 
 // Create anti-nuke system instance
 const antiNukeSystem = new AntiNukeSystem();
@@ -60,7 +62,7 @@ function isInteractionAckError(error) {
 }
 
 function createRuntimeTraceId() {
-  return `EV-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`.toUpperCase();
+  return AECS.createTraceId().toUpperCase();
 }
 
 const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
@@ -102,8 +104,40 @@ async function onReady() {
   _readyCalled = true;
   logRuntimeEvent('info', 'startup.ready', 'Discord client ready', { userTag: client.user.tag });
   await preloadLocales().catch((err) => {
-    console.error('Failed to preload locales:', err);
+    logUnexpectedError('startup.i18n.preload', err);
   });
+
+  const telemetryProvision = await provisionTelemetryWebhooks(client).catch((err) => {
+    logUnexpectedError('startup.aecs.telemetry.provision', err);
+    return null;
+  });
+  if (telemetryProvision && telemetryProvision.config) {
+    AECS.setTelemetryRouting(telemetryProvision.config);
+    const routeSummary = Array.isArray(telemetryProvision.routes)
+      ? telemetryProvision.routes.map((route) => ({
+        route: route.routeKey,
+        status: route.status,
+        reason: route.reason || null,
+        channelId: route.channelId || null
+      }))
+      : [];
+    if (telemetryProvision.changed) {
+      logRuntimeEvent('info', 'startup.aecs.telemetry', 'AECS telemetry webhooks provisioned', {
+        details: {
+          changed: true,
+          routes: routeSummary
+        }
+      });
+    } else if (!telemetryProvision.skipped) {
+      logRuntimeEvent('info', 'startup.aecs.telemetry', 'AECS telemetry webhooks verified', {
+        details: {
+          changed: false,
+          routes: routeSummary
+        }
+      });
+    }
+  }
+
   await antiNukeInitPromise;
   scheduler.start(client, db);
 
@@ -149,6 +183,7 @@ async function flushShutdown(signal) {
       if (analytics && typeof analytics.flushAll === 'function') {
         await analytics.flushAll();
       }
+      await AECS.shutdown();
       const antiNuke = runtime.getAntiNuke();
       if (antiNuke && typeof antiNuke.saveData === 'function') {
         await antiNuke.saveData();
@@ -188,45 +223,61 @@ async function flushShutdown(signal) {
 process.on('SIGINT', () => void flushShutdown('SIGINT'));
 process.on('SIGTERM', () => void flushShutdown('SIGTERM'));
 process.on('uncaughtException', async (err) => {
-  logUnexpectedError('process.uncaughtException', err);
+  const codex = new CodexError('SYS-910', {
+    scope: 'process.uncaughtException',
+    name: err && err.name ? err.name : 'Error',
+    message: err && err.message ? err.message : String(err)
+  }, { originalError: err instanceof Error ? err : null });
+  await AECS.dispatch(codex, { scope: 'process.uncaughtException' });
   await flushShutdown('uncaughtException');
 });
 process.on('unhandledRejection', async (reason) => {
-  logUnexpectedError('process.unhandledRejection', reason instanceof Error ? reason : new Error(String(reason)));
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  const codex = new CodexError('SYS-910', {
+    scope: 'process.unhandledRejection',
+    name: error.name,
+    message: error.message
+  }, { originalError: error });
+  await AECS.dispatch(codex, { scope: 'process.unhandledRejection' });
   await flushShutdown('unhandledRejection');
 });
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
-  const cmd = client.commands.get(interaction.commandName);
-  if (!cmd) return;
-  try {
-    if (interaction.guild) {
-      await analytics.recordCommand({ guildId: interaction.guild.id, commandName: interaction.commandName });
-    }
-    await dispatchCommand(cmd, interaction, { client, db });
-  } catch (err) {
-    // Ignore ack/expiry races (unknown interaction / already acknowledged).
-    if (isInteractionAckError(err)) return;
-    const meta = getInteractionMeta(interaction);
-    const category = getCommandCategory(meta.command);
-    logUnexpectedError('command', err, { ...meta, category });
-    // Safely notify the user (use editReply if deferred/replied)
+  await AECS.withInteraction(interaction, async () => {
+    const cmd = client.commands.get(interaction.commandName);
+    if (!cmd) return;
     try {
-      const { buildErrorEmbed } = require('./lib/embeds');
-      const embed = buildErrorEmbed('Command failed.');
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.reply({ embeds: [embed], flags: 64 });
+      if (interaction.guild) {
+        await analytics.recordCommand({ guildId: interaction.guild.id, commandName: interaction.commandName });
       }
-    } catch (err2) {
-      // If the interaction is expired, Discord returns code 10062 - ignore silently
-      if (isInteractionAckError(err2)) return;
-      // otherwise log
-      console.error('Failed to send error response for interaction:', err2);
+      await dispatchCommand(cmd, interaction, { client, db });
+    } catch (err) {
+      // Ignore ack/expiry races (unknown interaction / already acknowledged).
+      if (isInteractionAckError(err)) return;
+      const meta = getInteractionMeta(interaction);
+      const category = getCommandCategory(meta.command);
+      const dispatchResult = await logUnexpectedError('command', err, { ...meta, category });
+      const supportSuffix = dispatchResult && dispatchResult.supportId
+        ? ` Support ID: \`${dispatchResult.supportId}\`.`
+        : '';
+      // Safely notify the user (use editReply if deferred/replied)
+      try {
+        const { buildErrorEmbed } = require('./lib/embeds');
+        const embed = buildErrorEmbed(`Command failed.${supportSuffix}`);
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ embeds: [embed] });
+        } else {
+          await interaction.reply({ embeds: [embed], flags: 64 });
+        }
+      } catch (err2) {
+        // If the interaction is expired, Discord returns code 10062 - ignore silently
+        if (isInteractionAckError(err2)) return;
+        // otherwise log
+        console.error('Failed to send error response for interaction:', err2);
+      }
     }
-  }
+  });
 });
 
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
@@ -291,34 +342,41 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
 client.on('messageCreate', async message => {
   if (!message || !message.guild) return;
   if (!message.author || message.author.bot) return;
+  await AECS.runWithTrace({
+    source: 'message',
+    command: 'messageCreate',
+    userId: message.author.id,
+    guildId: message.guild.id,
+    channelId: message.channelId
+  }, async () => {
+    const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
+    if (!member) return;
 
-  const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
-  if (!member) return;
-
-  try {
-    await analytics.recordMessage({
-      guildId: message.guild.id,
-      channelId: message.channelId,
-      userId: message.author.id,
-      timestamp: message.createdTimestamp || Date.now()
-    });
-  } catch (e) {
-    console.error('Failed to record analytics message:', e);
-  }
-
-  try {
-    await trackRookieChatMessage({ db, member, guild: message.guild, client });
-  } catch (e) {
-    console.error('Failed to track rookie chat message:', e);
-  }
-
-  if (enableMessageContent) {
     try {
-      await handleRookieWarLogMessage({ db, message, member, guild: message.guild, client });
+      await analytics.recordMessage({
+        guildId: message.guild.id,
+        channelId: message.channelId,
+        userId: message.author.id,
+        timestamp: message.createdTimestamp || Date.now()
+      });
     } catch (e) {
-      console.error('Failed to track rookie war log:', e);
+      console.error('Failed to record analytics message:', e);
     }
-  }
+
+    try {
+      await trackRookieChatMessage({ db, member, guild: message.guild, client });
+    } catch (e) {
+      console.error('Failed to track rookie chat message:', e);
+    }
+
+    if (enableMessageContent) {
+      try {
+        await handleRookieWarLogMessage({ db, message, member, guild: message.guild, client });
+      } catch (e) {
+        console.error('Failed to track rookie war log:', e);
+      }
+    }
+  });
 });
 
 // Track invite usage when members join

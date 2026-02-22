@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { buildErrorEmbed } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
+const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -81,9 +82,17 @@ module.exports = {
       return respond({ embeds: [embed] });
 
     } catch (error) {
-      console.error('Set log channel error:', error);
-      
-      const embed = buildErrorEmbed(`Error: ${error.message}`, 'Failed to Set Log Channel');
+      const dispatchResult = await logUnexpectedError('command.setLogChannel.execute', error, {
+        command: 'set_log_channel',
+        guildId: interaction.guild ? interaction.guild.id : null,
+        actorId: interaction.user ? interaction.user.id : null,
+        channelId: channel ? channel.id : null
+      });
+
+      const embed = buildErrorEmbed(
+        `Error: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`,
+        'Failed to Set Log Channel'
+      );
       return respond({ embeds: [embed] });
     }
   }

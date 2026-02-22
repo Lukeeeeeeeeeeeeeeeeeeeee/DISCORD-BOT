@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
 const runtime = require('../lib/runtime');
 const { replyError } = require('../lib/embeds');
+const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -118,12 +119,16 @@ module.exports = {
 
       await interaction.editReply({ embeds: [embed] });
     } catch (error) {
-      console.error('Emergency recovery error:', error);
+      const dispatchResult = await logUnexpectedError('command.emergencyRecover.execute', error, {
+        command: 'emergency_recover',
+        guildId: interaction.guild ? interaction.guild.id : null,
+        actorId: interaction.user ? interaction.user.id : null
+      });
 
       const embed = new EmbedBuilder()
         .setColor('#FF0000')
         .setTitle('Emergency Recovery Failed')
-        .setDescription(`Failed to recover: ${error.message}`)
+        .setDescription(`Failed to recover: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`)
         .setTimestamp();
 
       if (interaction.replied || interaction.deferred) {

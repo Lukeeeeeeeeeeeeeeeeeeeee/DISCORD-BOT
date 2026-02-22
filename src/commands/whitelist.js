@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const runtime = require('../lib/runtime');
 const { replyError } = require('../lib/embeds');
+const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -266,8 +267,18 @@ module.exports = {
       }
 
     } catch (error) {
-      console.error('Whitelist command error:', error);
-      return replyError(interaction, `Whitelist command failed: ${error.message}`, { flags: 64, title: 'Whitelist Command Failed' });
+      const dispatchResult = await logUnexpectedError('command.whitelist.execute', error, {
+        command: 'whitelist',
+        guildId: interaction.guild ? interaction.guild.id : null,
+        actorId: interaction.user ? interaction.user.id : null,
+        action,
+        targetUserId: targetUser ? targetUser.id : null
+      });
+      return replyError(
+        interaction,
+        `Whitelist command failed: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`,
+        { flags: 64, title: 'Whitelist Command Failed' }
+      );
     }
   }
 };

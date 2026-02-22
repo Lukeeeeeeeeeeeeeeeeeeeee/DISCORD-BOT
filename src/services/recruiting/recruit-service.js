@@ -13,6 +13,7 @@ const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
+const { logUnexpectedError } = require('../../lib/logger');
 const { hasRecruiterOrStaffPermissions, hasAdministrator } = require('../../lib/permissions');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
@@ -25,6 +26,13 @@ const scheduler = require('../../scheduler');
 
 function createTraceId() {
   return `recruit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function reportRecruitServiceError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'recruit',
+    ...meta
+  });
 }
 
 function inferTeamFromRecruiter(member) {
@@ -190,7 +198,7 @@ async function storeMinReqSnapshotAfterPromotion(dbHandle, guild, recruiterMembe
       roleBase
     });
   } catch (e) {
-    console.error('Failed to store weekly calc after trial promotion:', e);
+    reportRecruitServiceError('service.recruit.storeWeeklyCalcAfterPromotion', e);
   }
 }
 
@@ -327,7 +335,7 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
       await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER, 'Trial recruiter auto-promotion');
     }
   } catch (err) {
-    console.error('Failed to apply trial recruiter auto-promotion roles:', err);
+    reportRecruitServiceError('service.recruit.trialPromotion.applyRoles', err, { recruiterId: recruiterMember.id });
     return { promoted: false, error: 'Failed to update recruiter roles during auto-promotion.' };
   }
 
@@ -337,7 +345,7 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
     await trialFastTrackRepo.clear(dbHandle, guildId, recruiterMember.id);
     return { promoted: true };
   } catch (e) {
-    console.error('Failed to finalize trial recruiter auto-promotion state:', e);
+    reportRecruitServiceError('service.recruit.trialPromotion.finalize', e, { recruiterId: recruiterMember.id });
     try {
       const rollbackRemove = rolesToAdd.filter(roleId => recruiterMember.roles.cache.has(roleId));
       if (rollbackRemove.length) {
@@ -347,7 +355,7 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
         await recruiterMember.roles.add(ROLE_IDS.TRIAL_RECRUITER, 'Rollback failed trial auto-promotion');
       }
     } catch (rollbackErr) {
-      console.error('Failed to rollback trial recruiter role changes after DB failure:', rollbackErr);
+      reportRecruitServiceError('service.recruit.trialPromotion.rollbackRoles', rollbackErr, { recruiterId: recruiterMember.id });
     }
     return { promoted: false, error: 'Failed to finalize trial auto-promotion state.' };
   }
@@ -490,18 +498,18 @@ async function execute(interaction, _client, dbHandle = null) {
         try {
           if (rolesToAdd.length) await recruitedGuildMember.roles.remove(rolesToAdd);
         } catch (rollbackErr) {
-          console.error('Failed to rollback recruit added roles:', rollbackErr);
+          reportRecruitServiceError('service.recruit.rollback.addedRoles', rollbackErr, { recruitedId: recruitedGuildMember.id });
         }
         try {
           if (rolesToRemove.length) await recruitedGuildMember.roles.add(rolesToRemove);
         } catch (rollbackErr) {
-          console.error('Failed to rollback recruit removed roles:', rollbackErr);
+          reportRecruitServiceError('service.recruit.rollback.removedRoles', rollbackErr, { recruitedId: recruitedGuildMember.id });
         }
         if (nicknameChanged && recruitedGuildMember.manageable && hasManageNicknamesPermission(botMember)) {
           try {
             await recruitedGuildMember.setNickname(prevNickname);
           } catch (rollbackErr) {
-            console.error('Failed to rollback recruit nickname:', rollbackErr);
+            reportRecruitServiceError('service.recruit.rollback.nickname', rollbackErr, { recruitedId: recruitedGuildMember.id });
           }
         }
       };
@@ -557,7 +565,7 @@ async function execute(interaction, _client, dbHandle = null) {
             await recruitsRepo.deleteInvalidByRecruitedId(tx, guildId, member.id);
           });
         } catch (cleanupErr) {
-          console.error('Failed to clean pending recruit state:', cleanupErr);
+          reportRecruitServiceError('service.recruit.cleanupPendingState', cleanupErr, { recruitedId: member.id });
         }
       };
 
@@ -569,7 +577,7 @@ async function execute(interaction, _client, dbHandle = null) {
           await recruitedGuildMember.setNickname(`${ign}${nicknameSuffix}`).then(() => {
             nicknameChanged = true;
           }).catch(err => {
-            console.error('Failed to set recruit nickname:', err);
+            reportRecruitServiceError('service.recruit.setNickname', err, { recruitedId: recruitedGuildMember.id });
           });
         }
       } catch (discordErr) {
@@ -603,11 +611,11 @@ async function execute(interaction, _client, dbHandle = null) {
         if (recruiterMember) {
           const trialResult = await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id);
           if (trialResult && trialResult.error) {
-            console.error('Trial fast-track completed with warning:', trialResult.error);
+            reportRecruitServiceError('service.recruit.trialFastTrack.warning', trialResult.error, { recruiterId: interaction.user.id, recruitedId: member.id });
           }
         }
       } catch (e) {
-        console.error('Trial fast-track update failed:', e);
+        reportRecruitServiceError('service.recruit.trialFastTrack.error', e, { recruiterId: interaction.user.id, recruitedId: member.id });
       }
 
       try {
@@ -616,7 +624,7 @@ async function execute(interaction, _client, dbHandle = null) {
           await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
         }
       } catch (e) {
-        console.error('Failed updating leaderboards:', e);
+        reportRecruitServiceError('service.recruit.recomputeLeaderboards', e, { guildId, recruiterId: interaction.user.id });
       }
 
       try {
@@ -624,7 +632,7 @@ async function execute(interaction, _client, dbHandle = null) {
           content: buildRecruitWelcomeMessage(teamName),
           allowedMentions: { parse: [] }
         }).catch((err) => {
-          console.error('Failed to DM rookie welcome message:', err);
+          reportRecruitServiceError('service.recruit.welcomeDm.send', err, { guildId, recruitedId: member.id });
         });
       } catch (e) {
         void e;
@@ -632,7 +640,12 @@ async function execute(interaction, _client, dbHandle = null) {
 
       return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.` });
     } catch (err) {
-      console.error('Recruit command error:', { traceId, error: err });
+      const dispatchResult = await logUnexpectedError('service.recruit.execute.inner', err, {
+        command: 'recruit',
+        traceId,
+        guildId,
+        recruiterId: interaction.user.id
+      });
 
       if (err && err.message && err.message.includes('UNIQUE constraint failed')) {
         return replyError(interaction, 'That member has already been recruited before and cannot be recruited again.');
@@ -654,10 +667,15 @@ async function execute(interaction, _client, dbHandle = null) {
         return replyError(interaction, 'Database schema is outdated or incomplete. Please notify an admin to run migrations and restart the bot.');
       }
 
-      return replyError(interaction, `An error occurred while processing the recruit command. Ref: ${traceId}`);
+      return replyError(interaction, `An error occurred while processing the recruit command. Ref: ${traceId}${dispatchResult && dispatchResult.supportId ? ` | Support ID: ${dispatchResult.supportId}` : ''}`);
     }
   } catch (err) {
-    console.error('Recruit command error:', { traceId, error: err });
+    const dispatchResult = await logUnexpectedError('service.recruit.execute.outer', err, {
+      command: 'recruit',
+      traceId,
+      guildId: interaction.guild ? interaction.guild.id : null,
+      recruiterId: interaction.user ? interaction.user.id : null
+    });
     if (isTransientSqliteError(err)) {
       return replyError(interaction, 'Recruiting system is busy right now. Please retry in a few seconds.');
     }
@@ -667,7 +685,7 @@ async function execute(interaction, _client, dbHandle = null) {
     if (err && err.message && err.message.includes('Missing Permissions')) {
       return replyError(interaction, 'Missing permissions to assign roles. Please check bot permissions.');
     }
-    return replyError(interaction, `An error occurred while processing the recruit command. Ref: ${traceId}`);
+    return replyError(interaction, `An error occurred while processing the recruit command. Ref: ${traceId}${dispatchResult && dispatchResult.supportId ? ` | Support ID: ${dispatchResult.supportId}` : ''}`);
   }
 }
 

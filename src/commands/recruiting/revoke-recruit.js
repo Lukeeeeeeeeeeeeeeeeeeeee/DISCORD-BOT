@@ -3,6 +3,14 @@ const { EmbedBuilder } = require('discord.js');
 const { ensureCommandAccess } = require('../../lib/command-auth');
 const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
+const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
+
+function reportRevokeRecruitCommandError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'revoke-recruit',
+    ...meta
+  });
+}
 
 module.exports = {
   data: {
@@ -87,11 +95,17 @@ module.exports = {
         // Reset nickname
         if (targetMember.manageable) {
           await targetMember.setNickname(null).catch(err => {
-            console.error('Failed to clear recruit nickname:', err);
+            reportRevokeRecruitCommandError('command.revokeRecruit.clearNickname', err, {
+              guildId,
+              recruitedId: member.id
+            });
           });
         }
       } catch (roleError) {
-        console.error('Failed to remove roles:', roleError);
+        reportRevokeRecruitCommandError('command.revokeRecruit.removeRoles', roleError, {
+          guildId,
+          recruitedId: member.id
+        });
       }
 
       // Update leaderboards to reflect the change
@@ -99,7 +113,10 @@ module.exports = {
         const scheduler = require('../../scheduler');
         await scheduler.recomputeLeaderboards(db, interaction.guild);
       } catch (e) {
-        console.error('Failed to update leaderboards after recruit revocation:', e);
+        reportRevokeRecruitCommandError('command.revokeRecruit.recomputeLeaderboards', e, {
+          guildId,
+          recruitedId: member.id
+        });
       }
 
       // Post notification to invite channels
@@ -120,12 +137,16 @@ module.exports = {
       const logChannel = interaction.guild.channels.cache.get(CHANNELS.ECONOMY_NOTIFICATIONS);
       if (logChannel) {
         await logChannel.send({ embeds: [embed] }).catch(err => {
-          console.error('Failed to log recruit revocation:', err);
+          reportRevokeRecruitCommandError('command.revokeRecruit.logChannel', err, {
+            guildId,
+            recruitedId: member.id,
+            channelId: CHANNELS.ECONOMY_NOTIFICATIONS
+          });
         });
       }
 
-
-      console.info('Recruit revoked', {
+      void logRuntimeEvent('info', 'command.revokeRecruit.completed', 'Recruit revoked', {
+        command: 'revoke-recruit',
         guildId,
         recruitedId: member.id,
         recruiterId: recruit.recruiter_id,
@@ -137,8 +158,16 @@ module.exports = {
       return respond({ content: `Successfully revoked recruit status for ${member.tag}. ✅` });
 
     } catch (error) {
-      console.error('Failed to revoke recruit:', error);
-      return replyError(interaction, 'Failed to revoke recruit. Please try again later.');
+      const dispatchResult = await logUnexpectedError('command.revokeRecruit.execute', error, {
+        command: 'revoke-recruit',
+        guildId,
+        recruitedId: member ? member.id : null,
+        actorId: interaction.user ? interaction.user.id : null
+      });
+      return replyError(
+        interaction,
+        `Failed to revoke recruit. Please try again later.${dispatchResult && dispatchResult.supportId ? ` Support ID: \`${dispatchResult.supportId}\`.` : ''}`
+      );
     }
   }
 };

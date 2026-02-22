@@ -13,7 +13,7 @@ const { formatPointsValue } = require('../../lib/economy');
 const { formatDiscordTimestamp, formatUtcDate } = require('../../lib/time');
 const { clampText, sanitizeForEmbed } = require('../../lib/text');
 const { replyError } = require('../../lib/embeds');
-const { logUnexpectedError } = require('../../lib/logger');
+const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { resolveGuildId } = require('../../lib/guild');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { handleBuy } = require('../../services/recruiting/recruiter-buy-service');
@@ -34,6 +34,13 @@ const {
   getRecruiterStatus
 } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
+
+function reportRecruiterCommandError(scope, error, meta = {}) {
+  void logUnexpectedError(scope, error, {
+    command: 'recruiter',
+    ...meta
+  });
+}
 
 function toUnixSeconds(ms) {
   return Math.floor(ms / 1000);
@@ -128,12 +135,13 @@ async function postPurchaseLog({ guild, userId, item, cost }) {
       : null;
     if (channel && channel.send) {
       const formattedCost = formatPointsValue(cost);
-await channel.send(`<@${userId}> bought **${item}** for **${formattedCost}** pts!`).catch(err => {
-    console.error('Failed to post purchase log:', err);
-});
+      await channel.send(`<@${userId}> bought **${item}** for **${formattedCost}** pts!`).catch(err => {
+        reportRecruiterCommandError('command.recruiter.postPurchaseLog', err, { userId, item });
+      });
     }
   } catch (e) {
     // best-effort logging
+    void e;
 }
 }
 
@@ -240,7 +248,7 @@ module.exports = {
 
                 return interaction.reply({ embeds: [embed] });
             } catch (e) {
-                console.error('Failed to show multiplier list', e);
+                reportRecruiterCommandError('command.recruiter.multiplier.list', e);
                 return replyError(interaction, 'Failed to show multipliers.');
             }
         }
@@ -265,7 +273,9 @@ module.exports = {
 
                 return interaction.reply({ embeds: [embed] });
             } catch (e) {
-                console.error('Failed to show multiplier view', e);
+                reportRecruiterCommandError('command.recruiter.multiplier.view', e, {
+                    targetId: target ? target.id : null
+                });
                 return replyError(interaction, 'Failed to show multiplier.');
             }
         }
@@ -296,7 +306,7 @@ module.exports = {
 
                 return interaction.reply({ embeds: [embed] });
             } catch (e) {
-                console.error('Failed to show active multipliers', e);
+                reportRecruiterCommandError('command.recruiter.multiplier.active', e, { guildId });
                 return replyError(interaction, 'Failed to show active multipliers.');
             }
         }
@@ -352,7 +362,11 @@ module.exports = {
                     .setTimestamp();
                 return interaction.reply({ embeds: [embed] });
             } catch (e) {
-                console.error('Failed to apply multiplier', e);
+                reportRecruiterCommandError('command.recruiter.multiplier.apply', e, {
+                    guildId,
+                    targetId: target ? target.id : null,
+                    type
+                });
                 return replyError(interaction, 'Failed to apply multiplier.');
             }
         }
@@ -431,7 +445,11 @@ module.exports = {
                 if (String((e && e.message) || '') === 'INSUFFICIENT_POINTS') {
                     return replyError(interaction, `Target user does not have enough points for cost ${formatPointsValue(cost)}.`);
                 }
-                console.error('Failed to create event multiplier', e);
+                reportRecruiterCommandError('command.recruiter.multiplier.event', e, {
+                    guildId,
+                    targetId: target ? target.id : null,
+                    type
+                });
                 return replyError(interaction, 'Failed to create event multiplier.');
             }
 
@@ -489,7 +507,10 @@ module.exports = {
                     .setTimestamp();
                 return interaction.reply({ embeds: [embed] });
             } catch (e) {
-                console.error('Failed to reset multipliers', e);
+                reportRecruiterCommandError('command.recruiter.multiplier.reset', e, {
+                    guildId,
+                    targetId: target ? target.id : null
+                });
                 return replyError(interaction, 'Failed to reset multipliers.');
             }
         }
@@ -933,7 +954,11 @@ module.exports = {
                 try { await db.run('ROLLBACK'); } catch (err) { void err; }
                 if (grantRoleId && memberRec) {
                     await memberRec.roles.remove(grantRoleId).catch(err => {
-                        console.error('Failed to rollback role grant after purchase error:', err);
+                        reportRecruiterCommandError('command.recruiter.buy.rollbackRoleGrant', err, {
+                            guildId,
+                            userId,
+                            item
+                        });
                     });
                 }
                 logUnexpectedError('economy.buyItem', e, { userId, item });
@@ -998,11 +1023,17 @@ module.exports = {
                     const m = await interaction.guild.members.fetch(member.id).catch(() => null);
                     if (m) {
                         await m.send({ embeds: [warnEmbed] }).catch(err => {
-                            console.error('Failed to DM recruiter warning:', err);
+                            reportRecruiterCommandError('command.recruiter.warn.dmRecruiter', err, {
+                                guildId,
+                                recruiterId: member.id
+                            });
                         });
                     }
                 } catch (e) {
-                    console.error('Failed to DM warned member', { memberId: member.id, error: e });
+                    reportRecruiterCommandError('command.recruiter.warn.dmMemberFetch', e, {
+                        guildId,
+                        recruiterId: member.id
+                    });
                 }
 
                 // Post to staff channel as embed with context
@@ -1019,7 +1050,13 @@ module.exports = {
                         .setColor(0xFF4400)
                         .setTimestamp();
                     if (expiredAt) staffEmbed.addFields({ name: 'Expires', value: formatDiscordTimestamp(expiredAt, 'R'), inline: true });
-                    ch.send({ embeds: [staffEmbed] }).catch((e) => console.error('Failed to post warning to channel', { channelId: ch.id, error: e }));
+                    ch.send({ embeds: [staffEmbed] }).catch((e) => {
+                        reportRecruiterCommandError('command.recruiter.warn.postChannel', e, {
+                            guildId,
+                            recruiterId: member.id,
+                            channelId: ch.id
+                        });
+                    });
                 }
 
                 // Update leaderboards
@@ -1028,14 +1065,27 @@ module.exports = {
                     await scheduler.recomputeLeaderboards(db, interaction.guild);
                     await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
                 } catch (e) {
-                    console.error('Failed to update leaderboards after warning:', e);
+                    reportRecruiterCommandError('command.recruiter.warn.recomputeLeaderboards', e, {
+                        guildId,
+                        recruiterId: member.id
+                    });
                 }
 
-                console.info('Warning issued', { recruiterId: member.id, by: interaction.user.id, note, expiredAt });
+                void logRuntimeEvent('info', 'command.recruiter.warn.issued', 'Warning issued', {
+                    command: 'recruiter',
+                    guildId,
+                    recruiterId: member.id,
+                    by: interaction.user.id,
+                    note,
+                    expiredAt
+                });
 
                 return respond({ content: `Warning issued to ${member.tag}. ?` });
             } catch (e) {
-                console.error('Failed to issue warning', { error: e });
+                reportRecruiterCommandError('command.recruiter.warn.issue', e, {
+                    guildId,
+                    recruiterId: member.id
+                });
                 return respond({ content: 'Failed to issue warning.' });
             }
         }
@@ -1080,12 +1130,19 @@ module.exports = {
                     await scheduler.recomputeLeaderboards(db, interaction.guild);
                     await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
                 } catch (e) {
-                    console.error('Failed to update leaderboards after warning revocation:', e);
+                    reportRecruiterCommandError('command.recruiter.warningsRevoke.recomputeLeaderboards', e, {
+                        guildId,
+                        recruiterId: member.id
+                    });
                 }
 
                 return respond({ content: `Revoked ${warningId ? `warning #${warningId}` : 'all warnings'} for ${member.tag}. ?` });
             } catch (e) {
-                console.error('Failed to revoke warnings', { error: e });
+                reportRecruiterCommandError('command.recruiter.warningsRevoke.execute', e, {
+                    guildId,
+                    recruiterId: member.id,
+                    warningId
+                });
                 return respond({ content: 'Failed to revoke warnings.' });
             }
         }

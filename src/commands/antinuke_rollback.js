@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const AntiNukeRollback = require('../lib/antinuke-rollback');
 const runtime = require('../lib/runtime');
 const { replyError, buildErrorEmbed } = require('../lib/embeds');
+const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -147,8 +148,15 @@ module.exports = {
           await i.editReply({ embeds: [resultEmbed] });
 
         } catch (error) {
-          console.error('Rollback error:', error);
-          const errorEmbed = buildErrorEmbed(`Rollback failed: ${error.message}`, 'Rollback Failed');
+          const dispatchResult = await logUnexpectedError('command.antinukeRollback.execute', error, {
+            command: 'antinuke_rollback',
+            guildId: guild.id,
+            actorId: interaction.user ? interaction.user.id : null
+          });
+          const errorEmbed = buildErrorEmbed(
+            `Rollback failed: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`,
+            'Rollback Failed'
+          );
           await i.editReply({
             embeds: [errorEmbed],
             components: []
@@ -171,7 +179,11 @@ module.exports = {
           embeds: [],
           components: []
         }).catch(err => {
-          console.error('Failed to update rollback timeout reply:', err);
+          void logUnexpectedError('command.antinukeRollback.timeoutReply', err, {
+            command: 'antinuke_rollback',
+            guildId: guild.id,
+            actorId: interaction.user ? interaction.user.id : null
+          });
         });
       }
     });

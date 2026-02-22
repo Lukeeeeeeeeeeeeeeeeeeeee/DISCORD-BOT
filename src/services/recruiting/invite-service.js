@@ -3,6 +3,7 @@ const InviteSystem = require('../../lib/invite-system');
 const { hasAdministrator } = require('../../lib/permissions');
 const analytics = require('../../lib/analytics');
 const { replyError } = require('../../lib/embeds');
+const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 
 const inviteSystems = new Map();
 const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
@@ -155,11 +156,21 @@ async function execute(interaction, _client, db) {
 
       if (!result.reused) {
         await analytics.recordInviteCreated({ guildId: interaction.guild.id, timestamp: Date.now() }).catch(err => {
-          console.error('Failed to record invite creation analytics:', err);
+          void logUnexpectedError('service.invite.analytics.recordInviteCreated', err, {
+            command: 'invite',
+            guildId: interaction.guild.id,
+            userId: interaction.user.id
+          });
         });
       }
 
-      console.log(`🔗 Invite created: ${result.invite.code} by ${interaction.user.tag} (${interaction.user.id})`);
+      void logRuntimeEvent('info', 'service.invite.created', 'Invite created', {
+        command: 'invite',
+        guildId: interaction.guild.id,
+        userId: interaction.user.id,
+        inviteCode: result.invite.code,
+        reused: Boolean(result.reused)
+      });
 
     } else {
       const embed = new EmbedBuilder()
@@ -173,12 +184,16 @@ async function execute(interaction, _client, db) {
 
   } catch (error) {
     if (isInteractionAckError(error)) return;
-    console.error('Invite command error:', error);
+    const dispatchResult = await logUnexpectedError('service.invite.execute', error, {
+      command: 'invite',
+      guildId: interaction.guild ? interaction.guild.id : null,
+      userId: interaction.user ? interaction.user.id : null
+    });
 
     const embed = new EmbedBuilder()
       .setColor('#FF0000')
       .setTitle('❌ Invite System Error')
-      .setDescription('An error occurred while processing your request. Please try again later.')
+      .setDescription(`An error occurred while processing your request. Please try again later.${dispatchResult && dispatchResult.supportId ? ` Support ID: \`${dispatchResult.supportId}\`.` : ''}`)
       .setTimestamp();
 
     try {
@@ -189,7 +204,11 @@ async function execute(interaction, _client, db) {
       }
     } catch (responseError) {
       if (isInteractionAckError(responseError)) return;
-      console.error('Failed to send invite command error response:', responseError);
+      await logUnexpectedError('service.invite.errorResponse', responseError, {
+        command: 'invite',
+        guildId: interaction.guild ? interaction.guild.id : null,
+        userId: interaction.user ? interaction.user.id : null
+      });
     }
   }
 }
