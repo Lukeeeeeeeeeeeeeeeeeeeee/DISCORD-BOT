@@ -40,7 +40,11 @@ describe('AECS telemetry webhook provisioning', () => {
     'AECS_TELEMETRY_WEBHOOK_URL_HIGH',
     'AECS_TELEMETRY_FATAL_CHANNEL_ID',
     'AECS_TELEMETRY_HIGH_CHANNEL_ID',
-    'AECS_TELEMETRY_SPLIT_WEBHOOKS'
+    'AECS_TELEMETRY_SPLIT_WEBHOOKS',
+    'TELEMETRY_CHANNEL_ID',
+    'LOG_CHANNEL_ID',
+    'ANTINUKE_LOG_CHANNEL_ID',
+    'DISCORD_LOG_CHANNEL_ID'
   ];
   let envSnapshot = null;
 
@@ -102,5 +106,45 @@ describe('AECS telemetry webhook provisioning', () => {
     expect(result.config.telemetryWebhookUrl).toBe(existing.url);
     expect(result.changed).toBe(false);
     expect(channel.createWebhook).not.toHaveBeenCalled();
+  });
+
+  test('accepts channel mention format in AECS_TELEMETRY_CHANNEL_ID', async () => {
+    process.env.AECS_AUTO_CREATE_WEBHOOK = 'true';
+    process.env.AECS_TELEMETRY_CHANNEL_ID = '<#123456789012345678>';
+
+    const channel = makeChannel({ id: '123456789012345678' });
+    const client = {
+      user: { id: 'bot-user' },
+      channels: {
+        cache: new Map([['123456789012345678', channel]]),
+        fetch: jest.fn(async (id) => channel.id === id ? channel : null)
+      }
+    };
+
+    const result = await provisionTelemetryWebhooks(client);
+    const defaultRoute = result.routes.find((route) => route.routeKey === 'default');
+
+    expect(defaultRoute.status).toBe('created');
+    expect(channel.createWebhook).toHaveBeenCalledTimes(1);
+  });
+
+  test('falls back to LOG_CHANNEL_ID when AECS_TELEMETRY_CHANNEL_ID is missing', async () => {
+    process.env.AECS_AUTO_CREATE_WEBHOOK = 'true';
+    process.env.LOG_CHANNEL_ID = 'chan-1';
+
+    const channel = makeChannel({ id: 'chan-1' });
+    const client = {
+      user: { id: 'bot-user' },
+      channels: {
+        cache: new Map([['chan-1', channel]]),
+        fetch: jest.fn(async (id) => channel.id === id ? channel : null)
+      }
+    };
+
+    const result = await provisionTelemetryWebhooks(client);
+    const defaultRoute = result.routes.find((route) => route.routeKey === 'default');
+
+    expect(defaultRoute.status).toBe('created');
+    expect(channel.createWebhook).toHaveBeenCalledTimes(1);
   });
 });

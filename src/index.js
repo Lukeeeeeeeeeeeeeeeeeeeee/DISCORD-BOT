@@ -121,7 +121,19 @@ async function onReady() {
         channelId: route.channelId || null
       }))
       : [];
-    if (telemetryProvision.changed) {
+    const defaultRoute = Array.isArray(telemetryProvision.routes)
+      ? telemetryProvision.routes.find((route) => route && route.routeKey === 'default')
+      : null;
+
+    if (defaultRoute && defaultRoute.status === 'skipped') {
+      logRuntimeEvent('warn', 'startup.aecs.telemetry', 'AECS default telemetry webhook was not provisioned', {
+        details: {
+          reason: defaultRoute.reason || 'unknown',
+          routes: routeSummary,
+          configuredChannelId: process.env.AECS_TELEMETRY_CHANNEL_ID || null
+        }
+      });
+    } else if (telemetryProvision.changed) {
       logRuntimeEvent('info', 'startup.aecs.telemetry', 'AECS telemetry webhooks provisioned', {
         details: {
           changed: true,
@@ -136,6 +148,12 @@ async function onReady() {
         }
       });
     }
+  } else if (telemetryProvision && telemetryProvision.skipped) {
+    logRuntimeEvent('warn', 'startup.aecs.telemetry', 'AECS telemetry provisioning skipped', {
+      details: {
+        reason: telemetryProvision.reason || 'unknown'
+      }
+    });
   }
 
   await antiNukeInitPromise;

@@ -14,7 +14,15 @@ function toBool(value, fallback = AUTO_CREATE_ENABLED_DEFAULT) {
 function normalizeId(value) {
   if (value === undefined || value === null) return null;
   const text = String(value).trim();
-  return text || null;
+  if (!text) return null;
+
+  const mentionMatch = text.match(/^<#(\d+)>$/);
+  if (mentionMatch) return mentionMatch[1];
+
+  const channelUrlMatch = text.match(/\/channels\/\d+\/(\d+)/);
+  if (channelUrlMatch) return channelUrlMatch[1];
+
+  return text;
 }
 
 function parseWebhookUrl(value) {
@@ -149,7 +157,11 @@ async function ensureWebhookForRoute({
 }
 
 function buildRouteSpecFromEnv() {
-  const defaultChannelId = normalizeId(process.env.AECS_TELEMETRY_CHANNEL_ID);
+  const defaultChannelId = normalizeId(process.env.AECS_TELEMETRY_CHANNEL_ID)
+    || normalizeId(process.env.TELEMETRY_CHANNEL_ID)
+    || normalizeId(process.env.LOG_CHANNEL_ID)
+    || normalizeId(process.env.ANTINUKE_LOG_CHANNEL_ID)
+    || normalizeId(process.env.DISCORD_LOG_CHANNEL_ID);
   const splitRoutes = toBool(process.env.AECS_TELEMETRY_SPLIT_WEBHOOKS, false);
 
   const fatalUrl = process.env.AECS_TELEMETRY_WEBHOOK_URL_FATAL || '';
