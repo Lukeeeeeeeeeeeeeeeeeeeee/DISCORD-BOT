@@ -9,6 +9,7 @@ const { replyError } = require('../../lib/embeds');
 const db = require('../../db_async');
 const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
+const { hasAdministrator } = require('../../lib/permissions');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
@@ -416,6 +417,11 @@ module.exports = {
 
       const member = interaction.options.getUser('member');
       const rawIgn = interaction.options.getString('ign');
+      const adminBypassRequested = Boolean(
+        interaction.options
+        && typeof interaction.options.getBoolean === 'function'
+        && interaction.options.getBoolean('admin_bypass')
+      );
 
       // Validate inputs
       if (!member || !rawIgn) {
@@ -429,6 +435,10 @@ module.exports = {
       if (!guildMember) {
         return replyError(interaction, 'Unable to verify your guild membership.');
       }
+      if (adminBypassRequested && !hasAdministrator(guildMember)) {
+        return replyError(interaction, 'Only administrators can use `admin_bypass` on /recruit.');
+      }
+      const adminBypassEnabled = adminBypassRequested && hasAdministrator(guildMember);
 
       // Only recruiters (incl trial/regional) or staff/admin can recruit.
       // In tests we run with minimal mocks; skip strict permission enforcement there.
@@ -463,15 +473,17 @@ module.exports = {
 
       const joinedAt = recruitedGuildMember.joinedAt;
       const now = new Date();
-      if (!joinedAt) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
-      const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-      if (minutesSinceJoin > 120) return replyError(interaction, 'Cannot give roles to someone who joined more than 2 hours ago.');
+      if (!adminBypassEnabled) {
+        if (!joinedAt) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
+        const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
+        if (minutesSinceJoin > 120) return replyError(interaction, 'Cannot give roles to someone who joined more than 2 hours ago.');
+      }
 
       const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000 * 60 * 60 * 24);
-      if (accountAgeDays < (30 * 6)) return replyError(interaction, 'Account must be at least 6 months old.');
+      if (!adminBypassEnabled && accountAgeDays < (30 * 6)) return replyError(interaction, 'Account must be at least 6 months old.');
 
       // already verified = has rookie
-      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return replyError(interaction, 'Member is already verified.');
+      if (!adminBypassEnabled && recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return replyError(interaction, 'Member is already verified.');
 
       // check if recruited already
       const exist = await db.get(

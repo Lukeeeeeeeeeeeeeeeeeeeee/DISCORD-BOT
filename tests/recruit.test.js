@@ -20,8 +20,11 @@ function makeInteraction({
   member = { id: 'M1', tag: 'Member#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
   team = 'EU',
   ign = 'player123',
-  initialMemberRoleIds = []
+  initialMemberRoleIds = [],
+  adminBypass = false,
+  recruiterIsAdmin = false
 } = {}) {
+  const { PermissionsBitField } = require('discord.js');
   const ROLE_IDS = require('../src/constants').ROLE_IDS;
   const { RECRUITER_ROLE_IDS } = require('../src/constants');
 
@@ -89,6 +92,12 @@ function makeInteraction({
 
   const recruiterMember = {
     id: recruiterId,
+    permissions: {
+      has: (permissionFlag) => {
+        if (!recruiterIsAdmin) return false;
+        return permissionFlag === PermissionsBitField.Flags.Administrator || permissionFlag === 'Administrator';
+      }
+    },
     roles: {
       cache: {
         has: (id) => {
@@ -105,7 +114,8 @@ function makeInteraction({
 
   const options = {
     getUser: (_k) => ({ id: member.id, tag: member.tag }),
-    getString: (k) => (k === 'ign' ? ign : undefined)
+    getString: (k) => (k === 'ign' ? ign : undefined),
+    getBoolean: (k) => (k === 'admin_bypass' ? adminBypass : undefined)
   };
 
   const reply = jest.fn();
@@ -209,6 +219,33 @@ describe('/recruit command', () => {
     const replyArg = interaction.reply.mock.calls[0][0];
     const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
     expect(desc).toBe('Account must be at least 6 months old.');
+  });
+
+  test('rejects admin_bypass for non-admin users', async () => {
+    const youngMember = { id: 'M_BYPASS_DENY', tag: 'BypassDeny#0001', createdAt: new Date(Date.now() - (10 * 24 * 60 * 60 * 1000)) };
+    const { interaction } = makeInteraction({
+      member: youngMember,
+      adminBypass: true,
+      recruiterIsAdmin: false
+    });
+    const cmd = require('../src/commands/recruiting/recruit.js');
+    await cmd.execute(interaction);
+    const replyArg = interaction.reply.mock.calls[0][0];
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toBe('Only administrators can use `admin_bypass` on /recruit.');
+  });
+
+  test('allows admins to bypass 6-month account age check', async () => {
+    const youngMember = { id: 'M_BYPASS_OK', tag: 'BypassOk#0001', createdAt: new Date(Date.now() - (10 * 24 * 60 * 60 * 1000)) };
+    const { interaction } = makeInteraction({
+      member: youngMember,
+      adminBypass: true,
+      recruiterIsAdmin: true
+    });
+    const cmd = require('../src/commands/recruiting/recruit.js');
+    await cmd.execute(interaction);
+    const replyArg = interaction.reply.mock.calls[0][0];
+    expect(replyArg.content).toMatch(/Successfully recruited/);
   });
 
   test('rejects if member already verified', async () => {
