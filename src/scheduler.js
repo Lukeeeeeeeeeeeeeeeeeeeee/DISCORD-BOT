@@ -12,6 +12,7 @@ const { logUnexpectedError } = require('./lib/logger');
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
 
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
+const { acquireJobLock } = require('./lib/job-locks');
 
 const DEBUG_SCHEDULER = process.env.DEBUG_SCHEDULER === '1';
 const ALLOW_FULL_MEMBER_FETCH = (process.env.SCHEDULER_ALLOW_FULL_FETCH || process.env.ALLOW_FULL_MEMBER_FETCH || '').toLowerCase() === 'true';
@@ -27,6 +28,27 @@ function debugLog(...args) {
 const SNAPSHOT_CONCURRENCY = Number.parseInt(process.env.SNAPSHOT_CONCURRENCY || '3', 10);
 
 const { runWithConcurrency } = require('./lib/concurrency');
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const ONE_DAY_MS = 24 * ONE_HOUR_MS;
+
+function getUtcMonthBucket(ts = Date.now()) {
+  const d = new Date(ts);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  return `${yyyy}-${mm}`;
+}
+
+async function acquireSchedulerLock(db, { guildId, key, ttlMs, scope }) {
+  try {
+    const locked = await acquireJobLock(db, { guildId, key, ttlMs, failOpen: false });
+    if (!locked) debugLog(`Skipped scheduler job due to active lock: ${key}`);
+    return locked;
+  } catch (error) {
+    logUnexpectedError(scope || 'scheduler.lock', error, { guildId, key, ttlMs });
+    return false;
+  }
+}
 
 let weeklyCalcEnsured = false;
 let recruitsEnsured = false;
@@ -754,6 +776,14 @@ async function runWeeklySnapshotAndReset(db, client, options = {}) {
     const weekStart = getWeekStartUtcTs();
     const weekStartIso = formatUtcDateOnly(weekStart);
     const schedulerGuildId = resolveGuildId();
+    const lockKey = `job_lock:weekly_snapshot:${weekStart}`;
+    const snapshotLocked = await acquireSchedulerLock(db, {
+      guildId: schedulerGuildId,
+      key: lockKey,
+      ttlMs: 14 * ONE_DAY_MS,
+      scope: 'scheduler.weeklySnapshot.lock'
+    });
+    if (!snapshotLocked) return;
 
     // One-time announcement per week in the overall invites channel (scheduled runs only)
     if (announce) {
@@ -949,6 +979,16 @@ function start(client, db) {
 
   // Cron: Monday at 00:00 UTC - Weekly recruiter recalculation
   trackScheduledJob(cron.schedule('0 0 * * 1', async () => {
+    const weekStart = getWeekStartUtcTs();
+    const lockKey = `job_lock:weekly_recalc:${weekStart}`;
+    const locked = await acquireSchedulerLock(db, {
+      guildId,
+      key: lockKey,
+      ttlMs: 14 * ONE_DAY_MS,
+      scope: 'scheduler.weeklyRecalc.lock'
+    });
+    if (!locked) return;
+
     const guild = await resolveGuild(client);
     if (!guild) return;
     try {
@@ -972,6 +1012,16 @@ function start(client, db) {
 
   // Cron: Sunday at 12:00 UTC
   trackScheduledJob(cron.schedule('0 12 * * 0', async () => {
+    const weekStart = getWeekStartUtcTs();
+    const lockKey = `job_lock:weekly_membership_check:${weekStart}`;
+    const locked = await acquireSchedulerLock(db, {
+      guildId,
+      key: lockKey,
+      ttlMs: 14 * ONE_DAY_MS,
+      scope: 'scheduler.weeklyMembershipCheck.lock'
+    });
+    if (!locked) return;
+
     const guild = await resolveGuild(client);
     if (!guild) return;
 
@@ -1008,6 +1058,16 @@ function start(client, db) {
 
   // Daily maintenance: expire warnings/multipliers and recompute warning counts
   trackScheduledJob(cron.schedule('0 0 * * *', async () => {
+    const dayBucket = Math.floor(Date.now() / ONE_DAY_MS);
+    const lockKey = `job_lock:daily_maintenance:${dayBucket}`;
+    const locked = await acquireSchedulerLock(db, {
+      guildId,
+      key: lockKey,
+      ttlMs: 2 * ONE_DAY_MS,
+      scope: 'scheduler.dailyMaintenance.lock'
+    });
+    if (!locked) return;
+
     try {
       const schedulerGuildId = resolveGuildId();
       // remove expired multipliers (cleanup)
@@ -1042,6 +1102,16 @@ function start(client, db) {
 
   // Hourly cleanup: expired invites
   trackScheduledJob(cron.schedule('0 * * * *', async () => {
+    const hourBucket = Math.floor(Date.now() / ONE_HOUR_MS);
+    const lockKey = `job_lock:hourly_invite_cleanup:${hourBucket}`;
+    const locked = await acquireSchedulerLock(db, {
+      guildId,
+      key: lockKey,
+      ttlMs: 2 * ONE_HOUR_MS,
+      scope: 'scheduler.hourlyInviteCleanup.lock'
+    });
+    if (!locked) return;
+
     try {
       const inviteCommand = require('./commands/recruiting/invite');
       const inviteSystem = await inviteCommand.init();
@@ -1060,6 +1130,16 @@ function start(client, db) {
 
   // Monthly reset: 1st of month 00:00 UTC
   trackScheduledJob(cron.schedule('0 0 1 * *', async () => {
+    const monthBucket = getUtcMonthBucket();
+    const lockKey = `job_lock:monthly_maintenance:${monthBucket}`;
+    const locked = await acquireSchedulerLock(db, {
+      guildId,
+      key: lockKey,
+      ttlMs: 62 * ONE_DAY_MS,
+      scope: 'scheduler.monthlyMaintenance.lock'
+    });
+    if (!locked) return;
+
     try {
       // await db.run('UPDATE recruiters SET points = 0');
       const guild = await resolveGuild(client);
@@ -1072,6 +1152,15 @@ function start(client, db) {
           });
         }
       }
+      const lockCutoff = Date.now() - (90 * ONE_DAY_MS);
+      await db.run(
+        'DELETE FROM system_events WHERE guild_id = ? AND key LIKE ? AND timestamp < ?',
+        resolveGuildId(),
+        'job_lock:%',
+        lockCutoff
+      ).catch(err => {
+        console.error('Failed to prune old scheduler lock rows:', err);
+      });
     } catch (e) { console.error('Monthly reset failed', e); }
   }, {
     scheduled: true,

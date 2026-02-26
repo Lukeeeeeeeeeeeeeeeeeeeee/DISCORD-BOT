@@ -15,7 +15,13 @@ function makeTempDbPath() {
   return path.join(tmp, `recruiter-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 }
 
-function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) }, team = 'EU', ign = 'player123' } = {}) {
+function makeInteraction({
+  recruiterId = 'R1',
+  member = { id: 'M1', tag: 'Member#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
+  team = 'EU',
+  ign = 'player123',
+  initialMemberRoleIds = []
+} = {}) {
   const ROLE_IDS = require('../src/constants').ROLE_IDS;
   const { RECRUITER_ROLE_IDS } = require('../src/constants');
 
@@ -52,18 +58,32 @@ function makeInteraction({ recruiterId = 'R1', member = { id: 'M1', tag: 'Member
     channels: { cache: { get: (id) => channelsCache.get(id) } }
   };
 
+  const memberRoleIds = new Set(initialMemberRoleIds);
   const guildMember = {
     id: member.id,
     user: { id: member.id, createdAt: member.createdAt, bot: false, tag: member.tag },
     joinedAt: new Date(Date.now() - (30 * 60 * 1000)), // joined 30 minutes ago
+    manageable: true,
+    nickname: null,
     roles: {
       cache: {
-        has: (_id) => false
+        has: (roleId) => memberRoleIds.has(roleId)
       },
-      add: jest.fn().mockResolvedValue(true),
-      remove: jest.fn().mockResolvedValue(true)
+      add: jest.fn(async (roleId) => {
+        const roleIds = Array.isArray(roleId) ? roleId : [roleId];
+        for (const id of roleIds) memberRoleIds.add(id);
+        return true;
+      }),
+      remove: jest.fn(async (roleId) => {
+        const roleIds = Array.isArray(roleId) ? roleId : [roleId];
+        for (const id of roleIds) memberRoleIds.delete(id);
+        return true;
+      })
     },
-    setNickname: jest.fn().mockResolvedValue(true),
+    setNickname: jest.fn(async (nickname) => {
+      guildMember.nickname = nickname || null;
+      return true;
+    }),
     send: jest.fn().mockResolvedValue(true)
   };
 
@@ -209,10 +229,54 @@ describe('/recruit command', () => {
     await cmd.execute(interaction);
 
     // second attempt should be rejected
-    await cmd.execute(interaction);
-    const replyArg = interaction.reply.mock.calls[1][0]; // second call
+    const second = makeInteraction();
+    await cmd.execute(second.interaction);
+    const replyArg = second.interaction.reply.mock.calls[0][0];
     const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
     expect(desc).toBe('That member has already been recruited previously.');
+  });
+
+  test('restores member role state when recruit transaction fails', async () => {
+    const ROLE_IDS = require('../src/constants').ROLE_IDS;
+    const { interaction, guildMember } = makeInteraction({
+      member: { id: 'M_FAIL', tag: 'Failing#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
+      initialMemberRoleIds: [ROLE_IDS.UNVERIFIED]
+    });
+    interaction.options.getUser = () => ({ id: 'M_FAIL', tag: 'Failing#0001' });
+
+    const db = require('../src/db_async');
+    const realRun = db.run.bind(db);
+    const runSpy = jest.spyOn(db, 'run').mockImplementation(async (sql, ...params) => {
+      const text = String(sql || '');
+      if (text.includes('INSERT INTO recruits')) {
+        throw new Error('forced transaction failure');
+      }
+      return realRun(sql, ...params);
+    });
+
+    const cmd = require('../src/commands/recruiting/recruit.js');
+    await cmd.execute(interaction);
+
+    const replyArg = interaction.reply.mock.calls[0][0];
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toMatch(/An error occurred while processing the recruit command/);
+
+    const rec = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', 'M_FAIL');
+    expect(rec).toBeUndefined();
+
+    expect(guildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)).toBe(true);
+    expect(guildMember.roles.cache.has(ROLE_IDS.ROOKIE)).toBe(false);
+
+    const onboardingIds = [
+      ROLE_IDS.ONBOARDING_FIRE,
+      ROLE_IDS.ONBOARDING_WATER,
+      ROLE_IDS.ONBOARDING_AIR
+    ].filter(Boolean);
+    for (const roleId of onboardingIds) {
+      expect(guildMember.roles.cache.has(roleId)).toBe(false);
+    }
+
+    runSpy.mockRestore();
   });
 
   test('assigns least occupied onboarding team when recruiter has no team role', async () => {

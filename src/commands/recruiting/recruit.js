@@ -95,6 +95,86 @@ function getAllOnboardingRoleIds() {
   return Array.from(new Set([...fromExplicit, ...fromArray].filter(Boolean)));
 }
 
+function snapshotRecruitMemberState(member, onboardingRoleIds = []) {
+  const hasRoleCache = !!(member && member.roles && member.roles.cache && typeof member.roles.cache.has === 'function');
+  const priorOnboardingRoles = [];
+  if (hasRoleCache) {
+    for (const roleId of onboardingRoleIds) {
+      if (member.roles.cache.has(roleId)) priorOnboardingRoles.push(roleId);
+    }
+  }
+  return {
+    hadUnverified: hasRoleCache ? member.roles.cache.has(ROLE_IDS.UNVERIFIED) : false,
+    hadRookie: hasRoleCache ? member.roles.cache.has(ROLE_IDS.ROOKIE) : false,
+    priorOnboardingRoles,
+    nickname: member && Object.prototype.hasOwnProperty.call(member, 'nickname') ? (member.nickname || null) : null
+  };
+}
+
+async function restoreRecruitMemberState(member, snapshot, context = {}) {
+  if (!member || !member.roles || !member.roles.cache) return;
+  if (typeof member.roles.cache.has !== 'function') return;
+
+  const roleReason = 'Recruit failed: restoring previous member role state';
+  const priorOnboardingRoles = new Set((snapshot && snapshot.priorOnboardingRoles) || []);
+  const allOnboardingRoles = getAllOnboardingRoleIds();
+  const restoreMeta = {
+    guildId: context.guildId || null,
+    recruiterId: context.recruiterId || null,
+    recruitedId: context.recruitedId || null
+  };
+
+  const safeRoleAdd = async (roleId) => {
+    try {
+      await member.roles.add(roleId, roleReason);
+    } catch (e) {
+      reportRecruitError('command.recruit.restore.roleAdd', e, { ...restoreMeta, roleId });
+    }
+  };
+
+  const safeRoleRemove = async (roleId) => {
+    try {
+      await member.roles.remove(roleId, roleReason);
+    } catch (e) {
+      reportRecruitError('command.recruit.restore.roleRemove', e, { ...restoreMeta, roleId });
+    }
+  };
+
+  if (!(snapshot && snapshot.hadRookie) && member.roles.cache.has(ROLE_IDS.ROOKIE)) {
+    await safeRoleRemove(ROLE_IDS.ROOKIE);
+  }
+
+  for (const roleId of allOnboardingRoles) {
+    const hasNow = member.roles.cache.has(roleId);
+    const shouldHave = priorOnboardingRoles.has(roleId);
+    if (hasNow && !shouldHave) {
+      await safeRoleRemove(roleId);
+      continue;
+    }
+    if (!hasNow && shouldHave) {
+      await safeRoleAdd(roleId);
+    }
+  }
+
+  if (snapshot && snapshot.hadUnverified && !member.roles.cache.has(ROLE_IDS.UNVERIFIED)) {
+    await safeRoleAdd(ROLE_IDS.UNVERIFIED);
+  } else if (!(snapshot && snapshot.hadUnverified) && member.roles.cache.has(ROLE_IDS.UNVERIFIED)) {
+    await safeRoleRemove(ROLE_IDS.UNVERIFIED);
+  }
+
+  if (member.manageable && typeof member.setNickname === 'function') {
+    const desiredNick = snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'nickname')
+      ? snapshot.nickname
+      : null;
+    const currentNick = Object.prototype.hasOwnProperty.call(member, 'nickname') ? (member.nickname || null) : null;
+    if (desiredNick !== currentNick) {
+      await member.setNickname(desiredNick).catch((e) => {
+        reportRecruitError('command.recruit.restore.nickname', e, restoreMeta);
+      });
+    }
+  }
+}
+
 
 function normalizeIgn(rawIgn, suffix) {
   const base = rawIgn == null ? '' : String(rawIgn);
@@ -406,38 +486,55 @@ module.exports = {
         return replyError(interaction, 'No onboarding role is configured for this team.');
       }
 
+      const onboardingRoleIds = getAllOnboardingRoleIds();
+      const memberStateBeforeRecruit = snapshotRecruitMemberState(recruitedGuildMember, onboardingRoleIds);
+      let recruitStateMutated = false;
+      const restoreContext = { guildId, recruiterId: interaction.user.id, recruitedId: member.id };
+
       try {
-        // remove unverified if present
-        if (recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)) await recruitedGuildMember.roles.remove(ROLE_IDS.UNVERIFIED);
-        // ensure only one onboarding team role remains on the member
-        const onboardingRoleIds = getAllOnboardingRoleIds();
-        for (const onboardingRoleId of onboardingRoleIds) {
-          if (onboardingRoleId !== chosenRole && recruitedGuildMember.roles.cache.has(onboardingRoleId)) {
-            await recruitedGuildMember.roles.remove(onboardingRoleId);
-          }
-        }
-        // add rookie
-        await recruitedGuildMember.roles.add(ROLE_IDS.ROOKIE);
-        // add chosen onboarding role
-        await recruitedGuildMember.roles.add(chosenRole);
-
-        // set nickname
-        if (recruitedGuildMember.manageable) {
-          await recruitedGuildMember.setNickname(`${ign}${nicknameSuffix}`).catch(err => {
-            reportRecruitError('command.recruit.setNickname', err);
-          });
-        }
-
         try {
-          await db.run(
-            'INSERT OR REPLACE INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
-            guildId,
-            recruitedGuildMember.id,
-            0,
-            Date.now()
-          );
-        } catch (e) {
-          reportRecruitError('command.recruit.initRookiePoints', e);
+          // remove unverified if present
+          if (recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)) {
+            await recruitedGuildMember.roles.remove(ROLE_IDS.UNVERIFIED);
+            recruitStateMutated = true;
+          }
+
+          // ensure only one onboarding team role remains on the member
+          for (const onboardingRoleId of onboardingRoleIds) {
+            if (onboardingRoleId !== chosenRole && recruitedGuildMember.roles.cache.has(onboardingRoleId)) {
+              await recruitedGuildMember.roles.remove(onboardingRoleId);
+              recruitStateMutated = true;
+            }
+          }
+
+          // add rookie
+          if (!recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) {
+            await recruitedGuildMember.roles.add(ROLE_IDS.ROOKIE);
+            recruitStateMutated = true;
+          }
+
+          // add chosen onboarding role
+          if (!recruitedGuildMember.roles.cache.has(chosenRole)) {
+            await recruitedGuildMember.roles.add(chosenRole);
+            recruitStateMutated = true;
+          }
+
+          // set nickname
+          if (recruitedGuildMember.manageable) {
+            const targetNick = `${ign}${nicknameSuffix}`;
+            if ((recruitedGuildMember.nickname || null) !== targetNick) {
+              await recruitedGuildMember.setNickname(targetNick).then(() => {
+                recruitStateMutated = true;
+              }).catch((err) => {
+                reportRecruitError('command.recruit.setNickname', err, restoreContext);
+              });
+            }
+          }
+        } catch (mutationError) {
+          if (recruitStateMutated) {
+            await restoreRecruitMemberState(recruitedGuildMember, memberStateBeforeRecruit, restoreContext);
+          }
+          throw mutationError;
         }
 
 
@@ -483,7 +580,22 @@ module.exports = {
           await db.run('COMMIT');
         } catch (e) {
           await db.run('ROLLBACK');
+          if (recruitStateMutated) {
+            await restoreRecruitMemberState(recruitedGuildMember, memberStateBeforeRecruit, restoreContext);
+          }
           throw e;
+        }
+
+        try {
+          await db.run(
+            'INSERT OR REPLACE INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
+            guildId,
+            recruitedGuildMember.id,
+            0,
+            Date.now()
+          );
+        } catch (e) {
+          reportRecruitError('command.recruit.initRookiePoints', e, restoreContext);
         }
 
         try {
