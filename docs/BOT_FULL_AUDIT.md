@@ -2,6 +2,9 @@
 Date: 2026-02-26
 Repo: `C:\discord-bot\DISCORD-BOT`
 Branch baseline: `main`
+Latest stabilization commits:
+- `f275f8d` (`fix(startup): treat command compatibility shim as info`)
+- `9568468` (`fix(stability): add scheduler locks and recruit rollback safeguards`)
 
 ## Scope
 - Runtime bootstrap and startup sequencing
@@ -14,156 +17,155 @@ Branch baseline: `main`
 
 ## Validation Snapshot
 Executed locally on 2026-02-26:
-- `npm run stability:check` -> pass
-- `npm run migration:dry` -> pass
-- `npm test -- --runInBand` -> pass (56 suites / 154 tests)
+- `npm run lint` -> pass (4 warnings, 0 errors)
 - `node scripts/verify_commands.js` -> pass (29 commands loaded)
-- `npm run lint` -> pass with 4 warnings, 0 errors
+- `npm test -- --runInBand` -> pass (56 suites / 155 tests)
+- `npm run migration:dry` -> pass
+- `npm run stability:check` -> pass
 - `npm audit --json` -> 14 vulnerabilities (8 moderate, 6 high)
 
 ## Overall State
-The bot is operational for a single-guild production setup, but it is not fully stabilized from an engineering-risk perspective. Core flows run, yet there are still architecture and reliability gaps that can create regressions under failure conditions or during future refactors.
+Core production flows are now stable enough for canary and controlled rollout. The recent P0 reliability defects are fixed. Remaining risk is mainly architectural consistency, observability standardization, and dependency/security backlog.
+
+## Resolved Since Last Audit
+
+1. Scheduler lock enforcement is now active.
+- Evidence:
+  - `src/scheduler.js:42`
+  - `src/scheduler.js:981`
+  - `src/scheduler.js:1014`
+  - `src/scheduler.js:1060`
+  - `src/scheduler.js:1104`
+  - `src/scheduler.js:1132`
+- Result:
+  - Cron jobs are guarded by DB-backed lock keys to prevent duplicate execution windows.
+
+2. Recruit flow now compensates Discord state on DB failure.
+- Evidence:
+  - `src/commands/recruiting/recruit.js:98`
+  - `src/commands/recruiting/recruit.js:114`
+  - `src/commands/recruiting/recruit.js:490`
+  - `src/commands/recruiting/recruit.js:582`
+- Result:
+  - Member roles/nickname are restored if recruit transaction fails after mutations.
+
+3. Compatibility shim startup message no longer treated as warning telemetry.
+- Evidence:
+  - `src/lib/command-loader.js:112`
+  - `src/lib/logger.js:62`
+- Result:
+  - Expected shim-skip messages no longer generate noisy warning-level diagnostics.
 
 ## Findings (By Severity)
 
-### P0 (High-risk correctness/reliability)
-
-1. Recruit flow can mutate Discord state before DB commit.
-- Evidence:
-  - `src/commands/recruiting/recruit.js:420`
-  - `src/commands/recruiting/recruit.js:426`
-  - `src/commands/recruiting/recruit.js:457`
-- Why this matters:
-  - Roles/nickname are changed before transaction starts.
-  - If DB write fails, member state and DB state can diverge.
-- Recommended fix:
-  - Write DB record first in a transaction, then apply Discord mutations with rollback/compensation path (or explicit "repair job" marker).
-
-2. Scheduler has no distributed lock enforcement, despite lock helper existing.
-- Evidence:
-  - Lock helper exists at `src/lib/job-locks.js:1`
-  - Scheduled jobs run in `src/scheduler.js:951`, `src/scheduler.js:966`, `src/scheduler.js:974`, `src/scheduler.js:1010`, `src/scheduler.js:1044`, `src/scheduler.js:1062`
-- Why this matters:
-  - Multi-process or accidental duplicate scheduler starts can double-run jobs (weekly resets, cleanups, recalcs).
-- Recommended fix:
-  - Wrap each cron handler with `acquireJobLock(...)` keyed by guild/job/window.
-
 ### P1 (Critical maintainability/consistency)
 
-3. Event architecture is split: inline runtime handlers plus unused event modules.
+1. Event architecture is still split between inline handlers and event factories.
 - Evidence:
   - Inline handlers in `src/index.js:266`, `src/index.js:363`, `src/index.js:404`, `src/index.js:433`
-  - Event factories exist in `src/events/interaction-create.js:1`, `src/events/message-create.js:1`, `src/events/guild-member-add.js:1`, `src/events/guild-member-remove.js:1`
-  - Only voice-state factory is wired via `src/index.js:11`, `src/index.js:454`
-- Why this matters:
-  - Two execution models increase drift and bug surface.
-- Recommended fix:
-  - Pick one model (factory handlers) and complete migration.
+  - Event factories available in `src/events/interaction-create.js:1`, `src/events/message-create.js:1`, `src/events/guild-member-add.js:1`, `src/events/guild-member-remove.js:1`
+  - Only voice-state factory is wired through `src/index.js:10`
+- Risk:
+  - Drift and inconsistent behavior between old/new event paths.
+- Recommendation:
+  - Complete migration to one handler model and remove dead/duplicate path.
 
-4. Service/repository layers are mostly orphaned from runtime command path.
+2. Permission checks are inconsistent across privileged commands.
 - Evidence:
-  - Service files exist under `src/services/recruiting/`
-  - Repo files exist under `src/repos/`
-  - Runtime command code in `src/commands/recruiting/*.js` still performs direct DB logic/SQL.
-- Why this matters:
-  - Refactor intent is not reflected in active path; dead abstraction increases confusion and maintenance time.
-- Recommended fix:
-  - Migrate command handlers to services/repositories or remove orphaned layers.
+  - Central guard exists: `src/lib/command-auth.js:4`
+  - Used by some commands: `src/commands/recruiting/leaderboard.js:339`, `src/commands/recruiting/revoke-recruit.js:21`, `src/commands/recruiting/status.js:10`
+  - Manual role checks still present: `src/commands/recruiting/recruiter.js:86`, `src/commands/recruiting/recruiter.js:588`
+- Risk:
+  - Policy drift and uneven authorization behavior.
+- Recommendation:
+  - Move all privileged commands to one `ensureCommandAccess` policy wrapper.
 
-5. Authorization logic is not uniformly centralized.
+3. Service/repo abstraction is only partially adopted.
 - Evidence:
-  - Shared guard: `src/lib/command-auth.js:1`
-  - Mixed manual checks still present in multiple command modules, notably `src/commands/recruiting/recruiter.js:315` and nearby paths.
-- Why this matters:
-  - Permission behavior diverges between commands and increases bypass/regression risk.
-- Recommended fix:
-  - Use one command auth wrapper pattern for all privileged commands.
-
-### P2 (Medium technical debt / resilience gaps)
-
-6. Database schema setup still uses many best-effort silent catches.
-- Evidence:
-  - `src/db_async.js:897` through `src/db_async.js:914`
-- Why this matters:
-  - Non-fatal schema drift can remain hidden until runtime.
-- Recommended fix:
-  - Keep idempotence but log explicit migration IDs for every skipped failure.
-
-7. SQL is heavily scattered across commands/libs/scheduler.
-- Evidence:
-  - High SQL concentration:
+  - Services/repositories exist (`src/services/recruiting/*`, `src/repos/*`)
+  - Runtime command path still has heavy inline SQL and orchestration:
     - `src/commands/recruiting/recruiter.js` (39 SQL literals)
-    - `src/commands/recruiting/recruit.js` (20)
-    - `src/lib/analytics.js` (25)
-    - `src/scheduler.js` (36)
-- Why this matters:
-  - Harder to evolve schema safely and review query correctness.
-- Recommended fix:
-  - Gradually move SQL into repository layer with contract tests.
+    - `src/commands/recruiting/recruit.js` (20 SQL literals)
+    - `src/scheduler.js` (37 SQL literals)
+- Risk:
+  - Refactor drift and slower, riskier schema evolution.
+- Recommendation:
+  - Either fully adopt service/repo layers in runtime paths or prune dead abstraction.
 
-8. Logging is mixed (`console.*` and AECS), not fully normalized.
+### P2 (Medium hardening / debt)
+
+4. Large monolith files increase change risk.
 - Evidence:
-  - High direct console usage in hotspots, especially `src/lib/antinuke.js`.
-- Why this matters:
-  - Reduced observability consistency and harder alert routing.
-- Recommended fix:
-  - Route operational logs through one structured logger entrypoint.
+  - `src/lib/antinuke.js` (~4360 lines)
+  - `src/scheduler.js` (~1178 lines)
+  - `src/commands/recruiting/recruiter.js` (~1152 lines)
+  - `src/db_async.js` (~963 lines)
+- Risk:
+  - High cognitive load, lower review quality, harder targeted tests.
+- Recommendation:
+  - Split by bounded context (policy, persistence, handlers, formatter/logging adapters).
 
-9. Vulnerability backlog still present.
+5. Startup schema compatibility still has silent best-effort catch blocks.
+- Evidence:
+  - `src/db_async.js:902`
+  - `src/db_async.js:918`
+- Risk:
+  - Schema drift can be hidden unless downstream logic fails visibly.
+- Recommendation:
+  - Keep idempotence but emit migration ID + reason for each ignored alter/create failure.
+
+6. Logging remains mixed between AECS and direct console output.
+- Evidence:
+  - `src/lib/antinuke.js` (46 direct `console.*` calls)
+  - `src/lib/weekly-recalculations.js` (15)
+  - `src/lib/invite-system.js` (11)
+- Risk:
+  - Inconsistent alert routing and harder operational filtering.
+- Recommendation:
+  - Wrap operational logs in AECS/runtime logger and reserve raw console for bootstrap fallback only.
+
+7. Security backlog remains open.
 - Evidence:
   - `npm audit --json` on 2026-02-26: 14 total (8 moderate / 6 high)
-  - Notable chains involve `sqlite3/node-gyp/tar` and `discord.js` transitive advisories.
-- Why this matters:
-  - Supply-chain and patch-lag risk.
-- Recommended fix:
-  - Controlled upgrade plan with canary and DB migration rehearsal.
+- Risk:
+  - Vulnerability exposure and forced upgrades later under time pressure.
+- Recommendation:
+  - Staged dependency upgrade plan with canary rollout and migration rehearsal.
 
-10. Test coverage is good overall but uneven by command.
+8. Command-level test coverage is uneven for admin/ops surfaces.
 - Evidence:
-  - 56 suites pass, but several commands have no direct command-specific tests (for example `fixnick`, `export_logs`, `set_quarantine_options`, `toggle_strict_mode`, `toggle_aggressive_ban`, `simulate_attack`).
-- Why this matters:
-  - Regressions in privileged/operational commands are more likely.
-- Recommended fix:
-  - Add command-level tests for high-risk admin commands first.
+  - No direct command-specific tests for several operational commands including:
+    - `src/commands/export_logs.js`
+    - `src/commands/fixnick.js`
+    - `src/commands/set_quarantine_options.js`
+    - `src/commands/toggle_strict_mode.js`
+    - `src/commands/toggle_aggressive_ban.js`
+    - `src/commands/simulate_attack.js`
+- Risk:
+  - High-impact commands can regress without immediate CI detection.
+- Recommendation:
+  - Add direct tests for privileged command auth + happy/deny/error paths.
 
 ## What Is Missing To Call This "Fully Done"
+- Complete event-handler architecture convergence.
+- Standardize command authorization on one guard path.
+- Decide service/repo strategy and finish migration or remove dead layer.
+- Normalize runtime logging through one structured pathway.
+- Burn down vulnerabilities with tracked release gates.
+- Add missing direct tests for admin/ops commands.
+- Add alert thresholds and paging route for AECS spikes.
 
-The bot is not fully "done" until these are complete:
-- Scheduler lock enforcement for all cron jobs
-- Recruit flow consistency guard (DB-first or compensation)
-- Single event architecture (no split runtime path)
-- Unified command authorization framework
-- Service/repo migration either completed or intentionally removed
-- Security patch plan and tracked vulnerability burndown
-- Alerting hooks (Discord/Slack/email) for AECS error-rate spikes
-
-## Stabilization Plan (Execution Order)
-
-1. P0 reliability (immediate)
-- Add scheduler locks.
-- Fix recruit flow mutation order/compensation.
-- Add tests that force DB failures during recruit to verify no partial Discord-side state.
-
-2. P1 architecture alignment
-- Migrate index event handlers to event factory modules.
-- Standardize command auth wrappers.
-- Decide service/repo strategy: fully adopt or remove dead layer.
-
-3. P2 hardening
-- Normalize logging pathways.
-- Reduce raw SQL scatter through repository wrappers.
-- Address vulnerability backlog with staged upgrades.
+## Stabilization Plan (Next Execution Order)
+1. Event wiring convergence (`src/index.js` + `src/events/*`).
+2. Authorization normalization (`src/lib/command-auth.js` + privileged commands).
+3. Monolith decomposition for `antinuke.js`, `scheduler.js`, `recruiter.js`.
+4. Security/dependency hardening with canary deploy policy.
+5. Test-gap closure for operational commands.
 
 ## Operational Readiness Score (Current)
-- Runtime stability: 7.5/10
-- Data integrity safety: 6.5/10
+- Runtime stability: 8.5/10
+- Data integrity safety: 8.2/10
 - Security posture: 7.0/10
-- Maintainability: 5.5/10
-- Observability: 6.5/10
-- Overall: 6.6/10
-
-## Notes
-- Current CI/deploy gates are good and active:
-  - `.github/workflows/test.yml`
-  - `.github/workflows/deploy.yml`
-- This audit is intended to drive phase-by-phase stabilization, not broad rewrite in one pass.
+- Maintainability: 6.1/10
+- Observability: 7.0/10
+- Overall: 7.4/10
