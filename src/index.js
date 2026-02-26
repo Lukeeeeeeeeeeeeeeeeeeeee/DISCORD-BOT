@@ -675,10 +675,15 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
   }
 
   try {
+    await db.get('SELECT 1 AS ok');
     await antiNukeInitPromise;
     await inviteInitPromise;
     await client.login(token);
   } catch (err) {
+    if (err && typeof err.message === 'string' && err.message.toLowerCase().includes('database')) {
+      console.error('FATAL: Database initialization failed. Fix migrations/schema before starting the bot.', err);
+      process.exit(1);
+    }
     if (err && err.code === 'TokenInvalid') {
       console.error('FATAL: Provided DISCORD_TOKEN is invalid or has been revoked. Regenerate it in the Discord Developer Portal and update your .env.');
       process.exit(1);

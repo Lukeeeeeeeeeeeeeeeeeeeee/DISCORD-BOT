@@ -22,7 +22,11 @@ class AntiNuke {
     if (!this.OWNER_ID) {
       console.warn('OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.');
     }
-    this.LOG_DM_ID = '1262471979215355969';
+    const logDmEnv = process.env.ANTINUKE_LOG_DM_ID || process.env.LOG_DM_ID || this.OWNER_ID;
+    this.LOG_DM_ID = logDmEnv ? String(logDmEnv).trim() : null;
+    if (!this.LOG_DM_ID) {
+      console.warn('ANTINUKE_LOG_DM_ID is not configured; anti-nuke DM alerts will be disabled.');
+    }
 
     // Protection thresholds (base values; per-guild scaling is applied at runtime)
     this.THRESHOLDS = {
@@ -1349,6 +1353,7 @@ class AntiNuke {
     let targetChannel = logChannelId ? guild.channels.cache.get(logChannelId) : null;
 
     if (!targetChannel) {
+      if (!this.LOG_DM_ID) return false;
       try {
         const owner = await this.client.users.fetch(this.LOG_DM_ID);
         targetChannel = await owner.createDM();
@@ -2828,11 +2833,13 @@ class AntiNuke {
       .setTimestamp();
 
     // Send to log DM
-    try {
-      const owner = await this.client.users.fetch(this.LOG_DM_ID);
-      await owner.send({ embeds: [embed] });
-    } catch (error) {
-      // DM might be disabled
+    if (this.LOG_DM_ID) {
+      try {
+        const owner = await this.client.users.fetch(this.LOG_DM_ID);
+        await owner.send({ embeds: [embed] });
+      } catch (error) {
+        // DM might be disabled
+      }
     }
 
     // Send to log channel
@@ -2962,11 +2969,13 @@ class AntiNuke {
     }
 
     // Send to owner DM
-    try {
-      const owner = await this.client.users.fetch(this.LOG_DM_ID);
-      await owner.send({ embeds: [embed] });
-    } catch (error) {
-      // DM might be disabled
+    if (this.LOG_DM_ID) {
+      try {
+        const owner = await this.client.users.fetch(this.LOG_DM_ID);
+        await owner.send({ embeds: [embed] });
+      } catch (error) {
+        // DM might be disabled
+      }
     }
   }
   // Get color for action type

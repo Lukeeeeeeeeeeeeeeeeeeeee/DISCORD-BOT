@@ -2,7 +2,6 @@ const { AttachmentBuilder } = require('discord.js');
 const { GUILD_ID, ROLE_IDS, REGION_ROLE_IDS, ACTIVITY_CHECK, TESTING_USER_ID } = require('../constants');
 const { replyError } = require('../lib/embeds');
 
-const OWNER_FALLBACK_ID = '1381692847018868778';
 
 // ── Target roles ────────────────────────────────────────────────────
 const ROOKIE_ROLE_ID = ROLE_IDS.ROOKIE;           // 0/10 | IGN
@@ -35,7 +34,7 @@ const INACTIVE_ROLE_IDS = buildInactiveRoleSet();
 
 // ── Owner gate ──────────────────────────────────────────────────────
 function getOwnerIdSet() {
-    const ids = new Set([OWNER_FALLBACK_ID]);
+    const ids = new Set();
     if (TESTING_USER_ID) ids.add(String(TESTING_USER_ID));
     const envOwnerIds = [
         process.env.PATH_BALANCE_OWNER_ID,

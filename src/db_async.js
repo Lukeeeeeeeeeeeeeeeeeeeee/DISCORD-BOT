@@ -425,6 +425,7 @@ async function init() {
       }
     } catch (err) {
       console.error('Schema migration failed', { id, error: err });
+      throw err;
     }
   };
 
@@ -885,6 +886,13 @@ async function init() {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_recruited_valid ON recruits(recruited_id, valid)');
   });
 
+  await applyMigration('2026-02-26-recruits-unique-index-scope', async () => {
+    // Unify recruit uniqueness to guild scope and remove legacy index variants.
+    await db.exec('DROP INDEX IF EXISTS uniq_recruit');
+    await db.exec('DROP INDEX IF EXISTS uniq_recruit_guild');
+    await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(guild_id, recruited_id)');
+  });
+
   // Add columns if missing (best-effort)
   try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) { void e; }
@@ -918,7 +926,7 @@ function ensureDbPromise() {
     dbPromise = init().catch((err) => {
       dbInitError = err instanceof Error ? err : new Error(String(err));
       console.error('Database initialization failed', { dbPath: DB_PATH, error: dbInitError });
-      return null;
+      throw dbInitError;
     });
   }
   return dbPromise;

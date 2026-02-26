@@ -9,7 +9,6 @@ const { getStaffRoleIds } = require('../lib/permissions');
 const { replyError } = require('../lib/embeds');
 const { logUnexpectedError } = require('../lib/logger');
 
-const FALLBACK_OWNER_ID = '1381692847018868778';
 const MESSAGE_LINK_REGEX = /^https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/([^/]+)\/([^/]+)\/([^/?#]+)(?:[/?#].*)?$/i;
 const REACTION_FETCH_PAGE_SIZE = 100;
 const REACTION_FETCH_MAX_PAGES = Number.parseInt(process.env.ACTIVITY_CHECK_REACTION_FETCH_MAX_PAGES || '50', 10);
@@ -41,7 +40,6 @@ function getOwnerIdSet() {
     .filter(Boolean);
   for (const ownerId of envOwnerIds) configured.add(ownerId);
   if (TESTING_USER_ID) configured.add(String(TESTING_USER_ID));
-  configured.add(FALLBACK_OWNER_ID);
   return configured;
 }
 

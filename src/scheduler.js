@@ -87,8 +87,9 @@ async function ensureRecruitsTable(db) {
         points INTEGER DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_created ON recruits(guild_id, recruiter_id, created_at);
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit_guild ON recruits(guild_id, recruited_id);
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(recruited_id);
+      DROP INDEX IF EXISTS uniq_recruit_guild;
+      DROP INDEX IF EXISTS uniq_recruit;
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(guild_id, recruited_id);
     `);
     try {
       await db.run('ALTER TABLE recruits ADD COLUMN guild_id TEXT NOT NULL DEFAULT "GLOBAL"');

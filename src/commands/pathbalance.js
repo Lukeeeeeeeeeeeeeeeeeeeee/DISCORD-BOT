@@ -1,7 +1,6 @@
 const { GUILD_ID, TESTING_USER_ID } = require('../constants');
 const { replyError } = require('../lib/embeds');
 
-const OWNER_FALLBACK_ID = '1381692847018868778';
 const DEFAULT_SOURCE_ROLE_ID = '1463200689252597770';
 const PATH_KEYS = ['FIRE', 'WATER', 'AIR'];
 
@@ -108,7 +107,7 @@ function hasRole(member, roleId) {
 }
 
 function getOwnerIdSet() {
-  const ids = new Set([OWNER_FALLBACK_ID]);
+  const ids = new Set();
   if (TESTING_USER_ID) ids.add(String(TESTING_USER_ID));
 
   const envOwnerIds = [
