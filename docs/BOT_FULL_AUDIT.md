@@ -1,344 +1,169 @@
-# Discord Bot Full Technical Audit and Single-Guild Hardening Roadmap
-Date: 2026-02-15
-Scope: `C:\discord-bot` (Node.js + Discord.js, single-guild operations)
-Audience: Production owner/operator
+# Discord Bot Deep Audit (Production Readiness)
+Date: 2026-02-26
+Repo: `C:\discord-bot\DISCORD-BOT`
+Branch baseline: `main`
 
-## 0. Reality Check
-This bot is no longer in "raw refactor chaos," but it is still not clean architecture.
-Today improved runtime safety and guild scoping materially, but technical debt remains concentrated in a few large files and split execution paths.
+## Scope
+- Runtime bootstrap and startup sequencing
+- Command system and permission model
+- Recruit flow and points/leaderboard chain
+- Anti-nuke system and rollback paths
+- Scheduler and background jobs
+- Database schema/migrations/integrity flow
+- Test, CI, deploy, and observability posture
 
-Brutal summary:
-- The bot can run stably for one guild if discipline is maintained.
-- The current design is still fragile under rapid feature churn.
-- Scaling to multi-guild would break in predictable places.
+## Validation Snapshot
+Executed locally on 2026-02-26:
+- `npm run stability:check` -> pass
+- `npm run migration:dry` -> pass
+- `npm test -- --runInBand` -> pass (56 suites / 154 tests)
+- `node scripts/verify_commands.js` -> pass (29 commands loaded)
+- `npm run lint` -> pass with 4 warnings, 0 errors
+- `npm audit --json` -> 14 vulnerabilities (8 moderate, 6 high)
 
-## 1. What Was Audited
-- Runtime bootstrap, command loading, shutdown lifecycle, scheduler lifecycle.
-- Command path consistency (legacy vs refactor paths).
-- Active SQL queries and guild scoping.
-- Invite subsystem schema/runtime alignment.
-- Anti-nuke integration and safety hooks.
-- Tests, lint, migration dry-run signals.
+## Overall State
+The bot is operational for a single-guild production setup, but it is not fully stabilized from an engineering-risk perspective. Core flows run, yet there are still architecture and reliability gaps that can create regressions under failure conditions or during future refactors.
 
-Validation results after latest hardening:
-- `npm run lint`: pass (2 warnings, 0 errors)
-- `node scripts/verify_commands.js`: pass
-- `npm run test:p0`: pass
-- `npm test -- --runInBand`: pass (41 suites, 95 tests)
-- `npm run migration:dry`: pass
+## Findings (By Severity)
 
-## 2. Current High-Impact State (After Today’s Fixes)
-- Runtime env checks are now active: `src/index.js:17`, `src/index.js:21`
-- Health check server is now wired: `src/index.js:18`, `src/index.js:149`
-- Duplicate command hard-fail exists: `src/index.js:110`, `scripts/verify_commands.js:39`
-- Scheduler lifecycle stop exists and is called on start/shutdown:
-  - `src/scheduler.js:362`
-  - `src/scheduler.js:912`
-  - `src/index.js:183`
-- Invite schema now includes enforced `guild_id`: `src/lib/create-invite-tables.js`
-- Invite runtime paths are guild-scoped: `src/lib/invite-system.js`
-- Additional guild-scoping fixes applied in live command/scheduler-adjacent paths:
-  - `src/commands/recruiting/absent.js:71`
-  - `src/commands/recruiting/leaderboard.js:56`
-  - `src/commands/recruiting/revoke-recruit.js:40`
-  - `src/commands/recruiting/status.js:47`
-  - `src/lib/weekly-recalculations.js:109`
+### P0 (High-risk correctness/reliability)
 
-## 3. Architecture and Structure Audit
-### Folder and layering
-Strengths:
-- Clear top-level areas (`src/commands`, `src/lib`, `src/repos`, `src/services`, `src/events`).
-- Refactor direction exists (service/repo layering is real, not imaginary).
+1. Recruit flow can mutate Discord state before DB commit.
+- Evidence:
+  - `src/commands/recruiting/recruit.js:420`
+  - `src/commands/recruiting/recruit.js:426`
+  - `src/commands/recruiting/recruit.js:457`
+- Why this matters:
+  - Roles/nickname are changed before transaction starts.
+  - If DB write fails, member state and DB state can diverge.
+- Recommended fix:
+  - Write DB record first in a transaction, then apply Discord mutations with rollback/compensation path (or explicit "repair job" marker).
 
-Problems:
-- Runtime still favors legacy paths over service/repo paths.
-- Refactor modules are partially orphaned by loader ignores.
-- Event handling architecture is split (factory modules exist, runtime mostly inline).
+2. Scheduler has no distributed lock enforcement, despite lock helper existing.
+- Evidence:
+  - Lock helper exists at `src/lib/job-locks.js:1`
+  - Scheduled jobs run in `src/scheduler.js:951`, `src/scheduler.js:966`, `src/scheduler.js:974`, `src/scheduler.js:1010`, `src/scheduler.js:1044`, `src/scheduler.js:1062`
+- Why this matters:
+  - Multi-process or accidental duplicate scheduler starts can double-run jobs (weekly resets, cleanups, recalcs).
+- Recommended fix:
+  - Wrap each cron handler with `acquireJobLock(...)` keyed by guild/job/window.
 
-Evidence:
-- Loader ignores refactor modules:
-  - `src/index.js:86`
-  - `src/index.js:89`
-  - `scripts/verify_commands.js:15`
-  - `scripts/verify_commands.js:18`
-- Only one event factory is wired:
-  - `src/index.js:12`
+### P1 (Critical maintainability/consistency)
 
-Verdict:
-- Structure is medium quality for single guild, weak for long-term maintainability.
+3. Event architecture is split: inline runtime handlers plus unused event modules.
+- Evidence:
+  - Inline handlers in `src/index.js:266`, `src/index.js:363`, `src/index.js:404`, `src/index.js:433`
+  - Event factories exist in `src/events/interaction-create.js:1`, `src/events/message-create.js:1`, `src/events/guild-member-add.js:1`, `src/events/guild-member-remove.js:1`
+  - Only voice-state factory is wired via `src/index.js:11`, `src/index.js:454`
+- Why this matters:
+  - Two execution models increase drift and bug surface.
+- Recommended fix:
+  - Pick one model (factory handlers) and complete migration.
 
-## 4. Code Quality Audit
-### Readability and maintainability
-Good:
-- Many modules are straightforward and test-covered.
-- Command verification is explicit and deterministic.
+4. Service/repository layers are mostly orphaned from runtime command path.
+- Evidence:
+  - Service files exist under `src/services/recruiting/`
+  - Repo files exist under `src/repos/`
+  - Runtime command code in `src/commands/recruiting/*.js` still performs direct DB logic/SQL.
+- Why this matters:
+  - Refactor intent is not reflected in active path; dead abstraction increases confusion and maintenance time.
+- Recommended fix:
+  - Migrate command handlers to services/repositories or remove orphaned layers.
 
-Bad:
-- Large monoliths remain:
-  - `src/lib/antinuke.js` (~3426 lines)
-  - `src/scheduler.js` (~973 lines)
-  - `src/commands/recruiting/recruiter.js` (~785 lines)
-- Permission handling is mixed: centralized in some commands, manual in others.
-- Logging style is inconsistent (`console.*` dominates).
+5. Authorization logic is not uniformly centralized.
+- Evidence:
+  - Shared guard: `src/lib/command-auth.js:1`
+  - Mixed manual checks still present in multiple command modules, notably `src/commands/recruiting/recruiter.js:315` and nearby paths.
+- Why this matters:
+  - Permission behavior diverges between commands and increases bypass/regression risk.
+- Recommended fix:
+  - Use one command auth wrapper pattern for all privileged commands.
 
-### DRY and dead code
-- Refactor drift: `src/services/recruiting/*` and `src/repos/*` exist, but active command paths do not consistently use them.
-- `src/commands/recruiting/recruiter-handlers/*` exists but loader intentionally ignores that path (`src/index.js:86`).
+### P2 (Medium technical debt / resilience gaps)
 
-Verdict:
-- Readable in parts, but maintenance risk is high due to monolith concentration and duplicated paradigms.
+6. Database schema setup still uses many best-effort silent catches.
+- Evidence:
+  - `src/db_async.js:897` through `src/db_async.js:914`
+- Why this matters:
+  - Non-fatal schema drift can remain hidden until runtime.
+- Recommended fix:
+  - Keep idempotence but log explicit migration IDs for every skipped failure.
 
-## 5. Performance and Optimization Audit
-Strengths:
-- SQLite pragmas include WAL/synchronous/busy_timeout protections: `src/db_async.js`.
-- Scheduler has job tracking and stop lifecycle now: `src/scheduler.js:353`, `src/scheduler.js:362`.
+7. SQL is heavily scattered across commands/libs/scheduler.
+- Evidence:
+  - High SQL concentration:
+    - `src/commands/recruiting/recruiter.js` (39 SQL literals)
+    - `src/commands/recruiting/recruit.js` (20)
+    - `src/lib/analytics.js` (25)
+    - `src/scheduler.js` (36)
+- Why this matters:
+  - Harder to evolve schema safely and review query correctness.
+- Recommended fix:
+  - Gradually move SQL into repository layer with contract tests.
 
-Risks:
-- In-memory maps can grow (invite snapshots, anti-nuke state, cooldown maps) with no global cap policy.
-- Heavy periodic jobs still sit in one scheduler file with mixed concerns.
-- No centralized rate-limit handling policy; behavior is command-specific.
+8. Logging is mixed (`console.*` and AECS), not fully normalized.
+- Evidence:
+  - High direct console usage in hotspots, especially `src/lib/antinuke.js`.
+- Why this matters:
+  - Reduced observability consistency and harder alert routing.
+- Recommended fix:
+  - Route operational logs through one structured logger entrypoint.
 
-Verdict:
-- Acceptable for one guild current scale; not resilient for sustained growth.
+9. Vulnerability backlog still present.
+- Evidence:
+  - `npm audit --json` on 2026-02-26: 14 total (8 moderate / 6 high)
+  - Notable chains involve `sqlite3/node-gyp/tar` and `discord.js` transitive advisories.
+- Why this matters:
+  - Supply-chain and patch-lag risk.
+- Recommended fix:
+  - Controlled upgrade plan with canary and DB migration rehearsal.
 
-## 6. Security Audit
-Strengths:
-- Token sanitization + runtime validation active: `src/index.js:17`, `src/index.js:21`.
-- Admin/staff checks exist throughout critical commands.
-- Anti-nuke protections and rollback subsystem are present and tested.
+10. Test coverage is good overall but uneven by command.
+- Evidence:
+  - 56 suites pass, but several commands have no direct command-specific tests (for example `fixnick`, `export_logs`, `set_quarantine_options`, `toggle_strict_mode`, `toggle_aggressive_ban`, `simulate_attack`).
+- Why this matters:
+  - Regressions in privileged/operational commands are more likely.
+- Recommended fix:
+  - Add command-level tests for high-risk admin commands first.
 
-Risks:
-- Permission checks are not uniformly centralized.
-- Hardcoded IDs are still embedded defaults:
-  - `src/constants.js:5`
-  - `src/constants.js:7`
-  - `src/constants.js:52`
-- Engine policy mismatch still exists:
-  - runtime enforces Node 18+: `src/index.js:21`
-  - package allows Node 16+: `package.json:47`
+## What Is Missing To Call This "Fully Done"
 
-Verdict:
-- Secure enough for controlled ops, but policy consistency gaps remain.
+The bot is not fully "done" until these are complete:
+- Scheduler lock enforcement for all cron jobs
+- Recruit flow consistency guard (DB-first or compensation)
+- Single event architecture (no split runtime path)
+- Unified command authorization framework
+- Service/repo migration either completed or intentionally removed
+- Security patch plan and tracked vulnerability burndown
+- Alerting hooks (Discord/Slack/email) for AECS error-rate spikes
 
-## 7. Stability and Edge Cases Audit
-Strengths:
-- Shutdown is materially better:
-  - scheduler stop: `src/index.js:183`
-  - client destroy: `src/index.js:208`
-  - db close: `src/index.js:211`
-- Uncaught/unhandled handlers trigger flush and fail exit path.
+## Stabilization Plan (Execution Order)
 
-Risks:
-- Some error paths still log-and-continue where fail-fast might be safer.
-- Scheduler and recruiter logic remain high-complexity hotspots.
+1. P0 reliability (immediate)
+- Add scheduler locks.
+- Fix recruit flow mutation order/compensation.
+- Add tests that force DB failures during recruit to verify no partial Discord-side state.
 
-Verdict:
-- Stability improved from "fragile" to "operationally safe with attention."
+2. P1 architecture alignment
+- Migrate index event handlers to event factory modules.
+- Standardize command auth wrappers.
+- Decide service/repo strategy: fully adopt or remove dead layer.
 
-## 8. Feature and Logic Audit
-Core flow status (single guild):
-- Recruit flow: functional and test-backed.
-- Leaderboard paths: now explicitly guild-scoped in live command code.
-- Anti-nuke and rollback: active and regression tested.
-- Invite tracking/storage: schema/runtime alignment fixed.
+3. P2 hardening
+- Normalize logging pathways.
+- Reduce raw SQL scatter through repository wrappers.
+- Address vulnerability backlog with staged upgrades.
 
-Remaining feature logic drift:
-- Recruitment report command path is currently excluded from loader.
-- Legacy and refactor recruiter logic still coexist.
+## Operational Readiness Score (Current)
+- Runtime stability: 7.5/10
+- Data integrity safety: 6.5/10
+- Security posture: 7.0/10
+- Maintainability: 5.5/10
+- Observability: 6.5/10
+- Overall: 6.6/10
 
-## 9. Scalability Review (Even Though You Are Single Guild)
-If you scaled this as-is, first breaks would be:
-1. Split runtime architecture (legacy vs service path drift).
-2. Process-local state assumptions in scheduler/in-memory locks.
-3. Hardcoded default IDs and config coupling.
-
-For your stated constraint (single guild only):
-- You do not need multi-guild abstraction now.
-- You still need strict guild scoping everywhere to prevent future accidental corruption when data/migrations evolve.
-
-Future-proof verdict:
-- Partially future-proof in data model direction, not future-proof in runtime architecture yet.
-
-## 10. Scores (Brutally Honest)
-- Overall quality: 6.5 / 10
-- Security: 7 / 10
-- Scalability: 4 / 10
-- Maintainability: 5 / 10
-
-Top 5 fixes by impact:
-1. Remove legacy/runtime split for recruiter domain (one execution path only).
-2. Break `antinuke.js`, `scheduler.js`, and `recruiter.js` into bounded modules.
-3. Standardize authorization + error response wrappers across all commands.
-4. Replace ad hoc `console.*` with one structured logger policy.
-5. Align runtime and package Node version policy.
-
-## 11. Better Pattern Examples
-### 11.1 Atomic balance mutation
-```js
-await db.run('BEGIN');
-try {
-  const result = await db.run(
-    'UPDATE recruiters SET points = points - ? WHERE guild_id = ? AND id = ? AND points >= ?',
-    cost, guildId, recruiterId, cost
-  );
-  if (!result || result.changes !== 1) throw new Error('INSUFFICIENT_POINTS');
-  await db.run(
-    'INSERT INTO purchases (guild_id, recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?, ?)',
-    guildId, recruiterId, item, cost, Date.now()
-  );
-  await db.run('COMMIT');
-} catch (err) {
-  await db.run('ROLLBACK');
-  throw err;
-}
-```
-
-### 11.2 Strict command registry
-```js
-function registerCommand(registry, command, source) {
-  const name = command?.data?.name;
-  if (!name || typeof command.execute !== 'function') {
-    throw new Error(`Invalid command module: ${source}`);
-  }
-  if (registry.has(name)) {
-    throw new Error(`Duplicate command "${name}" from ${source}`);
-  }
-  registry.set(name, command);
-}
-```
-
-### 11.3 Consistent command auth wrapper
-```js
-async function requireAdminOrFail(interaction) {
-  const ok = await ensureCommandAccess(interaction, {
-    allowStaff: false,
-    deniedMessage: 'Administrator permission required.'
-  });
-  return ok;
-}
-```
-
-## 12. Same-Day Single-Guild Hardening Roadmap (Iterative Evolution)
-Constraint alignment:
-- Single guild only
-- No canary rollout
-- No broad rewrite today
-- Deploy directly after validation
-
-### Iteration 0 (Initial Draft)
-What it looked like:
-- Fix all architecture drift immediately.
-- Refactor monoliths and command/event systems same day.
-
-Why this was wrong:
-- Too much blast radius for one-day stability target.
-- High regression risk, low confidence deploy.
-
-### Iteration 1 (Refined for Today)
-Changed to:
-- Focus on runtime correctness first (command loading, guild scoping, startup/shutdown safety).
-- Defer monolith breakup.
-
-Expected gain:
-- Major drop in corruption/regression risk without large rewrites.
-
-Remaining risk:
-- Legacy/refactor dual-path remains.
-
-### Iteration 2 (Risk-Managed)
-Added:
-- Explicit P0/P1 prioritization and hard validation gates.
-- Rollback triggers and "stop conditions" per phase.
-
-Expected gain:
-- Fast execution with controlled failure handling.
-
-Remaining risk:
-- Hidden behavior in monolith files still possible.
-
-### Final Plan (Ready to Execute Same Day)
-Status legend:
-- Done: implemented and validated.
-- Pending: recommended next actions before/after direct deploy.
-
-#### Phase A (P0) Runtime Integrity - 2.5h - Done
-Target:
-- No duplicate command ambiguity.
-- No scheduler double-run residue.
-- Safe startup/shutdown.
-
-Tasks:
-1. Enforce duplicate command hard-fail.
-2. Ignore legacy wrapper collision path.
-3. Track and stop scheduler jobs.
-4. Add health server startup hook.
-5. Ensure shutdown closes scheduler/client/db.
-
-Done when:
-- Command verification passes.
-- Shutdown path includes scheduler/client/db cleanup.
-- App can restart without duplicate scheduler behavior.
-
-Fallback:
-- Revert to previous hotfix commit if boot fails.
-
-#### Phase B (P0) Guild-Scoped Data Safety - 2h - Done (core), 45m pending sweep
-Target:
-- Active runtime SQL paths use `guild_id`.
-
-Tasks completed:
-1. Invite schema/runtime guild alignment.
-2. Scheduler guild scoping in critical queries.
-3. Guild scoping fixes in `absent`, `leaderboard`, `revoke-recruit`, `status`, and weekly recalculations.
-
-Pending sweep:
-1. Review non-loaded legacy/stale files and either delete or archive to reduce future accidental reuse.
-
-Done when:
-- All loaded command SQL touching recruiter/recruit/warning tables is guild-scoped.
-
-Fallback:
-- Restore DB from snapshot + revert latest scoping commit if query behavior regresses.
-
-#### Phase C (P1) Operational Hardening - 1h - Done (with one bounded residual)
-Target:
-- Reduce incident response time and policy drift.
-
-Tasks completed:
-1. Aligned `package.json` engine with runtime policy (`node >=18`).
-2. Standardized admin/staff denial handling through `ensureCommandAccess` across loaded anti-nuke/admin command modules.
-3. Added structured runtime event logging for startup/shutdown critical paths.
-
-Residual:
-1. `src/commands/recruiting/recruiter.js` still contains legacy manual permission checks in several subcommand branches because the file is not safely patchable with the standard UTF-8 patch flow.
-
-Done when:
-- Lint clean, tests pass, and startup logs are consistent and parseable.
-
-Fallback:
-- Keep functionality as-is and only ship engine policy + minimal log wrapper.
-
-#### Phase D Deploy Gate (Direct Deploy, No Canary) - 30m - Ready
-Deploy only if all conditions are true:
-1. `npm run lint` passes.
-2. `node scripts/verify_commands.js` passes.
-3. `npm run test:p0` passes.
-4. `npm test -- --runInBand` passes.
-5. `npm run migration:dry` passes.
-6. Fresh DB backup snapshot exists.
-
-Immediate rollback triggers after deploy:
-1. Command failure rate > 1% sustained for 10 minutes.
-2. Any unhandled rejection loop.
-3. Scheduler errors repeating in same job cycle.
-4. Recruit flow cannot complete end-to-end in live smoke test.
-
-Rollback action:
-1. `git revert <hotfix_commit>`
-2. restart bot
-3. restore DB snapshot only if data inconsistency is confirmed
-
-## 13. Final Call
-This is now deployable for a single guild with disciplined operations.
-It is still not architecture-clean.
-If you keep adding features before collapsing split runtime paths and breaking monoliths, you will re-enter instability quickly.
+## Notes
+- Current CI/deploy gates are good and active:
+  - `.github/workflows/test.yml`
+  - `.github/workflows/deploy.yml`
+- This audit is intended to drive phase-by-phase stabilization, not broad rewrite in one pass.

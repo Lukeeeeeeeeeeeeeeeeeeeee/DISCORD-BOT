@@ -1,77 +1,57 @@
-# Stabilization Tracker
+# Stabilization Tracker (Codex)
+Last Updated: 2026-02-26
+Primary Audit: `docs/BOT_FULL_AUDIT.md`
 
-## Scope
-- Stabilize command loading after refactor drift.
-- Ensure CI/deploy gates block regressions.
-- Keep mutable anti-nuke state out of test/smoke runs.
+## Current Gate Status
+- `npm run stability:check` -> pass
+- `npm run migration:dry` -> pass
+- `npm test -- --runInBand` -> pass (56 suites / 154 tests)
+- `node scripts/verify_commands.js` -> pass (29 commands)
+- `npm run lint` -> pass (4 warnings)
+- `npm audit --json` -> 14 vulnerabilities (8 moderate, 6 high)
 
-## Active Gates
-- `npm run stability:check`
-  - `npm run lint`
-  - `npm run verify:commands`
-  - `npm test -- --runInBand`
-  - `npm run require-walk`
+## Active Workstreams
 
-## Command Loading Guardrails
-- Shared loader: `src/lib/command-loader.js`
-- Runtime uses shared loader: `src/index.js`
-- Verification script uses shared loader: `scripts/verify_commands.js`
-- Proxy shim skip + duplicate detection covered by tests:
-  - `tests/command_loader.test.js`
+### WS-01: P0 Reliability
+Status: in_progress
+- [ ] Add distributed scheduler locks around cron jobs
+  - Reference: `src/lib/job-locks.js`, `src/scheduler.js`
+- [ ] Fix recruit flow ordering to prevent partial Discord-state commits
+  - Reference: `src/commands/recruiting/recruit.js`
+- [ ] Add failure-mode tests for recruit DB rollback/compensation
 
-## CI/Deploy Enforcement
-- CI workflow runs `npm run stability:check`:
-  - `.github/workflows/test.yml`
-- Deploy workflow runs predeploy stability checks:
-  - `.github/workflows/deploy.yml`
+### WS-02: P1 Architecture Convergence
+Status: pending
+- [ ] Move inline event handling to event factory modules consistently
+  - Reference: `src/index.js`, `src/events/*.js`
+- [ ] Standardize privileged command authorization through `ensureCommandAccess`
+  - Reference: `src/lib/command-auth.js`, `src/commands/**`
+- [ ] Decide and execute service/repo strategy:
+  - adopt `src/services/**` + `src/repos/**` in live paths, or
+  - remove dead layer to reduce drift
 
-## Test/Smoke State Isolation
-- Anti-nuke supports override file path via `ANTINUKE_DATA_FILE`:
-  - `src/lib/antinuke.js`
-- Runtime default anti-nuke state file is local and ignored:
-  - `src/data/antinuke_data.local.json`
-- Jest sets temp anti-nuke state file:
-  - `tests/setup-env.js`
-  - `package.json` (`jest.setupFiles`)
-- Require-walk sets temp anti-nuke state file:
-  - `scripts/require-walk.js`
+### WS-03: P2 Hardening
+Status: pending
+- [ ] Normalize runtime logging via AECS wrappers (reduce direct `console.*`)
+- [ ] Reduce SQL scatter into repository layer with tests
+- [ ] Burn down dependency vulnerabilities with staged upgrades and canary
 
-## Operational Notes
-- `src/data/antinuke_data.json` must remain valid JSON.
-- SQLite sidecar files ignored in git:
-  - `.gitignore` includes `*.db-wal`, `*.db-shm`.
-- PR template enforces rollback/testing checklist:
-  - `.github/pull_request_template.md`
+## Acceptance Criteria (Stabilization Exit)
+- Core flow verified end-to-end in staging:
+  - recruit -> points -> leaderboard -> promotion -> status
+- No P0 findings open
+- P1 findings either fixed or converted into approved backlog with owners/dates
+- Migration dry-run and restore drill completed on DB snapshot
+- Alert thresholds defined for command failure, DB error, scheduler failure, anti-nuke anomaly
 
-## Backup/Recovery Hardening (2026-02-21)
-- Backups now capture extended snapshot data:
-  - Server metadata (name/settings/icon/banner)
-  - Roles/channels/overwrites
-  - Threads/forums metadata
-  - Emojis/stickers
-  - Ban list
-  - Onboarding configuration
-- Recovery supports cross-server clone-style restore:
-  - Run `/emergency_recover source_guild_id:<SOURCE_GUILD_ID>` in target server.
-- Dangerous anti-nuke commands are owner-only at execution time:
-  - `/emergency_recover`
-  - `/simulate_attack`
-  - `/toggle_strict_mode`
-  - `/toggle_aggressive_ban`
-  - `/set_quarantine_options`
-  - Whitelist add/remove remains owner-only.
-- Added safety guard for backup/logging crash:
-  - Prevents `Cannot read properties of undefined (reading 'cache')` when client cache is unavailable.
+## Recommended PR Order
+1. `[hotfix] scheduler lock enforcement`
+2. `[hotfix] recruit atomicity/compensation`
+3. `[fix] event wiring convergence`
+4. `[fix] command auth normalization`
+5. `[chore] docs + monitoring + vulnerability burndown`
 
-### Post-Deploy Checklist
-- Set `ANTINUKE_OWNER_ID` (or `OWNER_ID`) to the bot owner user ID.
-- Re-register slash commands after deploy (`src/register-commands.js`).
-- Validate in staging:
-  - `/force_backup` creates backup with expanded counts.
-  - `/view_backups` shows threads/emojis/stickers/bans counts.
-  - `/emergency_recover source_guild_id:<id>` works for owner and blocks non-owner.
-
-## Remaining Follow-ups
-- Resolve lint warnings:
-  - `src/commands/recruiting/recruitment_report.js` (`resolveGuildId` unused)
-  - `src/lib/weekly-recalculations.js` (`postRetentionToInviteChannels` unused)
+## Rollback Notes
+- App rollback: `git revert <commit>` then redeploy
+- DB rollback: restore snapshot before migration batch
+- Operational fallback: disable risky command path behind env flag if introduced
