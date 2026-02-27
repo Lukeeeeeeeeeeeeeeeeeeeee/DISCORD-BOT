@@ -130,4 +130,25 @@ describe('anti-nuke backup safety', () => {
     expect(backup).toBeDefined();
     expect(backup.id).toBeTruthy();
   });
+
+  test('suppresses duplicate automatic backup notifications inside dedupe window', async () => {
+    const antiNuke = new AntiNuke();
+    antiNuke.saveData = jest.fn();
+    antiNuke.logAction = jest.fn();
+    antiNuke.BACKUP_LOG_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
+
+    const guild = {
+      id: 'G_BACKUP_4',
+      roles: { cache: [] },
+      channels: { cache: [] }
+    };
+
+    await antiNuke.createBackup(guild, { type: 'full' });
+    await antiNuke.createBackup(guild, { type: 'incremental' });
+
+    expect(antiNuke.logAction).toHaveBeenCalledTimes(1);
+    expect(antiNuke.logAction).toHaveBeenCalledWith('G_BACKUP_4', expect.objectContaining({
+      type: 'backup_created'
+    }));
+  });
 });

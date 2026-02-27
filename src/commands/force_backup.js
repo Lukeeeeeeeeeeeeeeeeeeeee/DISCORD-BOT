@@ -60,11 +60,6 @@ module.exports = {
         .setFooter({ text: 'This backup can be used for emergency recovery' })
         .setTimestamp();
 
-      antiNuke.logAction(interaction.guild.id, {
-        type: 'manual_backup_created',
-        executorId: interaction.user.id
-      });
-
       await interaction.editReply({ embeds: [embed] });
     } catch (error) {
       const dispatchResult = await logUnexpectedError('command.forceBackup.execute', error, {
