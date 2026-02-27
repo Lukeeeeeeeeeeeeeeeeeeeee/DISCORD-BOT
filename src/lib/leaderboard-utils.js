@@ -11,11 +11,79 @@ function chunkArray(items, size = DEFAULT_CHUNK_SIZE) {
   return out;
 }
 
+function isMissingWeeklyOverrideTableError(error) {
+  const message = error && error.message ? String(error.message).toLowerCase() : '';
+  return message.includes('no such table: weekly_recruit_overrides');
+}
+
+function buildLeaderboardSql(valuesSql, options = {}) {
+  const useOverride = options.useOverride === true;
+  const region = options.region || null;
+  const cntExpr = useOverride ? 'COALESCE(wro.total, c.cnt, 0)' : 'COALESCE(c.cnt, 0)';
+  const overrideJoin = useOverride
+    ? 'LEFT JOIN weekly_recruit_overrides wro ON wro.guild_id = ? AND wro.recruiter_id = r.id AND wro.week_start = ?'
+    : '';
+
+  if (region) {
+    return `
+      WITH r(id) AS (VALUES ${valuesSql})
+      SELECT
+        r.id AS recruiter_id,
+        ${cntExpr} AS cnt,
+        COALESCE(db_rec.points, 0) AS points,
+        wc.calculated_min_req AS min_req
+      FROM r
+      LEFT JOIN (
+        SELECT recruiter_id, COUNT(*) as cnt
+        FROM recruits
+        WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?
+        GROUP BY recruiter_id
+      ) c ON c.recruiter_id = r.id
+      ${overrideJoin}
+      LEFT JOIN recruiters db_rec ON db_rec.guild_id = ? AND db_rec.id = r.id
+      LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?
+    `;
+  }
+
+  return `
+    WITH r(id) AS (VALUES ${valuesSql})
+    SELECT
+      r.id AS recruiter_id,
+      ${cntExpr} AS cnt,
+      COALESCE(db_rec.points, 0) AS points,
+      wc.calculated_min_req AS min_req
+    FROM r
+    LEFT JOIN (
+      SELECT recruiter_id, COUNT(*) as cnt
+      FROM recruits
+      WHERE guild_id = ? AND valid = 1 AND created_at >= ?
+      GROUP BY recruiter_id
+    ) c ON c.recruiter_id = r.id
+    ${overrideJoin}
+    LEFT JOIN recruiters db_rec ON db_rec.guild_id = ? AND db_rec.id = r.id
+    LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?
+  `;
+}
+
+function buildLeaderboardParams(chunk, options = {}) {
+  const params = [...chunk, options.guildId];
+  if (options.region) {
+    params.push(options.region);
+  }
+  params.push(options.sinceTs);
+  if (options.useOverride) {
+    params.push(options.guildId, options.weekStart);
+  }
+  params.push(options.guildId, options.guildId, options.weekStart);
+  return params;
+}
+
 async function fetchLeaderboardRows(db, recruiterIds, opts = {}) {
   if (!db || !recruiterIds || !recruiterIds.length) return [];
   const guildId = resolveGuildId(opts.guild || opts.guildId);
   const region = opts.region || null;
-  const weekStart = opts.weekStart || null;
+  const weekStart = Number.isFinite(opts.weekStart) ? opts.weekStart : null;
+  const hasWeekStart = Number.isFinite(weekStart);
   const sinceTs = Number.isFinite(opts.sinceTs) ? opts.sinceTs : weekStart || Date.now();
   const chunks = chunkArray(recruiterIds, opts.chunkSize);
   const rows = [];
@@ -23,46 +91,24 @@ async function fetchLeaderboardRows(db, recruiterIds, opts = {}) {
   for (const chunk of chunks) {
     const valuesSql = chunk.map(() => '(?)').join(',');
     if (!valuesSql) continue;
-
-    if (region) {
-      const rowsBase = await db.all(`
-        WITH r(id) AS (VALUES ${valuesSql})
-        SELECT
-          r.id AS recruiter_id,
-          COALESCE(c.cnt, 0) AS cnt,
-          COALESCE(db_rec.points, 0) AS points,
-          wc.calculated_min_req AS min_req
-        FROM r
-        LEFT JOIN (
-          SELECT recruiter_id, COUNT(*) as cnt
-          FROM recruits
-          WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?
-          GROUP BY recruiter_id
-        ) c ON c.recruiter_id = r.id
-        LEFT JOIN recruiters db_rec ON db_rec.guild_id = ? AND db_rec.id = r.id
-        LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?
-      `, ...chunk, guildId, region, sinceTs, guildId, guildId, weekStart);
-      if (rowsBase && rowsBase.length) rows.push(...rowsBase);
-    } else {
-      const rowsBase = await db.all(`
-        WITH r(id) AS (VALUES ${valuesSql})
-        SELECT
-          r.id AS recruiter_id,
-          COALESCE(c.cnt, 0) AS cnt,
-          COALESCE(db_rec.points, 0) AS points,
-          wc.calculated_min_req AS min_req
-        FROM r
-        LEFT JOIN (
-          SELECT recruiter_id, COUNT(*) as cnt
-          FROM recruits
-          WHERE guild_id = ? AND valid = 1 AND created_at >= ?
-          GROUP BY recruiter_id
-        ) c ON c.recruiter_id = r.id
-        LEFT JOIN recruiters db_rec ON db_rec.guild_id = ? AND db_rec.id = r.id
-        LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?
-      `, ...chunk, guildId, sinceTs, guildId, guildId, weekStart);
-      if (rowsBase && rowsBase.length) rows.push(...rowsBase);
+    const queryOptions = { guildId, region, sinceTs, weekStart, useOverride: hasWeekStart };
+    let rowsBase = [];
+    try {
+      rowsBase = await db.all(
+        buildLeaderboardSql(valuesSql, queryOptions),
+        ...buildLeaderboardParams(chunk, queryOptions)
+      );
+    } catch (error) {
+      if (!(hasWeekStart && isMissingWeeklyOverrideTableError(error))) {
+        throw error;
+      }
+      const fallbackOptions = { ...queryOptions, useOverride: false };
+      rowsBase = await db.all(
+        buildLeaderboardSql(valuesSql, fallbackOptions),
+        ...buildLeaderboardParams(chunk, fallbackOptions)
+      );
     }
+    if (rowsBase && rowsBase.length) rows.push(...rowsBase);
   }
 
   return rows;

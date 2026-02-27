@@ -194,6 +194,17 @@ async function init() {
     role_base INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS weekly_recruit_overrides (
+    guild_id TEXT NOT NULL,
+    recruiter_id TEXT NOT NULL,
+    week_start INTEGER NOT NULL,
+    total INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL,
+    note TEXT,
+    PRIMARY KEY (guild_id, recruiter_id, week_start)
+  );
+
   CREATE TABLE IF NOT EXISTS verifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id TEXT NOT NULL,
@@ -406,6 +417,11 @@ async function init() {
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_recruited_valid ON recruits(recruited_id, valid)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_weekly_recruit_overrides_guild_week ON weekly_recruit_overrides(guild_id, week_start)');
   } catch (e) {
     void e;
   }
@@ -904,6 +920,8 @@ async function init() {
   try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { void e; }
   try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { void e; }
+  try { await db.exec('CREATE TABLE IF NOT EXISTS weekly_recruit_overrides (guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, week_start INTEGER NOT NULL, total INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, note TEXT, PRIMARY KEY (guild_id, recruiter_id, week_start))'); } catch (e) { void e; }
+  try { await db.exec('CREATE INDEX IF NOT EXISTS idx_weekly_recruit_overrides_guild_week ON weekly_recruit_overrides(guild_id, week_start)'); } catch (e) { void e; }
   try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }

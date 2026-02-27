@@ -44,6 +44,16 @@ const commands = [
       .setName('admin_bypass')
       .setDescription('Admin only: bypass recruit eligibility checks (join/account/verified)')
       .setRequired(false)),
+  new SlashCommandBuilder().setName('recruits').setDescription('Admin: manage weekly recruit totals')
+    .addSubcommandGroup(group => group
+      .setName('total')
+      .setDescription('Manage weekly recruit totals')
+      .addSubcommand(sub => sub.setName('change').setDescription('Set weekly total recruits for a recruiter')
+        .addUserOption(opt => opt.setName('member').setDescription('Recruiter to update').setRequired(true))
+        .addIntegerOption(opt => opt.setName('total').setDescription('New total for this week').setRequired(true).setMinValue(0).setMaxValue(500))
+        .addStringOption(opt => opt.setName('note').setDescription('Optional audit note').setRequired(false).setMaxLength(250))
+      )
+    ),
 
   new SlashCommandBuilder().setName('recruiter').setDescription('Recruiter info and actions')
     .addSubcommand(s => s.setName('info').setDescription('Show recruiter info').addUserOption(o => o.setName('member').setDescription('Recruiter to query')))
