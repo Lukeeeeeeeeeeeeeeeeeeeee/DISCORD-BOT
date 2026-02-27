@@ -2,6 +2,7 @@ require('dotenv').config();
 const { REST } = require('@discordjs/rest');
 const { Routes } = require('discord-api-types/v10');
 const { SlashCommandBuilder } = require('@discordjs/builders');
+const { PermissionFlagsBits } = require('discord.js');
 
 const {
   REGIONS,
@@ -45,6 +46,7 @@ const commands = [
       .setDescription('Admin only: bypass recruit eligibility checks (join/account/verified)')
       .setRequired(false)),
   new SlashCommandBuilder().setName('recruits').setDescription('Admin: manage weekly recruit totals')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommandGroup(group => group
       .setName('total')
       .setDescription('Manage weekly recruit totals')
