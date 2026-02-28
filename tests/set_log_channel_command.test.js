@@ -31,7 +31,7 @@ jest.mock('../src/lib/embeds', () => ({
 
 const cmd = require('../src/commands/set_log_channel');
 
-function createInteraction(channel) {
+function createInteraction(channel, target = 'both') {
   const interaction = {
     guild: {
       id: 'guild-1',
@@ -47,7 +47,8 @@ function createInteraction(channel) {
       tag: 'Tester#0001'
     },
     options: {
-      getChannel: jest.fn(() => channel)
+      getChannel: jest.fn(() => channel),
+      getString: jest.fn((name) => (name === 'target' ? target : null))
     },
     deferred: false,
     replied: false,
@@ -105,7 +106,7 @@ describe('/set_log_channel command', () => {
         has: () => true
       })
     };
-    const interaction = createInteraction(channel);
+    const interaction = createInteraction(channel, 'both');
 
     await cmd.execute(interaction);
 
@@ -137,7 +138,7 @@ describe('/set_log_channel command', () => {
         has: () => true
       })
     };
-    const interaction = createInteraction(channel);
+    const interaction = createInteraction(channel, 'both');
 
     await cmd.execute(interaction);
 
@@ -151,6 +152,62 @@ describe('/set_log_channel command', () => {
         channelId: 'channel-2'
       })
     );
+    expect(interaction.editReply).toHaveBeenCalled();
+  });
+
+  test('updates only anti-nuke when target is antinuke', async () => {
+    const antiNuke = {
+      setLogChannel: jest.fn(),
+      logAction: jest.fn()
+    };
+    mockGetAntiNuke.mockReturnValue(antiNuke);
+
+    const channel = {
+      id: 'channel-3',
+      name: 'logs-3',
+      type: 0,
+      toString: () => '<#channel-3>',
+      permissionsFor: () => ({
+        has: () => true
+      })
+    };
+    const interaction = createInteraction(channel, 'antinuke');
+
+    await cmd.execute(interaction);
+
+    expect(antiNuke.setLogChannel).toHaveBeenCalledWith('guild-1', 'channel-3');
+    expect(mockProvisionTelemetryWebhooks).not.toHaveBeenCalled();
+    expect(mockSetTelemetryRouting).not.toHaveBeenCalled();
+    expect(interaction.editReply).toHaveBeenCalled();
+  });
+
+  test('updates only AECS when target is aecs', async () => {
+    mockGetAntiNuke.mockReturnValue(null);
+    mockProvisionTelemetryWebhooks.mockResolvedValue({
+      changed: false,
+      skipped: false,
+      config: {
+        telemetryChannelId: 'channel-4'
+      }
+    });
+
+    const channel = {
+      id: 'channel-4',
+      name: 'logs-4',
+      type: 0,
+      toString: () => '<#channel-4>',
+      permissionsFor: () => ({
+        has: () => true
+      })
+    };
+    const interaction = createInteraction(channel, 'aecs');
+
+    await cmd.execute(interaction);
+
+    expect(mockProvisionTelemetryWebhooks).toHaveBeenCalledWith(interaction.client);
+    expect(mockSetTelemetryRouting).toHaveBeenCalledWith(expect.objectContaining({
+      telemetryChannelId: 'channel-4'
+    }));
     expect(interaction.editReply).toHaveBeenCalled();
   });
 });

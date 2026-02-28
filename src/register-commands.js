@@ -153,8 +153,14 @@ const commands = [
     .addStringOption(opt => opt.setName('action').setDescription('Action to perform').setRequired(true)
       .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }))
     .addUserOption(opt => opt.setName('user').setDescription('User to add/remove (not required for list)')),
-  new SlashCommandBuilder().setName('set_log_channel').setDescription('Configure anti-nuke log channel (Admin only)')
-    .addChannelOption(opt => opt.setName('channel').setDescription('Channel to set as log channel').setRequired(true)),
+  new SlashCommandBuilder().setName('set_log_channel').setDescription('Configure anti-nuke and/or AECS log channel (Admin only)')
+    .addChannelOption(opt => opt.setName('channel').setDescription('Channel to set as log channel').setRequired(true))
+    .addStringOption(opt => opt.setName('target').setDescription('Which system this channel should apply to').setRequired(false)
+      .addChoices(
+        { name: 'Both', value: 'both' },
+        { name: 'Anti-nuke only', value: 'antinuke' },
+        { name: 'AECS only', value: 'aecs' }
+      )),
   new SlashCommandBuilder().setName('emergency_recover').setDescription('Recover or clone server from backup (Owner only)')
     .addStringOption(opt => opt.setName('backup_id').setDescription('Backup ID to restore (optional)').setRequired(false))
     .addStringOption(opt => opt.setName('source_guild_id').setDescription('Source guild backup to restore from (owner only)').setRequired(false))
