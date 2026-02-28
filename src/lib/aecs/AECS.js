@@ -1,10 +1,13 @@
 const crypto = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const path = require('path');
+const os = require('os');
 
 const AecsVault = require('./vault');
+const ProcessVault = require('./ProcessVault');
 const CodexError = require('./CodexError');
 const { Dispatcher, createSupportId } = require('./Dispatcher');
+const { RetentionManager } = require('./retention-manager');
 
 function isHex32(value) {
   if (!value || value.length !== 32) return false;
@@ -33,6 +36,27 @@ function toHexTraceId(rawTraceId) {
   return digest.slice(0, 32);
 }
 
+function normalizeNullableString(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function sanitizePathSegment(value, fallback = 'instance') {
+  const raw = normalizeNullableString(value) || fallback;
+  return raw.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function toBoolean(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+  return fallback;
+}
+
 class AECSCore {
   constructor() {
     this.als = new AsyncLocalStorage();
@@ -40,34 +64,91 @@ class AECSCore {
     this.config = {};
     this.vault = null;
     this.dispatcher = null;
+    this.retentionManager = null;
 
     this.configure({});
   }
 
   configure(options = {}) {
+    const baseLogDir = path.resolve(options.logDir || process.env.AECS_LOG_DIR || path.join(process.cwd(), 'data', 'aecs'));
+    const partitionByInstance = toBoolean(options.partitionByInstance, toBoolean(process.env.AECS_PARTITION_BY_INSTANCE, false));
+    const configuredInstanceId = options.instanceId || process.env.AECS_INSTANCE_ID || `${os.hostname()}-${process.pid}`;
+    const instanceId = sanitizePathSegment(configuredInstanceId, `node-${process.pid}`);
+    const resolvedLogDir = partitionByInstance ? path.join(baseLogDir, instanceId) : baseLogDir;
+
     this.config = {
-      logDir: path.resolve(options.logDir || process.env.AECS_LOG_DIR || path.join(process.cwd(), 'data', 'aecs')),
+      baseLogDir,
+      logDir: resolvedLogDir,
+      partitionByInstance,
+      instanceId,
+      storageMode: String(options.storageMode || process.env.AECS_STORAGE_MODE || 'inline').toLowerCase(),
+      storageProcessPath: options.storageProcessPath || process.env.AECS_STORAGE_PROCESS_PATH || '',
       flushIntervalMs: Number.parseInt(options.flushIntervalMs || process.env.AECS_FLUSH_INTERVAL_MS || '2000', 10),
+      queueMaxEvents: Number.parseInt(options.queueMaxEvents || process.env.AECS_QUEUE_MAX_EVENTS || '10000', 10),
+      queueMaxBytes: Number.parseInt(options.queueMaxBytes || process.env.AECS_QUEUE_MAX_BYTES || String(32 * 1024 * 1024), 10),
+      queueDropPolicy: String(options.queueDropPolicy || process.env.AECS_QUEUE_DROP_POLICY || 'drop_oldest'),
       suppressionThreshold: Number.parseInt(options.suppressionThreshold || process.env.AECS_SUPPRESSION_THRESHOLD || '50', 10),
       suppressionWindowMs: Number.parseInt(options.suppressionWindowMs || process.env.AECS_SUPPRESSION_WINDOW_MS || '60000', 10),
+      alertThreshold: Number.parseInt(options.alertThreshold || process.env.AECS_ALERT_THRESHOLD || '20', 10),
+      maxLatencySamples: Number.parseInt(options.maxLatencySamples || process.env.AECS_DISPATCH_LATENCY_SAMPLES || '2048', 10),
       fatalImpactThreshold: Number.parseInt(options.fatalImpactThreshold || process.env.AECS_FATAL_IMPACT_THRESHOLD || '90', 10),
       maxCureDepth: Number.parseInt(options.maxCureDepth || process.env.AECS_MAX_CURE_DEPTH || '3', 10),
       traceTtlMs: Number.parseInt(options.traceTtlMs || process.env.AECS_TRACE_TTL_MS || String(6 * 60 * 60 * 1000), 10),
       handshakeSecret: String(options.handshakeSecret || process.env.AECS_HANDSHAKE_SECRET || ''),
-      webhookImpactThreshold: Number.parseInt(options.webhookImpactThreshold || process.env.AECS_WEBHOOK_IMPACT_THRESHOLD || '90', 10),
+      webhookImpactThreshold: Number.parseInt(options.webhookImpactThreshold || process.env.AECS_WEBHOOK_IMPACT_THRESHOLD || '70', 10),
       telemetryWebhookUrl: options.telemetryWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL || '',
       telemetryFatalWebhookUrl: options.telemetryFatalWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL_FATAL || '',
       telemetryHighImpactWebhookUrl: options.telemetryHighImpactWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL_HIGH || '',
       telemetryChannelId: options.telemetryChannelId || process.env.AECS_TELEMETRY_CHANNEL_ID || '',
       supportLookupTemplate: options.supportLookupTemplate || process.env.AECS_SUPPORT_LOOKUP_TEMPLATE || '',
       telemetryTimeoutMs: Number.parseInt(options.telemetryTimeoutMs || process.env.AECS_TELEMETRY_TIMEOUT_MS || '5000', 10),
+      alertWorkerMode: String(options.alertWorkerMode || process.env.AECS_ALERT_WORKER_MODE || 'inline').toLowerCase(),
+      alertWorkerProcessPath: options.alertWorkerProcessPath || process.env.AECS_ALERT_WORKER_PROCESS_PATH || '',
+      alertWorkerMaxRetries: Number.parseInt(options.alertWorkerMaxRetries || process.env.AECS_ALERT_MAX_RETRIES || '3', 10),
+      alertWorkerBaseDelayMs: Number.parseInt(options.alertWorkerBaseDelayMs || process.env.AECS_ALERT_BASE_DELAY_MS || '500', 10),
+      alertWorkerMaxDelayMs: Number.parseInt(options.alertWorkerMaxDelayMs || process.env.AECS_ALERT_MAX_DELAY_MS || '30000', 10),
+      alertWorkerDeadLetterLimit: Number.parseInt(options.alertWorkerDeadLetterLimit || process.env.AECS_ALERT_DLQ_LIMIT || '500', 10),
+      alertWorkerQueueMaxEvents: Number.parseInt(options.alertWorkerQueueMaxEvents || process.env.AECS_ALERT_QUEUE_MAX_EVENTS || '2000', 10),
+      alertWorkerQueueMaxBytes: Number.parseInt(
+        options.alertWorkerQueueMaxBytes || process.env.AECS_ALERT_QUEUE_MAX_BYTES || String(4 * 1024 * 1024),
+        10
+      ),
+      alertWorkerQueueDropPolicy: String(options.alertWorkerQueueDropPolicy || process.env.AECS_ALERT_QUEUE_DROP_POLICY || 'drop_oldest_non_fatal').toLowerCase(),
+      alertWorkerRetryJitterRatio: Number(options.alertWorkerRetryJitterRatio || process.env.AECS_ALERT_RETRY_JITTER_RATIO || 0.2),
+      alertWorkerCircuitFailureThreshold: Number.parseInt(
+        options.alertWorkerCircuitFailureThreshold || process.env.AECS_ALERT_CIRCUIT_FAILURE_THRESHOLD || '5',
+        10
+      ),
+      alertWorkerCircuitOpenMs: Number.parseInt(options.alertWorkerCircuitOpenMs || process.env.AECS_ALERT_CIRCUIT_OPEN_MS || '15000', 10),
+      alertWorkerCircuitSuccessThreshold: Number.parseInt(
+        options.alertWorkerCircuitSuccessThreshold || process.env.AECS_ALERT_CIRCUIT_SUCCESS_THRESHOLD || '2',
+        10
+      ),
+      retentionEnabled: toBoolean(options.retentionEnabled, toBoolean(process.env.AECS_RETENTION_ENABLED, false)),
+      retentionDryRun: toBoolean(options.retentionDryRun, toBoolean(process.env.AECS_RETENTION_DRY_RUN, true)),
+      retentionMaxAgeDays: Number.parseInt(options.retentionMaxAgeDays || process.env.AECS_RETENTION_MAX_AGE_DAYS || '30', 10),
+      retentionIntervalMs: Number.parseInt(options.retentionIntervalMs || process.env.AECS_RETENTION_INTERVAL_MS || String(24 * 60 * 60 * 1000), 10),
+      retentionArchiveEnabled: toBoolean(options.retentionArchiveEnabled, toBoolean(process.env.AECS_RETENTION_ARCHIVE_ENABLED, false)),
+      retentionArchiveDir: options.retentionArchiveDir || process.env.AECS_RETENTION_ARCHIVE_DIR || '',
+      retentionArchiveCompress: toBoolean(options.retentionArchiveCompress, toBoolean(process.env.AECS_RETENTION_ARCHIVE_COMPRESS, false)),
       exitOnFatal: options.exitOnFatal === true || process.env.AECS_EXIT_ON_FATAL === '1'
     };
 
-    this.vault = new AecsVault({
+    const vaultOptions = {
       logDir: this.config.logDir,
-      flushIntervalMs: this.config.flushIntervalMs
-    });
+      flushIntervalMs: this.config.flushIntervalMs,
+      queueMaxEvents: this.config.queueMaxEvents,
+      queueMaxBytes: this.config.queueMaxBytes,
+      queueDropPolicy: this.config.queueDropPolicy
+    };
+    if (this.config.storageMode === 'process') {
+      this.vault = new ProcessVault({
+        ...vaultOptions,
+        workerPath: this.config.storageProcessPath || undefined
+      });
+    } else {
+      this.vault = new AecsVault(vaultOptions);
+    }
 
     this.dispatcher = new Dispatcher({
       vault: this.vault,
@@ -75,6 +156,8 @@ class AECSCore {
       runWithContext: (context, fn) => this.runWithContext(context, fn),
       suppressionThreshold: this.config.suppressionThreshold,
       suppressionWindowMs: this.config.suppressionWindowMs,
+      alertThreshold: this.config.alertThreshold,
+      maxLatencySamples: this.config.maxLatencySamples,
       fatalImpactThreshold: this.config.fatalImpactThreshold,
       maxCureDepth: this.config.maxCureDepth,
       telemetryWebhookUrl: this.config.telemetryWebhookUrl,
@@ -83,8 +166,35 @@ class AECSCore {
       telemetryChannelId: this.config.telemetryChannelId,
       supportLookupTemplate: this.config.supportLookupTemplate,
       telemetryTimeoutMs: this.config.telemetryTimeoutMs,
+      alertWorkerMode: this.config.alertWorkerMode,
+      alertWorkerProcessPath: this.config.alertWorkerProcessPath || undefined,
       webhookImpactThreshold: this.config.webhookImpactThreshold,
+      alertWorkerMaxRetries: this.config.alertWorkerMaxRetries,
+      alertWorkerBaseDelayMs: this.config.alertWorkerBaseDelayMs,
+      alertWorkerMaxDelayMs: this.config.alertWorkerMaxDelayMs,
+      alertWorkerDeadLetterLimit: this.config.alertWorkerDeadLetterLimit,
+      alertWorkerQueueMaxEvents: this.config.alertWorkerQueueMaxEvents,
+      alertWorkerQueueMaxBytes: this.config.alertWorkerQueueMaxBytes,
+      alertWorkerQueueDropPolicy: this.config.alertWorkerQueueDropPolicy,
+      alertWorkerRetryJitterRatio: this.config.alertWorkerRetryJitterRatio,
+      alertWorkerCircuitFailureThreshold: this.config.alertWorkerCircuitFailureThreshold,
+      alertWorkerCircuitOpenMs: this.config.alertWorkerCircuitOpenMs,
+      alertWorkerCircuitSuccessThreshold: this.config.alertWorkerCircuitSuccessThreshold,
       exitOnFatal: this.config.exitOnFatal
+    });
+
+    this.retentionManager = new RetentionManager({
+      logDir: this.config.logDir,
+      enabled: this.config.retentionEnabled,
+      dryRun: this.config.retentionDryRun,
+      maxAgeDays: this.config.retentionMaxAgeDays,
+      intervalMs: this.config.retentionIntervalMs,
+      archiveEnabled: this.config.retentionArchiveEnabled,
+      archiveDir: this.config.retentionArchiveDir,
+      archiveCompress: this.config.retentionArchiveCompress,
+      onError: (error) => {
+        console.error('AECS retention manager failed:', error);
+      }
     });
   }
 
@@ -96,6 +206,7 @@ class AECSCore {
 
     this.vault.start();
     this.dispatcher.start();
+    if (this.retentionManager) this.retentionManager.start();
     this.initialized = true;
   }
 
@@ -104,11 +215,13 @@ class AECSCore {
     this.configure(options);
     this.vault.start();
     this.dispatcher.start();
+    if (this.retentionManager) this.retentionManager.start();
     this.initialized = true;
   }
 
   async shutdown() {
     if (!this.initialized) return;
+    if (this.retentionManager) this.retentionManager.stop();
     if (this.dispatcher) await this.dispatcher.stop();
     if (this.vault) await this.vault.stop();
     this.initialized = false;
@@ -129,11 +242,20 @@ class AECSCore {
       parentTraceId: isExpired ? traceId : (seed.parentTraceId || null),
       startedAt: isExpired ? Date.now() : startedAt,
       source: seed.source || 'runtime',
+      eventType: seed.eventType || null,
       command: seed.command || null,
       subcommand: seed.subcommand || null,
       userId: seed.userId || null,
       guildId: seed.guildId || null,
       channelId: seed.channelId || null,
+      shardId: normalizeNullableString(seed.shardId || process.env.SHARD_ID),
+      clusterId: normalizeNullableString(seed.clusterId || process.env.CLUSTER_ID),
+      processId: Number.isFinite(Number(seed.processId)) ? Number(seed.processId) : process.pid,
+      instanceId: normalizeNullableString(seed.instanceId || this.config.instanceId),
+      hostname: normalizeNullableString(seed.hostname || process.env.HOSTNAME || os.hostname()),
+      release: normalizeNullableString(seed.release || process.env.RELEASE || process.env.npm_package_version),
+      environment: normalizeNullableString(seed.environment || process.env.NODE_ENV),
+      sessionId: normalizeNullableString(seed.sessionId),
       supportId: seed.supportId || createSupportId(traceId),
       healingLedger: seed.healingLedger instanceof Set ? seed.healingLedger : new Set(),
       cureDepth: Number(seed.cureDepth || 0),
@@ -166,6 +288,7 @@ class AECSCore {
 
     return this.runWithTrace({
       source: 'interaction',
+      eventType: 'interactionCreate',
       command,
       subcommand,
       userId: interaction && interaction.user ? interaction.user.id : null,
@@ -321,12 +444,90 @@ class AECSCore {
     return CodexError.fromUnknown(error, code, meta);
   }
 
+  getPlaneSnapshot(vaultMetrics, dispatchMetrics, alertMetrics, retentionMetrics) {
+    const storageHealthy = !(vaultMetrics && vaultMetrics.streamHealthy === false);
+    const alertReady = Boolean(alertMetrics && alertMetrics.running);
+    const retentionHealthy = !(
+      retentionMetrics
+      && retentionMetrics.lastSummary
+      && Number(retentionMetrics.lastSummary.failedCount || 0) > 0
+    );
+
+    const planes = {
+      capture: {
+        ready: this.initialized,
+        healthy: this.initialized
+      },
+      route: {
+        ready: Boolean(this.dispatcher),
+        healthy: Boolean(dispatchMetrics)
+      },
+      storage: {
+        ready: Boolean(this.vault),
+        healthy: storageHealthy
+      },
+      alert: {
+        ready: alertReady,
+        healthy: Boolean(alertMetrics)
+      },
+      retention: {
+        ready: Boolean(this.retentionManager),
+        healthy: retentionHealthy
+      }
+    };
+
+    const allReady = Object.values(planes).every((plane) => plane.ready);
+    const allHealthy = Object.values(planes).every((plane) => plane.healthy);
+
+    return {
+      status: allReady && allHealthy ? 'ok' : (allHealthy ? 'degraded' : 'error'),
+      ready: allReady,
+      healthy: allHealthy,
+      planes
+    };
+  }
+
   getMetrics() {
     this.init();
+    const vaultMetrics = this.vault.getMetricsSnapshot();
+    const suppressionMetrics = this.dispatcher.getSuppressionSnapshot();
+    const dispatchMetrics = this.dispatcher.getDispatchMetricsSnapshot();
+    const alertMetrics = this.dispatcher.getAlertWorkerSnapshot();
+    const retentionMetrics = this.retentionManager ? this.retentionManager.getSnapshot() : null;
+    const readiness = this.getPlaneSnapshot(vaultMetrics, dispatchMetrics, alertMetrics, retentionMetrics);
+
     return {
-      vault: this.vault.getMetricsSnapshot(),
-      suppression: this.dispatcher.getSuppressionSnapshot()
+      config: {
+        logDir: this.config.logDir,
+        baseLogDir: this.config.baseLogDir,
+        partitionByInstance: this.config.partitionByInstance,
+        instanceId: this.config.instanceId,
+        storageMode: this.config.storageMode,
+        queueMaxEvents: this.config.queueMaxEvents,
+        queueMaxBytes: this.config.queueMaxBytes,
+        queueDropPolicy: this.config.queueDropPolicy,
+        alertWorkerMode: this.config.alertWorkerMode,
+        alertWorkerQueueMaxEvents: this.config.alertWorkerQueueMaxEvents,
+        alertWorkerQueueMaxBytes: this.config.alertWorkerQueueMaxBytes,
+        alertWorkerQueueDropPolicy: this.config.alertWorkerQueueDropPolicy,
+        retentionArchiveEnabled: this.config.retentionArchiveEnabled,
+        retentionArchiveDir: this.config.retentionArchiveDir || null,
+        retentionArchiveCompress: this.config.retentionArchiveCompress,
+        maxLatencySamples: this.config.maxLatencySamples
+      },
+      vault: vaultMetrics,
+      suppression: suppressionMetrics,
+      dispatch: dispatchMetrics,
+      alerts: alertMetrics,
+      retention: retentionMetrics,
+      readiness
     };
+  }
+
+  runRetentionNow(overrides = {}) {
+    this.init();
+    if (!this.retentionManager) return Promise.resolve(null);
+    return this.retentionManager.runOnce(overrides);
   }
 }
 

@@ -20,11 +20,9 @@ function makeInteraction({
   member = { id: 'M1', tag: 'Member#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
   team = 'EU',
   ign = 'player123',
-  initialMemberRoleIds = [],
-  adminBypass = false,
-  recruiterIsAdmin = false
+  creditTo = null,
+  creditToTeam = 'EU'
 } = {}) {
-  const { PermissionsBitField } = require('discord.js');
   const ROLE_IDS = require('../src/constants').ROLE_IDS;
   const { RECRUITER_ROLE_IDS } = require('../src/constants');
 
@@ -61,43 +59,23 @@ function makeInteraction({
     channels: { cache: { get: (id) => channelsCache.get(id) } }
   };
 
-  const memberRoleIds = new Set(initialMemberRoleIds);
   const guildMember = {
     id: member.id,
     user: { id: member.id, createdAt: member.createdAt, bot: false, tag: member.tag },
     joinedAt: new Date(Date.now() - (30 * 60 * 1000)), // joined 30 minutes ago
-    manageable: true,
-    nickname: null,
     roles: {
       cache: {
-        has: (roleId) => memberRoleIds.has(roleId)
+        has: (_id) => false
       },
-      add: jest.fn(async (roleId) => {
-        const roleIds = Array.isArray(roleId) ? roleId : [roleId];
-        for (const id of roleIds) memberRoleIds.add(id);
-        return true;
-      }),
-      remove: jest.fn(async (roleId) => {
-        const roleIds = Array.isArray(roleId) ? roleId : [roleId];
-        for (const id of roleIds) memberRoleIds.delete(id);
-        return true;
-      })
+      add: jest.fn().mockResolvedValue(true),
+      remove: jest.fn().mockResolvedValue(true)
     },
-    setNickname: jest.fn(async (nickname) => {
-      guildMember.nickname = nickname || null;
-      return true;
-    }),
+    setNickname: jest.fn().mockResolvedValue(true),
     send: jest.fn().mockResolvedValue(true)
   };
 
   const recruiterMember = {
     id: recruiterId,
-    permissions: {
-      has: (permissionFlag) => {
-        if (!recruiterIsAdmin) return false;
-        return permissionFlag === PermissionsBitField.Flags.Administrator || permissionFlag === 'Administrator';
-      }
-    },
     roles: {
       cache: {
         has: (id) => {
@@ -112,11 +90,56 @@ function makeInteraction({
     }
   };
 
+  const creditedRecruiterMember = creditTo
+    ? {
+      id: creditTo.id,
+      roles: {
+        cache: {
+          has: (id) => {
+            if (creditToTeam === 'EU' && id === RECRUITER_ROLE_IDS.EU) return true;
+            if (creditToTeam === 'NA' && id === RECRUITER_ROLE_IDS.NA) return true;
+            if (creditToTeam === 'AS' && id === RECRUITER_ROLE_IDS.AS) return true;
+            return false;
+          }
+        },
+        add: jest.fn(),
+        remove: jest.fn()
+      }
+    }
+    : null;
+
   const options = {
-    getUser: (_k) => ({ id: member.id, tag: member.tag }),
-    getString: (k) => (k === 'ign' ? ign : undefined),
-    getBoolean: (k) => (k === 'admin_bypass' ? adminBypass : undefined)
+    getUser: (key) => {
+      if (key === 'member') return { id: member.id, tag: member.tag, bot: false };
+      if (key === 'credit_to' || key === 'recruiter') {
+        return creditTo ? { id: creditTo.id, tag: creditTo.tag, bot: !!creditTo.bot } : null;
+      }
+      return null;
+    },
+    getString: (k) => (k === 'ign' ? ign : undefined)
   };
+
+  guild.members.fetch = jest.fn(async (arg) => {
+    if (typeof arg === 'string') {
+      if (arg === member.id) return guildMember;
+      if (arg === recruiterId) return recruiterMember;
+      if (creditedRecruiterMember && arg === creditedRecruiterMember.id) return creditedRecruiterMember;
+      return null;
+    }
+    if (arg && arg.user) {
+      const ids = Array.isArray(arg.user) ? arg.user : [arg.user];
+      const collection = new Map();
+      for (const id of ids) {
+        if (id === member.id) collection.set(id, guildMember);
+        if (id === recruiterId) collection.set(id, recruiterMember);
+        if (creditedRecruiterMember && id === creditedRecruiterMember.id) {
+          collection.set(id, creditedRecruiterMember);
+        }
+      }
+      return collection;
+    }
+    return null;
+  });
 
   const reply = jest.fn();
   const interaction = {
@@ -201,6 +224,47 @@ describe('/recruit command', () => {
     expect(recomputeLeaderboards).toHaveBeenCalled();
   });
 
+  test('credits recruit points to another recruiter when credit_to is provided', async () => {
+    const credited = { id: 'R2', tag: 'RecruiterTwo#0002' };
+    const { interaction } = makeInteraction({
+      recruiterId: 'STAFF1',
+      member: { id: 'M_CREDIT', tag: 'Credit#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
+      creditTo: credited,
+      creditToTeam: 'NA'
+    });
+    const db = require('../src/db_async');
+    const cmd = require('../src/commands/recruiting/recruit.js');
+
+    await cmd.execute(interaction);
+
+    expect(interaction.reply).toHaveBeenCalled();
+    const replyArg = interaction.reply.mock.calls[0][0];
+    expect(replyArg.content).toContain('<@R2>');
+
+    const rec = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', 'M_CREDIT');
+    expect(rec).toBeDefined();
+    expect(rec.recruiter_id).toBe('R2');
+
+    const creditedRow = await db.get('SELECT * FROM recruiters WHERE id = ?', 'R2');
+    expect(creditedRow).toBeDefined();
+    expect(creditedRow.points).toBe(rec.points);
+  });
+
+  test('rejects credit_to when target is a bot account', async () => {
+    const { interaction } = makeInteraction({
+      recruiterId: 'STAFF2',
+      member: { id: 'M_BOT_CREDIT', tag: 'BotCredit#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
+      creditTo: { id: 'BOT_1', tag: 'Bot#1234', bot: true }
+    });
+    const cmd = require('../src/commands/recruiting/recruit.js');
+
+    await cmd.execute(interaction);
+
+    const replyArg = interaction.reply.mock.calls[0][0];
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toBe('Cannot credit recruits to bot accounts.');
+  });
+
   test('rejects if joined more than 2 hours ago', async () => {
     const { interaction, guildMember } = makeInteraction();
     guildMember.joinedAt = new Date(Date.now() - (3 * 60 * 60 * 1000)); // 3 hours
@@ -211,6 +275,21 @@ describe('/recruit command', () => {
     expect(desc).toBe('Cannot give roles to someone who joined more than 2 hours ago.');
   });
 
+  test('treats message-based DM errors as expected blocked DM', async () => {
+    const { interaction, guildMember } = makeInteraction({
+      member: { id: 'M_DM_MSG', tag: 'DmMsg#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) }
+    });
+    guildMember.send.mockRejectedValue(new Error('Cannot send messages to this user'));
+    const cmd = require('../src/commands/recruiting/recruit.js');
+
+    await cmd.execute(interaction);
+
+    expect(interaction.reply).toHaveBeenCalled();
+    const replyArg = interaction.reply.mock.calls[0][0];
+    expect(replyArg.content).toContain('could not DM them (their DMs are closed)');
+    expect(replyArg.content).not.toContain('unexpected error');
+  });
+
   test('rejects if account too young', async () => {
     const youngMember = { id: 'M2', tag: 'Young#0001', createdAt: new Date(Date.now() - (10 * 24 * 60 * 60 * 1000)) }; // 10 days old
     const { interaction } = makeInteraction({ member: youngMember });
@@ -219,33 +298,6 @@ describe('/recruit command', () => {
     const replyArg = interaction.reply.mock.calls[0][0];
     const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
     expect(desc).toBe('Account must be at least 6 months old.');
-  });
-
-  test('rejects admin_bypass for non-admin users', async () => {
-    const youngMember = { id: 'M_BYPASS_DENY', tag: 'BypassDeny#0001', createdAt: new Date(Date.now() - (10 * 24 * 60 * 60 * 1000)) };
-    const { interaction } = makeInteraction({
-      member: youngMember,
-      adminBypass: true,
-      recruiterIsAdmin: false
-    });
-    const cmd = require('../src/commands/recruiting/recruit.js');
-    await cmd.execute(interaction);
-    const replyArg = interaction.reply.mock.calls[0][0];
-    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
-    expect(desc).toBe('Only administrators can use `admin_bypass` on /recruit.');
-  });
-
-  test('allows admins to bypass 6-month account age check', async () => {
-    const youngMember = { id: 'M_BYPASS_OK', tag: 'BypassOk#0001', createdAt: new Date(Date.now() - (10 * 24 * 60 * 60 * 1000)) };
-    const { interaction } = makeInteraction({
-      member: youngMember,
-      adminBypass: true,
-      recruiterIsAdmin: true
-    });
-    const cmd = require('../src/commands/recruiting/recruit.js');
-    await cmd.execute(interaction);
-    const replyArg = interaction.reply.mock.calls[0][0];
-    expect(replyArg.content).toMatch(/Successfully recruited/);
   });
 
   test('rejects if member already verified', async () => {
@@ -266,54 +318,10 @@ describe('/recruit command', () => {
     await cmd.execute(interaction);
 
     // second attempt should be rejected
-    const second = makeInteraction();
-    await cmd.execute(second.interaction);
-    const replyArg = second.interaction.reply.mock.calls[0][0];
+    await cmd.execute(interaction);
+    const replyArg = interaction.reply.mock.calls[1][0]; // second call
     const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
     expect(desc).toBe('That member has already been recruited previously.');
-  });
-
-  test('restores member role state when recruit transaction fails', async () => {
-    const ROLE_IDS = require('../src/constants').ROLE_IDS;
-    const { interaction, guildMember } = makeInteraction({
-      member: { id: 'M_FAIL', tag: 'Failing#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
-      initialMemberRoleIds: [ROLE_IDS.UNVERIFIED]
-    });
-    interaction.options.getUser = () => ({ id: 'M_FAIL', tag: 'Failing#0001' });
-
-    const db = require('../src/db_async');
-    const realRun = db.run.bind(db);
-    const runSpy = jest.spyOn(db, 'run').mockImplementation(async (sql, ...params) => {
-      const text = String(sql || '');
-      if (text.includes('INSERT INTO recruits')) {
-        throw new Error('forced transaction failure');
-      }
-      return realRun(sql, ...params);
-    });
-
-    const cmd = require('../src/commands/recruiting/recruit.js');
-    await cmd.execute(interaction);
-
-    const replyArg = interaction.reply.mock.calls[0][0];
-    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
-    expect(desc).toMatch(/An error occurred while processing the recruit command/);
-
-    const rec = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', 'M_FAIL');
-    expect(rec).toBeUndefined();
-
-    expect(guildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)).toBe(true);
-    expect(guildMember.roles.cache.has(ROLE_IDS.ROOKIE)).toBe(false);
-
-    const onboardingIds = [
-      ROLE_IDS.ONBOARDING_FIRE,
-      ROLE_IDS.ONBOARDING_WATER,
-      ROLE_IDS.ONBOARDING_AIR
-    ].filter(Boolean);
-    for (const roleId of onboardingIds) {
-      expect(guildMember.roles.cache.has(roleId)).toBe(false);
-    }
-
-    runSpy.mockRestore();
   });
 
   test('assigns least occupied onboarding team when recruiter has no team role', async () => {

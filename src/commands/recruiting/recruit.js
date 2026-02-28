@@ -9,10 +9,10 @@ const { replyError } = require('../../lib/embeds');
 const db = require('../../db_async');
 const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
-const { hasAdministrator } = require('../../lib/permissions');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
+const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions } = require('../../lib/permissions');
 
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
@@ -96,86 +96,6 @@ function getAllOnboardingRoleIds() {
   return Array.from(new Set([...fromExplicit, ...fromArray].filter(Boolean)));
 }
 
-function snapshotRecruitMemberState(member, onboardingRoleIds = []) {
-  const hasRoleCache = !!(member && member.roles && member.roles.cache && typeof member.roles.cache.has === 'function');
-  const priorOnboardingRoles = [];
-  if (hasRoleCache) {
-    for (const roleId of onboardingRoleIds) {
-      if (member.roles.cache.has(roleId)) priorOnboardingRoles.push(roleId);
-    }
-  }
-  return {
-    hadUnverified: hasRoleCache ? member.roles.cache.has(ROLE_IDS.UNVERIFIED) : false,
-    hadRookie: hasRoleCache ? member.roles.cache.has(ROLE_IDS.ROOKIE) : false,
-    priorOnboardingRoles,
-    nickname: member && Object.prototype.hasOwnProperty.call(member, 'nickname') ? (member.nickname || null) : null
-  };
-}
-
-async function restoreRecruitMemberState(member, snapshot, context = {}) {
-  if (!member || !member.roles || !member.roles.cache) return;
-  if (typeof member.roles.cache.has !== 'function') return;
-
-  const roleReason = 'Recruit failed: restoring previous member role state';
-  const priorOnboardingRoles = new Set((snapshot && snapshot.priorOnboardingRoles) || []);
-  const allOnboardingRoles = getAllOnboardingRoleIds();
-  const restoreMeta = {
-    guildId: context.guildId || null,
-    recruiterId: context.recruiterId || null,
-    recruitedId: context.recruitedId || null
-  };
-
-  const safeRoleAdd = async (roleId) => {
-    try {
-      await member.roles.add(roleId, roleReason);
-    } catch (e) {
-      reportRecruitError('command.recruit.restore.roleAdd', e, { ...restoreMeta, roleId });
-    }
-  };
-
-  const safeRoleRemove = async (roleId) => {
-    try {
-      await member.roles.remove(roleId, roleReason);
-    } catch (e) {
-      reportRecruitError('command.recruit.restore.roleRemove', e, { ...restoreMeta, roleId });
-    }
-  };
-
-  if (!(snapshot && snapshot.hadRookie) && member.roles.cache.has(ROLE_IDS.ROOKIE)) {
-    await safeRoleRemove(ROLE_IDS.ROOKIE);
-  }
-
-  for (const roleId of allOnboardingRoles) {
-    const hasNow = member.roles.cache.has(roleId);
-    const shouldHave = priorOnboardingRoles.has(roleId);
-    if (hasNow && !shouldHave) {
-      await safeRoleRemove(roleId);
-      continue;
-    }
-    if (!hasNow && shouldHave) {
-      await safeRoleAdd(roleId);
-    }
-  }
-
-  if (snapshot && snapshot.hadUnverified && !member.roles.cache.has(ROLE_IDS.UNVERIFIED)) {
-    await safeRoleAdd(ROLE_IDS.UNVERIFIED);
-  } else if (!(snapshot && snapshot.hadUnverified) && member.roles.cache.has(ROLE_IDS.UNVERIFIED)) {
-    await safeRoleRemove(ROLE_IDS.UNVERIFIED);
-  }
-
-  if (member.manageable && typeof member.setNickname === 'function') {
-    const desiredNick = snapshot && Object.prototype.hasOwnProperty.call(snapshot, 'nickname')
-      ? snapshot.nickname
-      : null;
-    const currentNick = Object.prototype.hasOwnProperty.call(member, 'nickname') ? (member.nickname || null) : null;
-    if (desiredNick !== currentNick) {
-      await member.setNickname(desiredNick).catch((e) => {
-        reportRecruitError('command.recruit.restore.nickname', e, restoreMeta);
-      });
-    }
-  }
-}
-
 
 function normalizeIgn(rawIgn, suffix) {
   const base = rawIgn == null ? '' : String(rawIgn);
@@ -184,6 +104,33 @@ function normalizeIgn(rawIgn, suffix) {
   const maxLen = Math.max(1, 32 - suffix.length);
   if (cleaned.length > maxLen) return cleaned.slice(0, maxLen).trim();
   return cleaned;
+}
+
+function isExpectedWelcomeDmFailure(err) {
+  const code = Number(
+    err?.code
+    ?? err?.rawError?.code
+    ?? err?.data?.code
+    ?? NaN
+  );
+  if ([50007, 50013, 50001].includes(code)) return true;
+
+  const status = Number(
+    err?.status
+    ?? err?.rawError?.status
+    ?? err?.statusCode
+    ?? err?.rawError?.statusCode
+    ?? NaN
+  );
+
+  const rawMessage = err?.message ?? err?.rawError?.message ?? err?.data?.message ?? '';
+  const message = String(rawMessage).toLowerCase();
+  if (message.includes('cannot send messages to this user')) return true;
+  if (message.includes('cannot message this user')) return true;
+  if (message.includes('dms are closed')) return true;
+  if (status === 403 && message.includes('missing access')) return true;
+
+  return false;
 }
 
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
@@ -401,6 +348,7 @@ async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
 module.exports = {
   data: { name: 'recruit' },
   async execute(interaction) {
+    let creditedRecruiterId = null;
     try {
       const respond = async (payload) => {
         if (didDefer && typeof interaction.editReply === 'function') return interaction.editReply(payload);
@@ -417,11 +365,11 @@ module.exports = {
 
       const member = interaction.options.getUser('member');
       const rawIgn = interaction.options.getString('ign');
-      const adminBypassRequested = Boolean(
-        interaction.options
-        && typeof interaction.options.getBoolean === 'function'
-        && interaction.options.getBoolean('admin_bypass')
-      );
+      const creditedRecruiter = interaction.options.getUser('credit_to')
+        || interaction.options.getUser('recruiter')
+        || null;
+      creditedRecruiterId = creditedRecruiter ? creditedRecruiter.id : interaction.user.id;
+      const isCreditOverride = creditedRecruiterId !== interaction.user.id;
 
       // Validate inputs
       if (!member || !rawIgn) {
@@ -435,25 +383,36 @@ module.exports = {
       if (!guildMember) {
         return replyError(interaction, 'Unable to verify your guild membership.');
       }
-      if (adminBypassRequested && !hasAdministrator(guildMember)) {
-        return replyError(interaction, 'Only administrators can use `admin_bypass` on /recruit.');
-      }
-      const adminBypassEnabled = adminBypassRequested && hasAdministrator(guildMember);
 
       // Only recruiters (incl trial/regional) or staff/admin can recruit.
       // In tests we run with minimal mocks; skip strict permission enforcement there.
       if (process.env.NODE_ENV !== 'test') {
-        const { hasRecruiterOrStaffPermissions } = require('../../lib/permissions');
         if (!hasRecruiterOrStaffPermissions(guildMember)) {
           return replyError(interaction, 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).');
         }
       }
 
+      if (creditedRecruiter && creditedRecruiter.bot) {
+        return replyError(interaction, 'Cannot credit recruits to bot accounts.');
+      }
+      if (isCreditOverride && process.env.NODE_ENV !== 'test' && !hasAdminOrStaffPermissions(guildMember)) {
+        return replyError(interaction, 'You can only credit another recruiter if you have staff/admin permissions.');
+      }
+
+      const creditedRecruiterMember = creditedRecruiterId === interaction.user.id
+        ? guildMember
+        : await interaction.guild.members.fetch(creditedRecruiterId).catch(() => null);
+      if (!creditedRecruiterMember) {
+        return replyError(interaction, 'Credited recruiter is not in this guild.');
+      }
+      if (process.env.NODE_ENV !== 'test' && !hasRecruiterOrStaffPermissions(creditedRecruiterMember)) {
+        return replyError(interaction, 'Credited recruiter must have recruiter/staff permissions.');
+      }
+
       const recruitedGuildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
       if (!recruitedGuildMember) return replyError(interaction, 'Member not found in this guild.');
 
-      const recruiterMemberForTeam = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-      let team = resolveRecruitTeam(interaction.guild, recruiterMemberForTeam);
+      let team = resolveRecruitTeam(interaction.guild, creditedRecruiterMember);
       const regionTag = inferRegionTagFromMember(recruitedGuildMember);
       if (!team) {
         const regionCodes = Object.keys(REGION_INFO || {}).length ? Object.keys(REGION_INFO) : ['EU', 'NA', 'AS'];
@@ -473,17 +432,15 @@ module.exports = {
 
       const joinedAt = recruitedGuildMember.joinedAt;
       const now = new Date();
-      if (!adminBypassEnabled) {
-        if (!joinedAt) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
-        const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-        if (minutesSinceJoin > 120) return replyError(interaction, 'Cannot give roles to someone who joined more than 2 hours ago.');
-      }
+      if (!joinedAt) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
+      const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
+      if (minutesSinceJoin > 120) return replyError(interaction, 'Cannot give roles to someone who joined more than 2 hours ago.');
 
       const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000 * 60 * 60 * 24);
-      if (!adminBypassEnabled && accountAgeDays < (30 * 6)) return replyError(interaction, 'Account must be at least 6 months old.');
+      if (accountAgeDays < (30 * 6)) return replyError(interaction, 'Account must be at least 6 months old.');
 
       // already verified = has rookie
-      if (!adminBypassEnabled && recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return replyError(interaction, 'Member is already verified.');
+      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return replyError(interaction, 'Member is already verified.');
 
       // check if recruited already
       const exist = await db.get(
@@ -498,67 +455,50 @@ module.exports = {
         return replyError(interaction, 'No onboarding role is configured for this team.');
       }
 
-      const onboardingRoleIds = getAllOnboardingRoleIds();
-      const memberStateBeforeRecruit = snapshotRecruitMemberState(recruitedGuildMember, onboardingRoleIds);
-      let recruitStateMutated = false;
-      const restoreContext = { guildId, recruiterId: interaction.user.id, recruitedId: member.id };
-
       try {
+        // remove unverified if present
+        if (recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)) await recruitedGuildMember.roles.remove(ROLE_IDS.UNVERIFIED);
+        // ensure only one onboarding team role remains on the member
+        const onboardingRoleIds = getAllOnboardingRoleIds();
+        for (const onboardingRoleId of onboardingRoleIds) {
+          if (onboardingRoleId !== chosenRole && recruitedGuildMember.roles.cache.has(onboardingRoleId)) {
+            await recruitedGuildMember.roles.remove(onboardingRoleId);
+          }
+        }
+        // add rookie
+        await recruitedGuildMember.roles.add(ROLE_IDS.ROOKIE);
+        // add chosen onboarding role
+        await recruitedGuildMember.roles.add(chosenRole);
+
+        // set nickname
+        if (recruitedGuildMember.manageable) {
+          await recruitedGuildMember.setNickname(`${ign}${nicknameSuffix}`).catch(err => {
+            reportRecruitError('command.recruit.setNickname', err);
+          });
+        }
+
         try {
-          // remove unverified if present
-          if (recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)) {
-            await recruitedGuildMember.roles.remove(ROLE_IDS.UNVERIFIED);
-            recruitStateMutated = true;
-          }
-
-          // ensure only one onboarding team role remains on the member
-          for (const onboardingRoleId of onboardingRoleIds) {
-            if (onboardingRoleId !== chosenRole && recruitedGuildMember.roles.cache.has(onboardingRoleId)) {
-              await recruitedGuildMember.roles.remove(onboardingRoleId);
-              recruitStateMutated = true;
-            }
-          }
-
-          // add rookie
-          if (!recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) {
-            await recruitedGuildMember.roles.add(ROLE_IDS.ROOKIE);
-            recruitStateMutated = true;
-          }
-
-          // add chosen onboarding role
-          if (!recruitedGuildMember.roles.cache.has(chosenRole)) {
-            await recruitedGuildMember.roles.add(chosenRole);
-            recruitStateMutated = true;
-          }
-
-          // set nickname
-          if (recruitedGuildMember.manageable) {
-            const targetNick = `${ign}${nicknameSuffix}`;
-            if ((recruitedGuildMember.nickname || null) !== targetNick) {
-              await recruitedGuildMember.setNickname(targetNick).then(() => {
-                recruitStateMutated = true;
-              }).catch((err) => {
-                reportRecruitError('command.recruit.setNickname', err, restoreContext);
-              });
-            }
-          }
-        } catch (mutationError) {
-          if (recruitStateMutated) {
-            await restoreRecruitMemberState(recruitedGuildMember, memberStateBeforeRecruit, restoreContext);
-          }
-          throw mutationError;
+          await db.run(
+            'INSERT OR REPLACE INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
+            guildId,
+            recruitedGuildMember.id,
+            0,
+            Date.now()
+          );
+        } catch (e) {
+          reportRecruitError('command.recruit.initRookiePoints', e);
         }
 
 
         // Determine recruiter role and active multiplier, compute points
-        const recruiterMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+        const recruiterMember = creditedRecruiterMember;
         let recruiterRole = 'NONE';
         if (recruiterMember) {
           if (recruiterMember.roles.cache.has(ROLE_IDS.VIP)) recruiterRole = 'VIP';
           else if (recruiterMember.roles.cache.has(ROLE_IDS.MVP)) recruiterRole = 'MVP';
           else if (recruiterMember.roles.cache.has(ROLE_IDS.CUSTOM)) recruiterRole = 'CUSTOM';
         }
-        const multiplier = await getActiveMultiplier(db, interaction.user.id);
+        const multiplier = await getActiveMultiplier(db, creditedRecruiterId);
         const points = calculateRecruitPoints({ recruiterRole, multiplierValue: multiplier.value });
 
         // Database writes in a transaction to avoid partial state
@@ -571,7 +511,7 @@ module.exports = {
           await db.run(
             'INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',
             guildId,
-            interaction.user.id,
+            creditedRecruiterId,
             member.id,
             team,
             ign,
@@ -581,33 +521,18 @@ module.exports = {
           await db.run(
             'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
             guildId,
-            interaction.user.id
+            creditedRecruiterId
           );
           await db.run(
             'UPDATE recruiters SET points = points + ? WHERE guild_id = ? AND id = ?',
             points,
             guildId,
-            interaction.user.id
+            creditedRecruiterId
           );
           await db.run('COMMIT');
         } catch (e) {
           await db.run('ROLLBACK');
-          if (recruitStateMutated) {
-            await restoreRecruitMemberState(recruitedGuildMember, memberStateBeforeRecruit, restoreContext);
-          }
           throw e;
-        }
-
-        try {
-          await db.run(
-            'INSERT OR REPLACE INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
-            guildId,
-            recruitedGuildMember.id,
-            0,
-            Date.now()
-          );
-        } catch (e) {
-          reportRecruitError('command.recruit.initRookiePoints', e, restoreContext);
         }
 
         try {
@@ -635,8 +560,7 @@ module.exports = {
             allowedMentions: { parse: [] }
           });
         } catch (err) {
-          const code = err && (err.code ?? err.rawError?.code);
-          const isBlocked = code === 50007 || code === 50013 || code === 50001;
+          const isBlocked = isExpectedWelcomeDmFailure(err);
           dmFailure = isBlocked ? 'blocked' : 'error';
           const tag = member && (member.tag || member.username) ? (member.tag || member.username) : member.id;
           if (isBlocked) {
@@ -657,12 +581,13 @@ module.exports = {
             ? ' Note: I could not DM them due to an unexpected error.'
             : '';
 
-        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.${dmNote}` });
+        const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';
+        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}.${dmNote}` });
       } catch (err) {
         const dispatchResult = await logUnexpectedError('command.recruit.execute.inner', err, {
           command: 'recruit',
           guildId,
-          recruiterId: interaction.user.id
+          recruiterId: creditedRecruiterId || interaction.user.id
         });
 
         // Handle specific errors
@@ -685,7 +610,7 @@ module.exports = {
       const dispatchResult = await logUnexpectedError('command.recruit.execute.outer', err, {
         command: 'recruit',
         guildId: interaction.guild ? interaction.guild.id : null,
-        recruiterId: interaction.user ? interaction.user.id : null
+        recruiterId: creditedRecruiterId || (interaction.user ? interaction.user.id : null)
       });
       return replyError(interaction, `An error occurred while processing the recruit command. Please try again later.${dispatchResult && dispatchResult.supportId ? ` Support ID: \`${dispatchResult.supportId}\`.` : ''}`);
     }

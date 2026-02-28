@@ -142,7 +142,11 @@ describe('integration: /recruit -> scheduler -> leaderboard_messages', () => {
       locale: 'en',
       guild,
       options: {
-        getUser: (_key) => ({ id: recruitedId, tag: 'Recruit#0001' }),
+        getUser: (key) => {
+          if (key === 'member') return { id: recruitedId, tag: 'Recruit#0001', bot: false };
+          if (key === 'credit_to' || key === 'recruiter') return null;
+          return null;
+        },
         getString: (key) => (key === 'ign' ? 'player' : null)
       },
       deferReply: jest.fn().mockResolvedValue(true),

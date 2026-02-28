@@ -4,9 +4,11 @@ const AntiNuke = require('../src/lib/antinuke');
 
 describe('anti-nuke backup safety', () => {
   const originalRequireEncryption = process.env.ANTINUKE_REQUIRE_ENCRYPTION;
+  const originalLogAutomaticBackups = process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;
 
   beforeEach(() => {
     process.env.ANTINUKE_REQUIRE_ENCRYPTION = 'false';
+    delete process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;
   });
 
   afterEach(() => {
@@ -14,6 +16,11 @@ describe('anti-nuke backup safety', () => {
       delete process.env.ANTINUKE_REQUIRE_ENCRYPTION;
     } else {
       process.env.ANTINUKE_REQUIRE_ENCRYPTION = originalRequireEncryption;
+    }
+    if (originalLogAutomaticBackups === undefined) {
+      delete process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;
+    } else {
+      process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS = originalLogAutomaticBackups;
     }
   });
 
@@ -129,5 +136,43 @@ describe('anti-nuke backup safety', () => {
     const backup = await antiNuke.createBackup(guild, { type: 'full', manual: true, executorId: 'U1' });
     expect(backup).toBeDefined();
     expect(backup.id).toBeTruthy();
+  });
+
+  test('suppresses duplicate automatic backup notifications inside dedupe window', async () => {
+    process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS = 'true';
+    const antiNuke = new AntiNuke();
+    antiNuke.saveData = jest.fn();
+    antiNuke.logAction = jest.fn();
+    antiNuke.BACKUP_LOG_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
+
+    const guild = {
+      id: 'G_BACKUP_4',
+      roles: { cache: [] },
+      channels: { cache: [] }
+    };
+
+    await antiNuke.createBackup(guild, { type: 'full' });
+    await antiNuke.createBackup(guild, { type: 'incremental' });
+
+    expect(antiNuke.logAction).toHaveBeenCalledTimes(1);
+    expect(antiNuke.logAction).toHaveBeenCalledWith('G_BACKUP_4', expect.objectContaining({
+      type: 'backup_created'
+    }));
+  });
+
+  test('does not log automatic backup notifications by default', async () => {
+    const antiNuke = new AntiNuke();
+    antiNuke.saveData = jest.fn();
+    antiNuke.logAction = jest.fn();
+
+    const guild = {
+      id: 'G_BACKUP_5',
+      roles: { cache: [] },
+      channels: { cache: [] }
+    };
+
+    await antiNuke.createBackup(guild, { type: 'incremental' });
+
+    expect(antiNuke.logAction).not.toHaveBeenCalled();
   });
 });

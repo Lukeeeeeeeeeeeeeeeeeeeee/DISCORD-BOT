@@ -41,10 +41,7 @@ const commands = [
   new SlashCommandBuilder().setName('recruit').setDescription('Register a recruit')
     .addUserOption(opt => opt.setName('member').setDescription('Member to recruit').setRequired(true))
     .addStringOption(opt => opt.setName('ign').setDescription('In-game name').setRequired(true))
-    .addBooleanOption(opt => opt
-      .setName('admin_bypass')
-      .setDescription('Admin only: bypass recruit eligibility checks (join/account/verified)')
-      .setRequired(false)),
+    .addUserOption(opt => opt.setName('credit_to').setDescription('Optional recruiter to credit for this recruit').setRequired(false)),
   new SlashCommandBuilder().setName('recruits').setDescription('Admin: manage weekly recruit totals')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommandGroup(group => group

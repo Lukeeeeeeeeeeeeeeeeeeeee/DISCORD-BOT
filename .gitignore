@@ -18,6 +18,7 @@ backups/
 # Logs
 *.log
 logs/
+data/aecs/
 
 # Env files
 .env

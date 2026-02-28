@@ -102,6 +102,88 @@ if (commandLoadErrors.length > 0) {
 
 let _readyCalled = false;
 let healthServer = null;
+
+function summarizeTelemetryRoutes(provision) {
+  if (!provision || !Array.isArray(provision.routes)) return [];
+  return provision.routes.map((route) => ({
+    route: route.routeKey,
+    status: route.status,
+    reason: route.reason || null,
+    channelId: route.channelId || null
+  }));
+}
+
+function getAecsFallbackChannelId(antiNuke, guildId = null) {
+  if (!antiNuke || typeof antiNuke.getLogChannel !== 'function') return null;
+  if (guildId) {
+    const direct = antiNuke.getLogChannel(guildId);
+    if (direct) return String(direct);
+  }
+  const known = antiNuke.logChannels instanceof Map
+    ? Array.from(antiNuke.logChannels.values()).filter(Boolean)
+    : [];
+  return known.length ? String(known[0]) : null;
+}
+
+async function configureAecsTelemetry(client, source = 'startup') {
+  const telemetryProvision = await provisionTelemetryWebhooks(client).catch((err) => {
+    logUnexpectedError(`${source}.aecs.telemetry.provision`, err);
+    return null;
+  });
+
+  if (!telemetryProvision) return null;
+  if (telemetryProvision.config) {
+    AECS.setTelemetryRouting(telemetryProvision.config);
+  }
+
+  const routeSummary = summarizeTelemetryRoutes(telemetryProvision);
+  const summaryText = routeSummary.length
+    ? routeSummary.map((entry) => `${entry.route}:${entry.status}${entry.reason ? `(${entry.reason})` : ''}`).join(', ')
+    : 'no routes';
+
+  console.log(`[AECS] Telemetry ${source}: ${summaryText}`);
+
+  if (telemetryProvision.skipped) {
+    logRuntimeEvent('warn', `${source}.aecs.telemetry`, 'AECS telemetry provisioning skipped', {
+      details: {
+        reason: telemetryProvision.reason || 'unknown',
+        routes: routeSummary
+      }
+    });
+    return telemetryProvision;
+  }
+
+  const defaultRoute = Array.isArray(telemetryProvision.routes)
+    ? telemetryProvision.routes.find((route) => route && route.routeKey === 'default')
+    : null;
+
+  if (defaultRoute && defaultRoute.status === 'skipped') {
+    logRuntimeEvent('warn', `${source}.aecs.telemetry`, 'AECS default telemetry webhook was not provisioned', {
+      details: {
+        reason: defaultRoute.reason || 'unknown',
+        routes: routeSummary,
+        configuredChannelId: process.env.AECS_TELEMETRY_CHANNEL_ID || null
+      }
+    });
+  } else if (telemetryProvision.changed) {
+    logRuntimeEvent('info', `${source}.aecs.telemetry`, 'AECS telemetry webhooks provisioned', {
+      details: {
+        changed: true,
+        routes: routeSummary
+      }
+    });
+  } else {
+    logRuntimeEvent('info', `${source}.aecs.telemetry`, 'AECS telemetry webhooks verified', {
+      details: {
+        changed: false,
+        routes: routeSummary
+      }
+    });
+  }
+
+  return telemetryProvision;
+}
+
 async function onReady() {
   if (_readyCalled) return;
   _readyCalled = true;
@@ -110,56 +192,31 @@ async function onReady() {
     logUnexpectedError('startup.i18n.preload', err);
   });
 
-  const telemetryProvision = await provisionTelemetryWebhooks(client).catch((err) => {
-    logUnexpectedError('startup.aecs.telemetry.provision', err);
-    return null;
-  });
-  if (telemetryProvision && telemetryProvision.config) {
-    AECS.setTelemetryRouting(telemetryProvision.config);
-    const routeSummary = Array.isArray(telemetryProvision.routes)
-      ? telemetryProvision.routes.map((route) => ({
-        route: route.routeKey,
-        status: route.status,
-        reason: route.reason || null,
-        channelId: route.channelId || null
-      }))
-      : [];
-    const defaultRoute = Array.isArray(telemetryProvision.routes)
-      ? telemetryProvision.routes.find((route) => route && route.routeKey === 'default')
-      : null;
+  let telemetryProvision = await configureAecsTelemetry(client, 'startup');
 
-    if (defaultRoute && defaultRoute.status === 'skipped') {
-      logRuntimeEvent('warn', 'startup.aecs.telemetry', 'AECS default telemetry webhook was not provisioned', {
-        details: {
-          reason: defaultRoute.reason || 'unknown',
-          routes: routeSummary,
-          configuredChannelId: process.env.AECS_TELEMETRY_CHANNEL_ID || null
-        }
+  await antiNukeInitPromise;
+
+  const configuredAecsChannelId = String(process.env.AECS_TELEMETRY_CHANNEL_ID || '').trim();
+  if (!configuredAecsChannelId) {
+    const antiNuke = runtime.getAntiNuke();
+    const fallbackChannelId = getAecsFallbackChannelId(antiNuke, GUILD_ID || null);
+    if (fallbackChannelId) {
+      process.env.AECS_TELEMETRY_CHANNEL_ID = fallbackChannelId;
+      console.log(`[AECS] No AECS telemetry channel configured; inherited anti-nuke log channel ${fallbackChannelId}.`);
+      logRuntimeEvent('info', 'startup.aecs.telemetry', 'AECS telemetry channel inherited from anti-nuke log channel', {
+        details: { channelId: fallbackChannelId }
       });
-    } else if (telemetryProvision.changed) {
-      logRuntimeEvent('info', 'startup.aecs.telemetry', 'AECS telemetry webhooks provisioned', {
+      telemetryProvision = await configureAecsTelemetry(client, 'startup.inherited');
+    } else if (!telemetryProvision || !telemetryProvision.config || !telemetryProvision.config.telemetryWebhookUrl) {
+      console.warn('[AECS] Telemetry is not configured. Set AECS_TELEMETRY_CHANNEL_ID or AECS_TELEMETRY_WEBHOOK_URL.');
+      logRuntimeEvent('warn', 'startup.aecs.telemetry', 'AECS telemetry is not configured', {
         details: {
-          changed: true,
-          routes: routeSummary
-        }
-      });
-    } else if (!telemetryProvision.skipped) {
-      logRuntimeEvent('info', 'startup.aecs.telemetry', 'AECS telemetry webhooks verified', {
-        details: {
-          changed: false,
-          routes: routeSummary
+          guidance: 'Set AECS_TELEMETRY_CHANNEL_ID or AECS_TELEMETRY_WEBHOOK_URL'
         }
       });
     }
-  } else if (telemetryProvision && telemetryProvision.skipped) {
-    logRuntimeEvent('warn', 'startup.aecs.telemetry', 'AECS telemetry provisioning skipped', {
-      details: {
-        reason: telemetryProvision.reason || 'unknown'
-      }
-    });
   }
 
-  await antiNukeInitPromise;
   scheduler.start(client, db);
 
   const healthPort = Number.parseInt(process.env.HEALTHCHECK_PORT || '', 10);

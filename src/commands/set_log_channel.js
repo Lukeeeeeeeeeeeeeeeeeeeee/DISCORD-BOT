@@ -1,4 +1,4 @@
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, PermissionsBitField } = require('discord.js');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { buildErrorEmbed } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
@@ -35,6 +35,21 @@ module.exports = {
     // Verify it's a text channel
     if (channel.type !== 0) { // GUILD_TEXT
       return interaction.reply({ embeds: [buildErrorEmbed('Log channel must be a text channel.')], flags: 64 });
+    }
+
+    const me = interaction.guild && interaction.guild.members
+      ? (interaction.guild.members.me || await interaction.guild.members.fetchMe().catch(() => null))
+      : null;
+    const perms = me ? channel.permissionsFor(me) : null;
+    const missingPerms = [];
+    if (!perms || !perms.has(PermissionsBitField.Flags.ViewChannel)) missingPerms.push('ViewChannel');
+    if (!perms || !perms.has(PermissionsBitField.Flags.SendMessages)) missingPerms.push('SendMessages');
+    if (!perms || !perms.has(PermissionsBitField.Flags.EmbedLinks)) missingPerms.push('EmbedLinks');
+    if (missingPerms.length) {
+      return interaction.reply({
+        embeds: [buildErrorEmbed(`I cannot log there. Missing bot permissions in that channel: ${missingPerms.join(', ')}.`)],
+        flags: 64
+      });
     }
 
     if (typeof interaction.deferReply === 'function') {

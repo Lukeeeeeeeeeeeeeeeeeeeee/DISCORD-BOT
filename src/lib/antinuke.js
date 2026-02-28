@@ -13,6 +13,7 @@ const path = require('path');
 const runtime = require('./runtime');
 const { buildErrorEmbed } = require('./embeds');
 const { formatUtcDate } = require('./time');
+const { captureError } = require('./aecs/capture-adapter');
 
 class AntiNuke {
   constructor() {
@@ -22,11 +23,14 @@ class AntiNuke {
     if (!this.OWNER_ID) {
       console.warn('OWNER_ID is not configured; owner-only anti-nuke actions will be disabled.');
     }
-    const logDmEnv = process.env.ANTINUKE_LOG_DM_ID || process.env.LOG_DM_ID || this.OWNER_ID;
+    const logDmEnv = process.env.ANTINUKE_LOG_DM_ID || process.env.LOG_DM_ID || '';
     this.LOG_DM_ID = logDmEnv ? String(logDmEnv).trim() : null;
-    if (!this.LOG_DM_ID) {
-      console.warn('ANTINUKE_LOG_DM_ID is not configured; anti-nuke DM alerts will be disabled.');
-    }
+    this.LOG_DM_MODE = (process.env.ANTINUKE_LOG_DM_MODE || 'off').toLowerCase();
+    this.LOG_DM_INCLUDE_NON_CRITICAL = String(process.env.ANTINUKE_LOG_DM_INCLUDE_NON_CRITICAL || 'false').toLowerCase() === 'true';
+    this.LOG_DM_INCLUDE_BACKUPS = String(process.env.ANTINUKE_LOG_DM_INCLUDE_BACKUPS || 'false').toLowerCase() === 'true';
+    this.LOG_DM_DUPLICATE_WITH_CHANNEL = String(process.env.ANTINUKE_LOG_DM_DUPLICATE_WITH_CHANNEL || 'false').toLowerCase() === 'true';
+    this.LOG_AUTOMATIC_BACKUPS = String(process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS || 'false').toLowerCase() === 'true';
+    this.BACKUP_LOG_DEDUPE_WINDOW_MS = Number.parseInt(process.env.ANTINUKE_BACKUP_LOG_DEDUPE_WINDOW_MS || '180000', 10);
 
     // Protection thresholds (base values; per-guild scaling is applied at runtime)
     this.THRESHOLDS = {
@@ -137,6 +141,7 @@ class AntiNuke {
     this.recoveryMappings = new Map(); // guildId -> { channels: Map<oldId, newId>, roles: Map<oldId, newId> }
     this.pendingEmergencyConfirmations = new Map(); // guildId -> { pending, expiresAt }
     this.rapidActionTimers = new Map(); // key -> timeout
+    this.lastBackupNotification = new Map(); // guildId -> { timestamp: number, type: string }
 
     // File paths:
     // - default runtime state is stored in a local, non-repo file
@@ -1352,8 +1357,7 @@ class AntiNuke {
     const logChannelId = this.logChannels.get(guild.id);
     let targetChannel = logChannelId ? guild.channels.cache.get(logChannelId) : null;
 
-    if (!targetChannel) {
-      if (!this.LOG_DM_ID) return false;
+    if (!targetChannel && this.LOG_DM_ID) {
       try {
         const owner = await this.client.users.fetch(this.LOG_DM_ID);
         targetChannel = await owner.createDM();
@@ -1361,6 +1365,7 @@ class AntiNuke {
         return false;
       }
     }
+    if (!targetChannel) return false;
 
     const confirmId = `antinuke_confirm_${context.traceId}`;
     const cancelId = `antinuke_cancel_${context.traceId}`;
@@ -2678,6 +2683,7 @@ class AntiNuke {
         }
       } catch (e) {
         console.error('Backup: failed to fetch active threads', { guildId: guild.id, error: e });
+        await captureError('antinuke.backup.fetch_active_threads', e, { guildId: guild.id }, { code: 'SYS-500' });
       }
     }
 
@@ -2691,6 +2697,7 @@ class AntiNuke {
         })).filter(entry => !!entry.userId);
       } catch (e) {
         console.error('Backup: failed to fetch ban list', { guildId: guild.id, error: e });
+        await captureError('antinuke.backup.fetch_bans', e, { guildId: guild.id }, { code: 'SYS-500' });
       }
     }
 
@@ -2705,6 +2712,7 @@ class AntiNuke {
         }
       } catch (e) {
         console.error('Backup: failed to fetch onboarding configuration', { guildId: guild.id, error: e });
+        await captureError('antinuke.backup.fetch_onboarding', e, { guildId: guild.id }, { code: 'SYS-500' });
       }
     }
 
@@ -2803,20 +2811,98 @@ class AntiNuke {
         ? 'backup_incremental_created'
         : 'backup_created';
 
-    this.logAction(guild.id, {
-      type: logType,
-      executorId,
-      backupId: entry.id,
-      rolesCount: snapshot.roles.length,
-      channelsCount: snapshot.channels.length,
-      threadsCount: (snapshot.threads || []).length,
-      emojisCount: (snapshot.emojis || []).length,
-      stickersCount: (snapshot.stickers || []).length,
-      bansCount: (snapshot.bans || []).length,
-      encrypted: entry.encrypted || false
-    });
+    const automaticBackup = logType === 'backup_created' || logType === 'backup_incremental_created';
+    let shouldLogBackup = !automaticBackup || this.LOG_AUTOMATIC_BACKUPS;
+    if (automaticBackup && Number.isFinite(this.BACKUP_LOG_DEDUPE_WINDOW_MS) && this.BACKUP_LOG_DEDUPE_WINDOW_MS > 0) {
+      const lastNotification = this.lastBackupNotification.get(guild.id);
+      if (lastNotification && (snapshot.timestamp - lastNotification.timestamp) < this.BACKUP_LOG_DEDUPE_WINDOW_MS) {
+        shouldLogBackup = false;
+      }
+    }
+    if (shouldLogBackup) {
+      this.logAction(guild.id, {
+        type: logType,
+        executorId,
+        backupId: entry.id,
+        rolesCount: snapshot.roles.length,
+        channelsCount: snapshot.channels.length,
+        threadsCount: (snapshot.threads || []).length,
+        emojisCount: (snapshot.emojis || []).length,
+        stickersCount: (snapshot.stickers || []).length,
+        bansCount: (snapshot.bans || []).length,
+        encrypted: entry.encrypted || false
+      });
+    }
+    if (automaticBackup) {
+      this.lastBackupNotification.set(guild.id, { timestamp: snapshot.timestamp, type: logType });
+    }
     this.saveData();
     return entry;
+  }
+
+  isCriticalActionType(actionType) {
+    switch (actionType) {
+      case 'beast_mode_ban':
+      case 'beast_mode_ban_failed':
+      case 'rapid_action_ban':
+      case 'rapid_action_ban_failed':
+      case 'prune_ban':
+      case 'prune_ban_failed':
+      case 'bot_beast_mode_ban':
+      case 'bot_beast_mode_ban_failed':
+      case 'emergency_mode':
+      case 'emergency_mode_failed':
+      case 'emergency_mode_pending':
+      case 'emergency_mode_confirm_denied':
+      case 'mass_ban_lockdown_failed':
+      case 'mass_ban_lockdown':
+      case 'mass_ban_lockdown_pending':
+      case 'mass_ban_lockdown_confirm_denied':
+      case 'protective_ban':
+      case 'protective_ban_failed':
+      case 'critical_alert':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  isBackupActionType(actionType = null) {
+    switch (actionType) {
+      case 'backup_created':
+      case 'backup_incremental_created':
+      case 'manual_backup_created':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  shouldSendOwnerDm(actionType = null, options = {}) {
+    if (!this.LOG_DM_ID) return false;
+    if (this.isBackupActionType(actionType) && !this.LOG_DM_INCLUDE_BACKUPS) return false;
+    const isCritical = this.isCriticalActionType(actionType);
+    if (!isCritical && !this.LOG_DM_INCLUDE_NON_CRITICAL) return false;
+    const hasLogChannel = Boolean(options.hasLogChannel);
+    if (hasLogChannel && !this.LOG_DM_DUPLICATE_WITH_CHANNEL && !isCritical) {
+      return false;
+    }
+    if (this.LOG_DM_MODE === 'all') return true;
+    if (this.LOG_DM_MODE === 'critical') return isCritical;
+    return false;
+  }
+
+  async sendOwnerDm(payload, actionType = null, options = {}) {
+    if (!this.shouldSendOwnerDm(actionType, options)) return;
+    if (!this.client || !this.client.users || typeof this.client.users.fetch !== 'function') return;
+    try {
+      const owner = await this.client.users.fetch(this.LOG_DM_ID);
+      if (owner && typeof owner.send === 'function') {
+        await owner.send(payload);
+      }
+    } catch (error) {
+      // DM might be disabled
+    }
   }
 
   // Send critical alert
@@ -2832,15 +2918,7 @@ class AntiNuke {
       )
       .setTimestamp();
 
-    // Send to log DM
-    if (this.LOG_DM_ID) {
-      try {
-        const owner = await this.client.users.fetch(this.LOG_DM_ID);
-        await owner.send({ embeds: [embed] });
-      } catch (error) {
-        // DM might be disabled
-      }
-    }
+    await this.sendOwnerDm({ embeds: [embed] }, 'critical_alert');
 
     // Send to log channel
     const logChannelId = this.logChannels.get(guild.id);
@@ -2849,6 +2927,7 @@ class AntiNuke {
       if (logChannel) {
         await logChannel.send({ embeds: [embed] }).catch((e) => {
           console.error('Failed to send anti-nuke log message', e);
+          void captureError('antinuke.log_channel.send_critical_alert', e, { guildId: guild.id }, { code: 'SYS-500' });
         });
       }
     }
@@ -2959,24 +3038,21 @@ class AntiNuke {
 
     // Send to log channel
     const logChannelId = this.logChannels.get(guildId);
+    let hasLogChannel = false;
     if (logChannelId) {
       const logChannel = guild.channels.cache.get(logChannelId);
       if (logChannel) {
-        await logChannel.send({ embeds: [embed] }).catch((e) => {
+        await logChannel.send({ embeds: [embed] }).then(() => {
+          hasLogChannel = true;
+        }).catch((e) => {
+          hasLogChannel = false;
           console.error('Failed to send anti-nuke log message', e);
+          void captureError('antinuke.log_channel.send_action', e, { guildId, actionType: actionData.type }, { code: 'SYS-500' });
         });
       }
     }
 
-    // Send to owner DM
-    if (this.LOG_DM_ID) {
-      try {
-        const owner = await this.client.users.fetch(this.LOG_DM_ID);
-        await owner.send({ embeds: [embed] });
-      } catch (error) {
-        // DM might be disabled
-      }
-    }
+    await this.sendOwnerDm({ embeds: [embed] }, actionData.type, { hasLogChannel });
   }
   // Get color for action type
   getColorForAction(action) {
@@ -3461,6 +3537,7 @@ class AntiNuke {
           if (guild) {
             this.restoreQuarantine(guild, userId, 'quarantine_expired').catch((e) => {
               console.error('Failed to restore quarantine roles', e);
+              void captureError('antinuke.quarantine.restore_failed', e, { guildId, userId }, { code: 'SYS-500' });
             });
           } else {
             assignments.delete(userId);
@@ -3482,6 +3559,7 @@ class AntiNuke {
         await this.createBackup(guild, { type: 'full' });
       } catch (error) {
         console.error(`Failed to create backup for ${guild.name}:`, error);
+        await captureError('antinuke.backup.full_failed', error, { guildId: guild.id, guildName: guild.name }, { code: 'SYS-500' });
       }
     }
 
@@ -3495,6 +3573,7 @@ class AntiNuke {
         await this.createBackup(guild, { type: 'incremental' });
       } catch (error) {
         console.error(`Failed to create incremental backup for ${guild.name}:`, error);
+        await captureError('antinuke.backup.incremental_failed', error, { guildId: guild.id, guildName: guild.name }, { code: 'SYS-500' });
       }
     }
   }
