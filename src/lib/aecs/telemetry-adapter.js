@@ -1,8 +1,5 @@
-const { sanitizeForDiscordSink } = require('./privacy-policy');
-
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_IMPACT_THRESHOLD = 70;
-const DEFAULT_SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|cookie|api[_-]?key|session|bearer)/i;
 
 function asInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
@@ -44,25 +41,6 @@ function toHexColor(severity) {
   return 0x3388DD;
 }
 
-function toBoolean(value, fallback = false) {
-  if (value === undefined || value === null) return fallback;
-  if (typeof value === 'boolean') return value;
-  const normalized = String(value).trim().toLowerCase();
-  if (!normalized) return fallback;
-  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
-  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
-  return fallback;
-}
-
-function normalizeSensitiveKeyPattern(value) {
-  if (!value) return DEFAULT_SENSITIVE_KEY_PATTERN;
-  try {
-    return new RegExp(String(value), 'i');
-  } catch (_error) {
-    return DEFAULT_SENSITIVE_KEY_PATTERN;
-  }
-}
-
 class TelemetryAdapter {
   constructor(options = {}) {
     this.defaultWebhookUrl = options.defaultWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL || '';
@@ -77,21 +55,6 @@ class TelemetryAdapter {
     );
     this.timeoutMs = asInt(options.timeoutMs || process.env.AECS_TELEMETRY_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
     this.fetchImpl = options.fetchImpl || (typeof fetch === 'function' ? fetch : null);
-    this.includeStack = toBoolean(
-      options.includeStack !== undefined ? options.includeStack : process.env.AECS_TELEMETRY_INCLUDE_STACK,
-      false
-    );
-    this.includeInternal = toBoolean(
-      options.includeInternal !== undefined ? options.includeInternal : process.env.AECS_TELEMETRY_INCLUDE_INTERNAL,
-      false
-    );
-    this.includeSensitive = toBoolean(
-      options.includeSensitive !== undefined ? options.includeSensitive : process.env.AECS_TELEMETRY_INCLUDE_SENSITIVE,
-      false
-    );
-    this.sensitiveKeyPattern = normalizeSensitiveKeyPattern(
-      options.sensitiveKeyPattern || process.env.AECS_TELEMETRY_SENSITIVE_KEY_PATTERN
-    );
   }
 
   hasAnyWebhook() {
@@ -123,14 +86,8 @@ class TelemetryAdapter {
     const severity = toSeverity(record.severity);
     const supportId = record.supportId || 'N/A';
     const supportLookup = formatSupportLookup(this.supportLookupTemplate, record.supportId, this.channelId);
-    const privacyView = sanitizeForDiscordSink(record, {
-      includeStack: this.includeStack,
-      includeInternal: this.includeInternal,
-      includeSensitive: this.includeSensitive,
-      sensitiveKeyPattern: this.sensitiveKeyPattern
-    });
-    const metaPreview = truncateText(JSON.stringify(privacyView.meta || {}), 950);
-    const stackPreview = privacyView.stack ? truncateText(privacyView.stack, 950) : '';
+    const metaPreview = truncateText(JSON.stringify(record.meta || {}), 950);
+    const stackPreview = truncateText(record.stack || '', 950);
 
     const fields = [
       { name: 'Support ID', value: supportId, inline: true },
@@ -139,11 +96,6 @@ class TelemetryAdapter {
       { name: 'Impact', value: String(record.impact || 0), inline: true },
       { name: 'Domain', value: record.domain || 'SYS', inline: true },
       { name: 'Scope', value: record.scope || 'runtime', inline: true },
-      {
-        name: 'Privacy',
-        value: `public:${privacyView.privacy.public} internal:${privacyView.privacy.internal} sensitive:${privacyView.privacy.sensitive}`,
-        inline: false
-      },
       { name: 'Lookup', value: truncateText(supportLookup, 1000), inline: false }
     ];
 

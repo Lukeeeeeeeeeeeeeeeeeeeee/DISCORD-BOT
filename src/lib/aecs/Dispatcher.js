@@ -1,12 +1,8 @@
 const crypto = require('crypto');
-const os = require('os');
 const CodexError = require('./CodexError');
 const dictionaries = require('./dictionaries');
 const { sanitizeMeta, normalizeSeverity, clampImpact } = require('./sanitize');
 const { TelemetryAdapter } = require('./telemetry-adapter');
-const { AlertWorker } = require('./AlertWorker');
-const { ProcessAlertWorker } = require('./ProcessAlertWorker');
-const { classifyError, maxSeverity } = require('./classification-policy');
 
 const SUPPORT_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -49,64 +45,6 @@ function getContextView(context) {
   };
 }
 
-function firstNonNull(...values) {
-  for (const value of values) {
-    if (value !== undefined && value !== null && value !== '') return value;
-  }
-  return null;
-}
-
-function toContextEnvelope(context, traceId, eventId, options = {}) {
-  const sourceContext = context && typeof context === 'object' ? context : {};
-  const meta = options.meta && typeof options.meta === 'object' ? options.meta : {};
-
-  const runtime = {
-    instanceId: firstNonNull(sourceContext.instanceId, meta.instanceId, process.env.AECS_INSTANCE_ID),
-    shardId: firstNonNull(sourceContext.shardId, meta.shardId, process.env.SHARD_ID),
-    clusterId: firstNonNull(sourceContext.clusterId, meta.clusterId, process.env.CLUSTER_ID),
-    processId: firstNonNull(sourceContext.processId, process.pid),
-    hostname: firstNonNull(sourceContext.hostname, process.env.HOSTNAME, os.hostname()),
-    release: firstNonNull(sourceContext.release, process.env.RELEASE, process.env.npm_package_version),
-    environment: firstNonNull(sourceContext.environment, process.env.NODE_ENV)
-  };
-
-  const discord = {
-    guildId: firstNonNull(sourceContext.guildId, meta.guildId),
-    channelId: firstNonNull(sourceContext.channelId, meta.channelId),
-    userId: firstNonNull(sourceContext.userId, meta.userId)
-  };
-
-  const session = {
-    source: firstNonNull(sourceContext.source, meta.source),
-    eventType: firstNonNull(sourceContext.eventType, options.eventType, meta.eventType),
-    command: firstNonNull(sourceContext.command, meta.command),
-    subcommand: firstNonNull(sourceContext.subcommand, meta.subcommand),
-    sessionId: firstNonNull(sourceContext.sessionId, meta.sessionId)
-  };
-
-  const correlation = {
-    traceId,
-    parentTraceId: firstNonNull(sourceContext.parentTraceId, meta.parentTraceId),
-    eventId
-  };
-
-  return {
-    version: 2,
-    runtime,
-    discord,
-    session,
-    correlation
-  };
-}
-
-function createTraceId() {
-  return `tx-${crypto.randomUUID()}`;
-}
-
-function createEventId() {
-  return `ev-${crypto.randomUUID()}`;
-}
-
 class Dispatcher {
   constructor(options = {}) {
     this.vault = options.vault;
@@ -115,7 +53,6 @@ class Dispatcher {
 
     this.suppressionThreshold = Number.parseInt(options.suppressionThreshold || '50', 10);
     this.suppressionWindowMs = Number.parseInt(options.suppressionWindowMs || '60000', 10);
-    this.alertThreshold = Number.parseInt(options.alertThreshold || process.env.AECS_ALERT_THRESHOLD || '20', 10);
     this.fatalImpactThreshold = Number.parseInt(options.fatalImpactThreshold || '90', 10);
     this.maxCureDepth = Number.parseInt(options.maxCureDepth || process.env.AECS_MAX_CURE_DEPTH || '3', 10);
 
@@ -131,30 +68,9 @@ class Dispatcher {
     };
     this.telemetryAdapter = options.telemetryAdapter || this.createTelemetryAdapter(this.telemetryOptions);
     this.exitOnFatal = options.exitOnFatal === true || process.env.AECS_EXIT_ON_FATAL === '1';
-    this.alertWorkerMode = String(options.alertWorkerMode || process.env.AECS_ALERT_WORKER_MODE || 'inline').toLowerCase();
-    this.alertWorker = options.alertWorker || this.createAlertWorker(options);
 
     this.suppressionMap = new Map();
-    this.alertThrottleMap = new Map();
     this.suppressionTimer = null;
-    this.maxLatencySamples = Number.parseInt(options.maxLatencySamples || process.env.AECS_DISPATCH_LATENCY_SAMPLES || '2048', 10);
-    this.dispatchMetrics = {
-      total: 0,
-      failed: 0,
-      suppressed: 0,
-      throttled: 0,
-      alertsEnqueued: 0,
-      prunedSuppression: 0,
-      prunedThrottle: 0,
-      bySeverity: {
-        INFO: 0,
-        WARN: 0,
-        ERROR: 0,
-        FATAL: 0
-      },
-      latencySamplesMs: [],
-      lastLatencyMs: null
-    };
   }
 
   createTelemetryAdapter(telemetryOptions = {}) {
@@ -164,7 +80,7 @@ class Dispatcher {
       highImpactWebhookUrl: telemetryOptions.telemetryHighImpactWebhookUrl || '',
       channelId: telemetryOptions.telemetryChannelId || '',
       supportLookupTemplate: telemetryOptions.supportLookupTemplate || '',
-      impactThreshold: telemetryOptions.webhookImpactThreshold || '90',
+      impactThreshold: telemetryOptions.webhookImpactThreshold || '70',
       timeoutMs: telemetryOptions.telemetryTimeoutMs || '5000',
       fetchImpl: telemetryOptions.fetchImpl
     });
@@ -174,68 +90,14 @@ class Dispatcher {
     if (!partial || typeof partial !== 'object') return;
     if (partial.telemetryAdapter && typeof partial.telemetryAdapter.send === 'function') {
       this.telemetryAdapter = partial.telemetryAdapter;
-      if (this.alertWorker && typeof this.alertWorker.setSendFn === 'function') {
-        this.alertWorker.setSendFn((record) => this.maybeSendWebhook(record));
-      }
       return;
     }
     this.telemetryOptions = { ...this.telemetryOptions, ...partial };
     this.telemetryAdapter = this.createTelemetryAdapter(this.telemetryOptions);
-    if (this.alertWorker && typeof this.alertWorker.setSendFn === 'function') {
-      this.alertWorker.setSendFn((record) => this.maybeSendWebhook(record));
-    }
-    if (this.alertWorker && typeof this.alertWorker.setTelemetryOptions === 'function') {
-      this.alertWorker.setTelemetryOptions(this.telemetryOptions);
-    }
-  }
-
-  createAlertWorker(options = {}) {
-    const workerConfig = {
-      maxRetries: Number.parseInt(options.alertWorkerMaxRetries || process.env.AECS_ALERT_MAX_RETRIES || '3', 10),
-      baseDelayMs: Number.parseInt(options.alertWorkerBaseDelayMs || process.env.AECS_ALERT_BASE_DELAY_MS || '500', 10),
-      maxDelayMs: Number.parseInt(options.alertWorkerMaxDelayMs || process.env.AECS_ALERT_MAX_DELAY_MS || '30000', 10),
-      deadLetterLimit: Number.parseInt(options.alertWorkerDeadLetterLimit || process.env.AECS_ALERT_DLQ_LIMIT || '500', 10),
-      queueMaxEvents: Number.parseInt(options.alertWorkerQueueMaxEvents || process.env.AECS_ALERT_QUEUE_MAX_EVENTS || '2000', 10),
-      queueMaxBytes: Number.parseInt(options.alertWorkerQueueMaxBytes || process.env.AECS_ALERT_QUEUE_MAX_BYTES || String(4 * 1024 * 1024), 10),
-      queueDropPolicy: String(options.alertWorkerQueueDropPolicy || process.env.AECS_ALERT_QUEUE_DROP_POLICY || 'drop_oldest_non_fatal').toLowerCase(),
-      retryJitterRatio: Number(options.alertWorkerRetryJitterRatio || process.env.AECS_ALERT_RETRY_JITTER_RATIO || 0.2),
-      circuitFailureThreshold: Number.parseInt(
-        options.alertWorkerCircuitFailureThreshold || process.env.AECS_ALERT_CIRCUIT_FAILURE_THRESHOLD || '5',
-        10
-      ),
-      circuitOpenMs: Number.parseInt(options.alertWorkerCircuitOpenMs || process.env.AECS_ALERT_CIRCUIT_OPEN_MS || '15000', 10),
-      circuitSuccessThreshold: Number.parseInt(
-        options.alertWorkerCircuitSuccessThreshold || process.env.AECS_ALERT_CIRCUIT_SUCCESS_THRESHOLD || '2',
-        10
-      ),
-      onDeadLetter: (entry) => this.handleAlertDeadLetter(entry)
-    };
-
-    if (this.alertWorkerMode === 'process') {
-      return new ProcessAlertWorker({
-        workerPath: options.alertWorkerProcessPath,
-        telemetryWebhookUrl: this.telemetryOptions.telemetryWebhookUrl,
-        telemetryFatalWebhookUrl: this.telemetryOptions.telemetryFatalWebhookUrl,
-        telemetryHighImpactWebhookUrl: this.telemetryOptions.telemetryHighImpactWebhookUrl,
-        telemetryChannelId: this.telemetryOptions.telemetryChannelId,
-        supportLookupTemplate: this.telemetryOptions.supportLookupTemplate,
-        webhookImpactThreshold: this.telemetryOptions.webhookImpactThreshold,
-        telemetryTimeoutMs: this.telemetryOptions.telemetryTimeoutMs,
-        ...workerConfig
-      });
-    }
-
-    return new AlertWorker({
-      sendFn: (record) => this.maybeSendWebhook(record),
-      ...workerConfig
-    });
   }
 
   start() {
     if (this.suppressionTimer) return;
-    if (this.alertWorker && typeof this.alertWorker.start === 'function') {
-      this.alertWorker.start();
-    }
     this.suppressionTimer = setInterval(() => {
       this.flushSuppressionSummaries().catch((error) => {
         console.error('AECS suppression summary flush failed:', error);
@@ -250,9 +112,6 @@ class Dispatcher {
       this.suppressionTimer = null;
     }
     await this.flushSuppressionSummaries();
-    if (this.alertWorker && typeof this.alertWorker.stop === 'function') {
-      await this.alertWorker.stop();
-    }
   }
 
   computeImpact(definition, sanitizedMeta, traceContext) {
@@ -302,8 +161,8 @@ class Dispatcher {
     for (const [fingerprint, state] of this.suppressionMap.entries()) {
       if (!state || state.suppressed <= 0) {
         if (state && now - state.windowStart >= this.suppressionWindowMs) {
-          this.suppressionMap.delete(fingerprint);
-          this.dispatchMetrics.prunedSuppression += 1;
+          state.count = 0;
+          state.windowStart = now;
         }
         continue;
       }
@@ -334,44 +193,11 @@ class Dispatcher {
       if (this.vault) this.vault.queue(summaryRecord);
       console.warn('[AECS]', summaryRecord.message);
 
-      this.suppressionMap.delete(fingerprint);
-      this.dispatchMetrics.prunedSuppression += 1;
-    }
-    this.pruneAlertThrottleMap(now);
-  }
-
-  pruneAlertThrottleMap(now = Date.now()) {
-    for (const [fingerprint, state] of this.alertThrottleMap.entries()) {
-      if (!state) {
-        this.alertThrottleMap.delete(fingerprint);
-        this.dispatchMetrics.prunedThrottle += 1;
-        continue;
-      }
-      if (now - state.windowStart >= this.suppressionWindowMs) {
-        this.alertThrottleMap.delete(fingerprint);
-        this.dispatchMetrics.prunedThrottle += 1;
-      }
-    }
-  }
-
-  shouldThrottleAlert(fingerprint, severity) {
-    if (severity === 'FATAL') return false;
-    if (!Number.isFinite(this.alertThreshold) || this.alertThreshold <= 0) return false;
-
-    const now = Date.now();
-    let state = this.alertThrottleMap.get(fingerprint);
-    if (!state) {
-      state = { count: 0, windowStart: now };
-      this.alertThrottleMap.set(fingerprint, state);
-    }
-
-    if (now - state.windowStart >= this.suppressionWindowMs) {
       state.count = 0;
+      state.suppressed = 0;
       state.windowStart = now;
+      this.suppressionMap.set(fingerprint, state);
     }
-
-    state.count += 1;
-    return state.count > this.alertThreshold;
   }
 
   async maybeRunAutocure(definition, codexError, context, scope) {
@@ -419,120 +245,31 @@ class Dispatcher {
   }
 
   async maybeSendWebhook(record) {
-    if (!record || !this.telemetryAdapter || typeof this.telemetryAdapter.send !== 'function') {
-      return { sent: false, reason: 'disabled' };
+    if (!record || !this.telemetryAdapter || typeof this.telemetryAdapter.send !== 'function') return;
+    try {
+      await this.telemetryAdapter.send(record);
+    } catch (error) {
+      console.error('AECS telemetry webhook failed:', error);
     }
-    return this.telemetryAdapter.send(record);
-  }
-
-  enqueueAlert(record) {
-    if (!record || !this.alertWorker || typeof this.alertWorker.enqueue !== 'function') {
-      return { enqueued: false, reason: 'worker_unavailable' };
-    }
-    return this.alertWorker.enqueue(record);
-  }
-
-  handleAlertDeadLetter(entry) {
-    if (!entry || !entry.record || !this.vault) return;
-    const record = entry.record;
-    const code = 'SYS-720';
-    const scope = 'aecs.alert.dead_letter';
-    const fingerprint = createFingerprint(scope, code);
-    const deadLetterRecord = {
-      version: '6.1.0',
-      timestamp: Date.now(),
-      traceId: record.traceId || null,
-      eventId: createEventId(),
-      supportId: createSupportId(record.traceId || record.eventId || code),
-      code,
-      title: 'AECS Alert Delivery Dead Letter',
-      severity: 'WARN',
-      impact: 45,
-      domain: 'SYS',
-      scope,
-      message: 'Telemetry alert delivery failed after max retries',
-      meta: {
-        alertCode: record.code || null,
-        alertScope: record.scope || null,
-        attempts: Number(entry.attempts || 0),
-        error: entry.error || null
-      },
-      hash: fingerprint,
-      hashId: hashIdFromFingerprint(fingerprint)
-    };
-    this.vault.queue(deadLetterRecord);
-  }
-
-  recordDispatchMetrics(sample = {}) {
-    const severity = String(sample.severity || 'ERROR').toUpperCase();
-    this.dispatchMetrics.total += 1;
-    if (sample.failed) this.dispatchMetrics.failed += 1;
-    if (sample.suppressed) this.dispatchMetrics.suppressed += 1;
-    if (sample.alertThrottled) this.dispatchMetrics.throttled += 1;
-    if (sample.alertEnqueued) this.dispatchMetrics.alertsEnqueued += 1;
-    if (Object.prototype.hasOwnProperty.call(this.dispatchMetrics.bySeverity, severity)) {
-      this.dispatchMetrics.bySeverity[severity] += 1;
-    } else {
-      this.dispatchMetrics.bySeverity.ERROR += 1;
-    }
-
-    const latencyMs = Number(sample.latencyMs || 0);
-    if (Number.isFinite(latencyMs) && latencyMs >= 0) {
-      this.dispatchMetrics.lastLatencyMs = latencyMs;
-      this.dispatchMetrics.latencySamplesMs.push(latencyMs);
-      if (this.dispatchMetrics.latencySamplesMs.length > this.maxLatencySamples) {
-        this.dispatchMetrics.latencySamplesMs.splice(
-          0,
-          this.dispatchMetrics.latencySamplesMs.length - this.maxLatencySamples
-        );
-      }
-    }
-  }
-
-  computePercentile(values, percentile) {
-    if (!Array.isArray(values) || values.length === 0) return 0;
-    const sorted = [...values].sort((a, b) => a - b);
-    const p = Math.min(100, Math.max(0, Number(percentile || 0)));
-    const rank = Math.ceil((p / 100) * sorted.length) - 1;
-    const index = Math.min(sorted.length - 1, Math.max(0, rank));
-    return sorted[index];
   }
 
   async dispatch(error, options = {}) {
-    const dispatchStartedAt = Date.now();
     const scope = options.scope || 'runtime';
     const codexError = error instanceof CodexError
       ? error
       : CodexError.fromUnknown(error, options.code || 'SYS-500', options.meta || { scope });
 
-    const resolvedDefinition = codexError.definition || dictionaries.getDefinition(codexError.code);
-    const definitionFound = Boolean(resolvedDefinition);
-    const definition = resolvedDefinition || dictionaries.getDefinition('SYS-001');
+    const definition = codexError.definition || dictionaries.getDefinition(codexError.code) || dictionaries.getDefinition('SYS-001');
     const context = this.getContext ? this.getContext() : null;
     const traceContext = getContextView(context);
 
-    const rawMetaForPolicy = { ...(codexError.meta || {}), ...(options.meta || {}) };
-    const sanitizedMeta = sanitizeMeta(rawMetaForPolicy, definition);
+    const sanitizedMeta = sanitizeMeta({ ...(codexError.meta || {}), ...(options.meta || {}) }, definition);
 
     const impact = this.computeImpact(definition, sanitizedMeta, traceContext);
     let severity = normalizeSeverity(definition && definition.severity ? definition.severity : 'ERROR');
     if (impact >= this.fatalImpactThreshold) severity = 'FATAL';
-    const classification = classifyError({
-      code: codexError.code,
-      domain: getDomainForCode(codexError.code),
-      severity,
-      impact,
-      meta: rawMetaForPolicy,
-      hasAutocure: Boolean(definition && typeof definition.autocure === 'function'),
-      definitionFound
-    });
-    if (classification && classification.severityOverride) {
-      severity = maxSeverity(severity, classification.severityOverride);
-    }
 
-    const traceId = traceContext.traceId || createTraceId();
-    const eventId = createEventId();
-    const supportId = createSupportId(eventId);
+    const supportId = createSupportId(traceContext.traceId || codexError.code);
     const fingerprint = createFingerprint(scope, codexError.code);
     const hashId = hashIdFromFingerprint(fingerprint);
 
@@ -541,24 +278,13 @@ class Dispatcher {
     const record = {
       version: definition && definition.version ? definition.version : '6.1.0',
       timestamp: Date.now(),
-      traceId,
-      eventId,
+      traceId: traceContext.traceId || null,
       supportId,
-      context: toContextEnvelope(context, traceId, eventId, options),
       code: codexError.code,
       title: definition && definition.title ? definition.title : 'Codex Error',
       severity,
       impact,
       domain: getDomainForCode(codexError.code),
-      classification: {
-        domain: classification.domain,
-        failureClass: classification.failureClass,
-        recoverability: classification.recoverability,
-        customerImpact: classification.customerImpact,
-        securityImpact: classification.securityImpact
-      },
-      confidence: classification.confidence,
-      actionability: classification.actionability,
       scope,
       message,
       tags: definition && Array.isArray(definition.tags) ? definition.tags : [],
@@ -570,13 +296,12 @@ class Dispatcher {
     };
 
     const suppressed = this.shouldSuppress(fingerprint, codexError.code, scope, severity);
-    const alertThrottled = !suppressed && this.shouldThrottleAlert(fingerprint, severity);
     if (!suppressed && this.vault) {
-      if (severity === 'FATAL') {
-        this.vault.forceWriteSync(record);
-      } else {
-        this.vault.queue(record);
-      }
+      this.vault.queue(record);
+    }
+
+    if (severity === 'FATAL' && this.vault) {
+      this.vault.forceWriteSync(record);
     }
 
     if (severity === 'ERROR' || severity === 'FATAL') {
@@ -587,12 +312,8 @@ class Dispatcher {
       console.warn('[AECS]', record.code, record.scope, record.meta);
     }
 
-    let alertEnqueued = false;
     await this.maybeRunAutocure(definition, codexError, context, scope);
-    if (!suppressed && !alertThrottled) {
-      const enqueueResult = this.enqueueAlert(record);
-      alertEnqueued = Boolean(enqueueResult && enqueueResult.enqueued);
-    }
+    await this.maybeSendWebhook(record);
 
     if (severity === 'FATAL' && this.exitOnFatal) {
       setImmediate(() => {
@@ -600,61 +321,10 @@ class Dispatcher {
       });
     }
 
-    const latencyMs = Date.now() - dispatchStartedAt;
-    this.recordDispatchMetrics({
-      severity,
-      suppressed,
-      alertThrottled,
-      alertEnqueued,
-      latencyMs
-    });
-
     return {
       record,
       supportId,
-      suppressed,
-      alertThrottled,
-      alertEnqueued
-    };
-  }
-
-  getAlertWorkerSnapshot() {
-    if (!this.alertWorker || typeof this.alertWorker.getSnapshot !== 'function') {
-      return null;
-    }
-    const snapshot = this.alertWorker.getSnapshot() || {};
-    if (!snapshot.mode) {
-      snapshot.mode = this.alertWorkerMode === 'process' ? 'process' : 'inline';
-    }
-    return snapshot;
-  }
-
-  getDispatchMetricsSnapshot() {
-    const total = this.dispatchMetrics.total;
-    const failed = this.dispatchMetrics.failed;
-    const dropped = 0;
-    return {
-      total,
-      failed,
-      suppressed: this.dispatchMetrics.suppressed,
-      throttled: this.dispatchMetrics.throttled,
-      alertsEnqueued: this.dispatchMetrics.alertsEnqueued,
-      bySeverity: { ...this.dispatchMetrics.bySeverity },
-      latency: {
-        samples: this.dispatchMetrics.latencySamplesMs.length,
-        lastMs: this.dispatchMetrics.lastLatencyMs,
-        p95Ms: this.computePercentile(this.dispatchMetrics.latencySamplesMs, 95)
-      },
-      state: {
-        suppressionFingerprints: this.suppressionMap.size,
-        throttleFingerprints: this.alertThrottleMap.size,
-        prunedSuppression: this.dispatchMetrics.prunedSuppression,
-        prunedThrottle: this.dispatchMetrics.prunedThrottle
-      },
-      rates: {
-        failedRate: total > 0 ? failed / total : 0,
-        droppedRate: total > 0 ? dropped / total : 0
-      }
+      suppressed
     };
   }
 
@@ -674,7 +344,6 @@ class Dispatcher {
     return {
       threshold: this.suppressionThreshold,
       windowMs: this.suppressionWindowMs,
-      alertThreshold: this.alertThreshold,
       activeFingerprints: entries.length,
       entries
     };
