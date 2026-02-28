@@ -2,7 +2,8 @@ const { EmbedBuilder, PermissionsBitField } = require('discord.js');
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { buildErrorEmbed } = require('../lib/embeds');
 const runtime = require('../lib/runtime');
-const { logUnexpectedError } = require('../lib/logger');
+const { logUnexpectedError, logRuntimeEvent } = require('../lib/logger');
+const { AECS, provisionTelemetryWebhooks } = require('../lib/aecs');
 
 module.exports = {
   data: {
@@ -67,6 +68,36 @@ module.exports = {
     try {
       // Set the log channel
       antiNuke.setLogChannel(interaction.guild.id, channel.id);
+
+      let telemetryStatus = 'unchanged';
+      try {
+        process.env.AECS_TELEMETRY_CHANNEL_ID = String(channel.id);
+        const telemetryProvision = await provisionTelemetryWebhooks(interaction.client);
+        if (telemetryProvision && telemetryProvision.config) {
+          AECS.setTelemetryRouting(telemetryProvision.config);
+          telemetryStatus = telemetryProvision.skipped
+            ? `skipped (${telemetryProvision.reason || 'unknown'})`
+            : (telemetryProvision.changed ? 'updated' : 'verified');
+        } else {
+          AECS.setTelemetryRouting({ telemetryChannelId: String(channel.id) });
+          telemetryStatus = 'updated (channel only)';
+        }
+        void logRuntimeEvent('info', 'command.set_log_channel.aecs', 'AECS telemetry channel refreshed', {
+          details: {
+            guildId: interaction.guild.id,
+            channelId: channel.id,
+            status: telemetryStatus
+          }
+        });
+      } catch (telemetryError) {
+        telemetryStatus = 'failed';
+        void logUnexpectedError('command.setLogChannel.aecsTelemetry', telemetryError, {
+          command: 'set_log_channel',
+          guildId: interaction.guild ? interaction.guild.id : null,
+          actorId: interaction.user ? interaction.user.id : null,
+          channelId: channel ? channel.id : null
+        });
+      }
       
       const embed = new EmbedBuilder()
         .setColor('#00FF00')
@@ -82,6 +113,11 @@ module.exports = {
             name: '📝 What Gets Logged',
             value: '• All bans and kicks\n• Channel/role deletions\n• Beast mode warnings\n• Emergency mode activation\n• Whitelist changes\n• Backup creation/recovery',
             inline: false
+          },
+          {
+            name: 'AECS Telemetry',
+            value: telemetryStatus,
+            inline: true
           }
         )
         .setTimestamp();

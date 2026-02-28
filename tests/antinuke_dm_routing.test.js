@@ -153,4 +153,40 @@ describe('anti-nuke DM routing', () => {
     expect(ownerSend).toHaveBeenCalledTimes(1);
     consoleSpy.mockRestore();
   });
+
+  test('fetches configured log channel when it is not in cache', async () => {
+    process.env.ANTINUKE_LOG_DM_ID = 'OWNER_DM';
+    process.env.ANTINUKE_LOG_DM_MODE = 'all';
+    process.env.ANTINUKE_LOG_DM_INCLUDE_NON_CRITICAL = 'true';
+    const send = jest.fn(async () => null);
+    const fetchChannel = jest.fn(async () => ({ send }));
+    const anti = new AntiNuke();
+    const ownerSend = jest.fn(async () => null);
+    const fetchUser = jest.fn(async () => ({ send: ownerSend }));
+    anti.client = {
+      guilds: {
+        cache: new Map([
+          ['G1', {
+            id: 'G1',
+            name: 'Guild One',
+            channels: {
+              cache: new Map(),
+              fetch: fetchChannel
+            }
+          }]
+        ])
+      },
+      users: {
+        fetch: fetchUser
+      }
+    };
+    anti.logChannels.set('G1', 'LOG_FALLBACK');
+
+    await anti.logAction('G1', { type: 'strict_mode_enabled' });
+
+    expect(fetchChannel).toHaveBeenCalledWith('LOG_FALLBACK');
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(fetchUser).not.toHaveBeenCalled();
+    expect(ownerSend).not.toHaveBeenCalled();
+  });
 });

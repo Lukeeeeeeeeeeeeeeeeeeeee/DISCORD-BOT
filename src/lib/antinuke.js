@@ -29,7 +29,12 @@ class AntiNuke {
     this.LOG_DM_INCLUDE_BACKUPS = String(process.env.ANTINUKE_LOG_DM_INCLUDE_BACKUPS || 'false').toLowerCase() === 'true';
     this.LOG_DM_DUPLICATE_WITH_CHANNEL = String(process.env.ANTINUKE_LOG_DM_DUPLICATE_WITH_CHANNEL || 'false').toLowerCase() === 'true';
     this.LOG_AUTOMATIC_BACKUPS = String(process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS || 'false').toLowerCase() === 'true';
+    this.LOG_INCREMENTAL_BACKUPS = String(process.env.ANTINUKE_LOG_INCREMENTAL_BACKUPS || 'false').toLowerCase() === 'true';
     this.BACKUP_LOG_DEDUPE_WINDOW_MS = Number.parseInt(process.env.ANTINUKE_BACKUP_LOG_DEDUPE_WINDOW_MS || '180000', 10);
+    this.BACKUP_INCREMENTAL_AFTER_FULL_SUPPRESS_MS = Number.parseInt(
+      process.env.ANTINUKE_BACKUP_INCREMENTAL_AFTER_FULL_SUPPRESS_MS || '900000',
+      10
+    );
     if ((this.LOG_DM_MODE === 'critical' || this.LOG_DM_MODE === 'all') && !this.LOG_DM_ID) {
       console.warn('ANTINUKE_LOG_DM_MODE is enabled but ANTINUKE_LOG_DM_ID is not set; anti-nuke DM alerts are disabled.');
     }
@@ -144,6 +149,7 @@ class AntiNuke {
     this.pendingEmergencyConfirmations = new Map(); // guildId -> { pending, expiresAt }
     this.rapidActionTimers = new Map(); // key -> timeout
     this.lastBackupNotification = new Map(); // guildId -> { timestamp: number, type: string }
+    this.lastFullBackupAt = new Map(); // guildId -> timestamp
 
     // File paths:
     // - default runtime state is stored in a local, non-repo file
@@ -911,6 +917,20 @@ class AntiNuke {
     return store.get(guildId);
   }
 
+  async resolveLogChannel(guild) {
+    if (!guild || !guild.id) return null;
+    const logChannelId = this.logChannels.get(guild.id);
+    if (!logChannelId) return null;
+    let channel = guild.channels && guild.channels.cache
+      ? guild.channels.cache.get(logChannelId)
+      : null;
+    if (!channel && guild.channels && typeof guild.channels.fetch === 'function') {
+      channel = await guild.channels.fetch(logChannelId).catch(() => null);
+    }
+    if (!channel || typeof channel.send !== 'function') return null;
+    return channel;
+  }
+
   getRecoveryMapping(guildId) {
     if (!this.recoveryMappings.has(guildId)) {
       this.recoveryMappings.set(guildId, { channels: new Map(), roles: new Map() });
@@ -1356,8 +1376,7 @@ class AntiNuke {
   }
 
   async requestAdminConfirmation(guild, context) {
-    const logChannelId = this.logChannels.get(guild.id);
-    let targetChannel = logChannelId ? guild.channels.cache.get(logChannelId) : null;
+    let targetChannel = await this.resolveLogChannel(guild);
 
     if (!targetChannel) {
       if (!this.LOG_DM_ID) return false;
@@ -2799,6 +2818,7 @@ class AntiNuke {
       store.incremental.push(entry);
     } else {
       store.full.push(entry);
+      this.lastFullBackupAt.set(guild.id, snapshot.timestamp);
     }
     store.latestId = entry.id;
     this.pruneBackupStore(store);
@@ -2852,14 +2872,11 @@ class AntiNuke {
     }
 
     // Send to log channel
-    const logChannelId = this.logChannels.get(guild.id);
-    if (logChannelId) {
-      const logChannel = guild.channels.cache.get(logChannelId);
-      if (logChannel) {
-        await logChannel.send({ embeds: [embed] }).catch((e) => {
-          console.error('Failed to send anti-nuke log message', e);
-        });
-      }
+    const logChannel = await this.resolveLogChannel(guild);
+    if (logChannel) {
+      await logChannel.send({ embeds: [embed] }).catch((e) => {
+        console.error('Failed to send anti-nuke log message', e);
+      });
     }
   }
 
@@ -2896,9 +2913,23 @@ class AntiNuke {
     if (backupMeta.manual) return true;
     if (!this.LOG_AUTOMATIC_BACKUPS) return false;
 
+    const backupType = backupMeta.type || '';
+    const isIncremental = backupType === 'backup_incremental_created';
+    if (isIncremental && !this.LOG_INCREMENTAL_BACKUPS) return false;
+
     const now = Date.now();
+    if (isIncremental) {
+      const suppressWindow = Number.isFinite(this.BACKUP_INCREMENTAL_AFTER_FULL_SUPPRESS_MS)
+        ? Math.max(0, this.BACKUP_INCREMENTAL_AFTER_FULL_SUPPRESS_MS)
+        : 900000;
+      const lastFullTs = this.lastFullBackupAt.get(guildId);
+      if (lastFullTs && (now - lastFullTs) < suppressWindow) {
+        return false;
+      }
+    }
+
     const dedupeWindow = Number.isFinite(this.BACKUP_LOG_DEDUPE_WINDOW_MS)
-      ? Math.max(0, this.BACKUP_LOG_DEDUPE_WINDOW_MS)
+      ? Math.max(60000, this.BACKUP_LOG_DEDUPE_WINDOW_MS)
       : 180000;
     const previous = this.lastBackupNotification.get(guildId);
     if (previous && (now - previous.timestamp) < dedupeWindow) {
@@ -2906,7 +2937,7 @@ class AntiNuke {
     }
     this.lastBackupNotification.set(guildId, {
       timestamp: now,
-      type: backupMeta.type || null
+      type: backupType || null
     });
     return true;
   }
@@ -3046,18 +3077,15 @@ class AntiNuke {
     let channelAttempted = false;
     let channelSent = false;
     let channelFailed = false;
-    const logChannelId = this.logChannels.get(guildId);
-    if (logChannelId) {
-      const logChannel = guild.channels && guild.channels.cache ? guild.channels.cache.get(logChannelId) : null;
-      if (logChannel && typeof logChannel.send === 'function') {
-        channelAttempted = true;
-        try {
-          await logChannel.send({ embeds: [embed] });
-          channelSent = true;
-        } catch (e) {
-          channelFailed = true;
-          console.error('Failed to send anti-nuke log message', e);
-        }
+    const logChannel = await this.resolveLogChannel(guild);
+    if (logChannel && typeof logChannel.send === 'function') {
+      channelAttempted = true;
+      try {
+        await logChannel.send({ embeds: [embed] });
+        channelSent = true;
+      } catch (e) {
+        channelFailed = true;
+        console.error('Failed to send anti-nuke log message', e);
       }
     }
 
@@ -3424,10 +3452,21 @@ class AntiNuke {
       this.cleanupOldData();
     }, 3600000); // 1 hour
 
-    // Incremental backups - runs every hour
-    setInterval(() => {
+    // Incremental backups - runs hourly, offset from full backup cadence to avoid overlap spam.
+    const incrementalIntervalMs = 3600000;
+    const incrementalStartOffsetMs = Number.parseInt(
+      process.env.ANTINUKE_INCREMENTAL_BACKUP_START_OFFSET_MS || '300000',
+      10
+    );
+    const normalizedIncrementalOffsetMs = Number.isFinite(incrementalStartOffsetMs)
+      ? Math.max(0, incrementalStartOffsetMs)
+      : 300000;
+    setTimeout(() => {
       this.createIncrementalBackups();
-    }, 3600000);
+      setInterval(() => {
+        this.createIncrementalBackups();
+      }, incrementalIntervalMs);
+    }, incrementalIntervalMs + normalizedIncrementalOffsetMs);
 
     // Backup task - runs every 6 hours
     setInterval(() => {

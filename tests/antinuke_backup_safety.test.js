@@ -5,10 +5,12 @@ const AntiNuke = require('../src/lib/antinuke');
 describe('anti-nuke backup safety', () => {
   const originalRequireEncryption = process.env.ANTINUKE_REQUIRE_ENCRYPTION;
   const originalLogAutomaticBackups = process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;
+  const originalLogIncrementalBackups = process.env.ANTINUKE_LOG_INCREMENTAL_BACKUPS;
 
   beforeEach(() => {
     process.env.ANTINUKE_REQUIRE_ENCRYPTION = 'false';
     delete process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;
+    delete process.env.ANTINUKE_LOG_INCREMENTAL_BACKUPS;
   });
 
   afterEach(() => {
@@ -21,6 +23,11 @@ describe('anti-nuke backup safety', () => {
       delete process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;
     } else {
       process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS = originalLogAutomaticBackups;
+    }
+    if (originalLogIncrementalBackups === undefined) {
+      delete process.env.ANTINUKE_LOG_INCREMENTAL_BACKUPS;
+    } else {
+      process.env.ANTINUKE_LOG_INCREMENTAL_BACKUPS = originalLogIncrementalBackups;
     }
   });
 
@@ -174,5 +181,31 @@ describe('anti-nuke backup safety', () => {
     await antiNuke.createBackup(guild, { type: 'incremental' });
 
     expect(antiNuke.logAction).not.toHaveBeenCalled();
+  });
+
+  test('does not log incremental backups unless explicitly enabled', async () => {
+    process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS = 'true';
+    const antiNukeDefault = new AntiNuke();
+    antiNukeDefault.saveData = jest.fn();
+    antiNukeDefault.logAction = jest.fn();
+
+    const guild = {
+      id: 'G_BACKUP_6',
+      roles: { cache: [] },
+      channels: { cache: [] }
+    };
+
+    await antiNukeDefault.createBackup(guild, { type: 'incremental' });
+    expect(antiNukeDefault.logAction).not.toHaveBeenCalled();
+
+    process.env.ANTINUKE_LOG_INCREMENTAL_BACKUPS = 'true';
+    const antiNukeIncrementalEnabled = new AntiNuke();
+    antiNukeIncrementalEnabled.saveData = jest.fn();
+    antiNukeIncrementalEnabled.logAction = jest.fn();
+
+    await antiNukeIncrementalEnabled.createBackup(guild, { type: 'incremental' });
+    expect(antiNukeIncrementalEnabled.logAction).toHaveBeenCalledWith('G_BACKUP_6', expect.objectContaining({
+      type: 'backup_incremental_created'
+    }));
   });
 });
