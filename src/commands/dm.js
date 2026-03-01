@@ -8,13 +8,21 @@ const { logUnexpectedError, logRuntimeEvent } = require('../lib/logger');
 
 // Tunables
 const HARD_MAX = 1000; // absolute hard cap (allows batching up to 1000)
-const DELAY_MS = 1200; // ms between DMs
-const BATCH_SIZE = 100; // recipients per batch
-const BATCH_DELAY_MS = 5000; // delay between batches
-const COOLDOWN_MS = 5 * 60 * 1000; // per-admin cooldown for non-preview sends
 const MAX_HISTORY_CAMPAIGNS = 200;
 
 const cooldowns = new Map();
+
+function parseEnvInt(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+// Defaults tuned for high-volume sends (example: 600 recipients in ~5-7 minutes under normal conditions).
+const DELAY_MS = parseEnvInt(process.env.DM_DELAY_MS, 500, { min: 0, max: 5000 }); // ms between DMs
+const BATCH_SIZE = parseEnvInt(process.env.DM_BATCH_SIZE, 100, { min: 1, max: HARD_MAX }); // recipients per batch
+const BATCH_DELAY_MS = parseEnvInt(process.env.DM_BATCH_DELAY_MS, 1000, { min: 0, max: 60000 }); // delay between batches
+const COOLDOWN_MS = parseEnvInt(process.env.DM_COMMAND_COOLDOWN_MS, 60 * 1000, { min: 0, max: 24 * 60 * 60 * 1000 }); // per-admin cooldown for non-preview sends
 
 function getHistoryFilePath() {
   return process.env.DM_HISTORY_FILE || path.join(process.cwd(), 'data', 'dm_history.json');
