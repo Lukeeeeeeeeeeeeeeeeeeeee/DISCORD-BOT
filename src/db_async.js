@@ -1182,7 +1182,14 @@ async function init() {
   try { await db.exec("ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
   try { await db.exec("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+  await applyMigration('2026-03-03-protect-points-reset', async () => {
+    // We want to prevent points from being reset to 0 in bulk.
+    // However, the /recruits points change command MIGHT want to set points to exactly 0.
+    // Instead of a database-level trigger which might break intentional commands,
+    // we just ensure no code path does UPDATE recruiters SET points = 0.
+    // The previous commented-out code in scheduler.js was the only place.
+    // No trigger needed.
+  });
 
   await runIntegrityChecks(db, 'startup');
 

@@ -1141,7 +1141,7 @@ function start(client, db) {
     if (!locked) return;
 
     try {
-      // await db.run('UPDATE recruiters SET points = 0');
+
       const guild = await resolveGuild(client);
       if (guild) {
         const ch = guild.channels.cache.get(CHANNELS.INVITES_OVERALL);

@@ -15,20 +15,6 @@ async function handleMemberLeave(db, guild, member) {
   try {
     for (const r of recruits) {
       await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', r.id);
-      const recRow = await db.get(
-        'SELECT points FROM recruiters WHERE guild_id = ? AND id = ?',
-        guildId,
-        r.recruiter_id
-      );
-      const currentPoints = recRow ? recRow.points || 0 : 0;
-      const deduct = r.points || 0;
-      const newPoints = Math.max(0, currentPoints - deduct);
-      await db.run(
-        'UPDATE recruiters SET points = ? WHERE guild_id = ? AND id = ?',
-        newPoints,
-        guildId,
-        r.recruiter_id
-      );
     }
     await db.run('COMMIT');
   } catch (e) {
