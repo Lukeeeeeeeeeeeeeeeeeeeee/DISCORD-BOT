@@ -425,8 +425,16 @@ module.exports = {
 
       let didDefer = false;
       if (typeof interaction.deferReply === 'function') {
-        await interaction.deferReply();
-        didDefer = true;
+        try {
+          await interaction.deferReply();
+          didDefer = true;
+        } catch (deferErr) {
+          const InteractionAckErrors = new Set([10062, 40060]);
+          if (deferErr && InteractionAckErrors.has(Number(deferErr.code))) {
+            return; // Exit silently if interaction already expired
+          }
+          throw deferErr;
+        }
       }
 
       const member = interaction.options.getUser('member');
@@ -443,6 +451,9 @@ module.exports = {
       }
 
       const guildId = resolveGuildId(interaction.guild);
+      if (!interaction.guild || !guildId) {
+        return replyError(interaction, 'This command can only be used in a server.');
+      }
 
       // Check if user has permission to recruit (basic check)
       const guildMember = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
