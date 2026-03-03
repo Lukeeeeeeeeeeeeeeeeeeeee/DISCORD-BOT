@@ -383,6 +383,103 @@ async function init() {
     PRIMARY KEY (guild_id, recruiter_id)
   );
 
+  CREATE TABLE IF NOT EXISTS dm_workers (
+    worker_id TEXT PRIMARY KEY,
+    display_name TEXT,
+    enabled INTEGER DEFAULT 1,
+    weight INTEGER DEFAULT 1,
+    started_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    status TEXT DEFAULT 'online',
+    meta_json TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS dm_campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    message_body TEXT NOT NULL,
+    target_mode TEXT NOT NULL,
+    target_role_ids TEXT,
+    status TEXT NOT NULL DEFAULT 'queued',
+    report_channel_id TEXT,
+    requested_channel_id TEXT,
+    total_targets INTEGER DEFAULT 0,
+    total_batches INTEGER DEFAULT 0,
+    total_sent INTEGER DEFAULT 0,
+    total_failed INTEGER DEFAULT 0,
+    total_blocked INTEGER DEFAULT 0,
+    total_undeliverable INTEGER DEFAULT 0,
+    total_retries INTEGER DEFAULT 0,
+    started_at INTEGER,
+    finished_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    report_posted INTEGER DEFAULT 0,
+    report_posted_at INTEGER
+  );
+
+  CREATE TABLE IF NOT EXISTS dm_campaign_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    assigned_worker_id TEXT,
+    batch_no INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER DEFAULT 0,
+    retries INTEGER DEFAULT 0,
+    last_attempt_at INTEGER,
+    next_attempt_at INTEGER,
+    last_error_code TEXT,
+    last_error_message TEXT,
+    blocked_by_worker_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (campaign_id) REFERENCES dm_campaigns(id) ON DELETE CASCADE,
+    UNIQUE (campaign_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS dm_delivery_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL,
+    target_id INTEGER NOT NULL,
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    worker_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    result TEXT NOT NULL,
+    error_code TEXT,
+    error_message TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (campaign_id) REFERENCES dm_campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_id) REFERENCES dm_campaign_targets(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS dm_user_affinity (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    preferred_worker_id TEXT,
+    preferred_worker_last_dm_at INTEGER,
+    consecutive_misc_count INTEGER DEFAULT 0,
+    war_worker_id TEXT,
+    war_last_dm_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS dm_worker_user_blocks (
+    guild_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    worker_id TEXT NOT NULL,
+    reason TEXT,
+    error_code TEXT,
+    blocked_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, user_id, worker_id)
+  );
+
   `);
 
   try {
@@ -422,6 +519,31 @@ async function init() {
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_weekly_recruit_overrides_guild_week ON weekly_recruit_overrides(guild_id, week_start)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_campaigns_status ON dm_campaigns(status, report_posted, updated_at)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_targets_claim ON dm_campaign_targets(status, assigned_worker_id, next_attempt_at, batch_no, id)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_targets_campaign_status ON dm_campaign_targets(campaign_id, status)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_attempts_campaign_created ON dm_delivery_attempts(campaign_id, created_at)');
+  } catch (e) {
+    void e;
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user_worker ON dm_worker_user_blocks(guild_id, user_id, worker_id)');
   } catch (e) {
     void e;
   }
@@ -907,6 +1029,137 @@ async function init() {
     await db.exec('DROP INDEX IF EXISTS uniq_recruit');
     await db.exec('DROP INDEX IF EXISTS uniq_recruit_guild');
     await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(guild_id, recruited_id)');
+  });
+
+  await applyMigration('2026-03-02-dm-worker-queue', async () => {
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS dm_workers (
+        worker_id TEXT PRIMARY KEY,
+        display_name TEXT,
+        enabled INTEGER DEFAULT 1,
+        weight INTEGER DEFAULT 1,
+        started_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        status TEXT DEFAULT 'online',
+        meta_json TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS dm_campaigns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        requested_by TEXT NOT NULL,
+        message_type TEXT NOT NULL,
+        message_body TEXT NOT NULL,
+        target_mode TEXT NOT NULL,
+        target_role_ids TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        report_channel_id TEXT,
+        requested_channel_id TEXT,
+        total_targets INTEGER DEFAULT 0,
+        total_batches INTEGER DEFAULT 0,
+        total_sent INTEGER DEFAULT 0,
+        total_failed INTEGER DEFAULT 0,
+        total_blocked INTEGER DEFAULT 0,
+        total_undeliverable INTEGER DEFAULT 0,
+        total_retries INTEGER DEFAULT 0,
+        started_at INTEGER,
+        finished_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        report_posted INTEGER DEFAULT 0,
+        report_posted_at INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS dm_campaign_targets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id INTEGER NOT NULL,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        assigned_worker_id TEXT,
+        batch_no INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER DEFAULT 0,
+        retries INTEGER DEFAULT 0,
+        last_attempt_at INTEGER,
+        next_attempt_at INTEGER,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        blocked_by_worker_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (campaign_id) REFERENCES dm_campaigns(id) ON DELETE CASCADE,
+        UNIQUE (campaign_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS dm_delivery_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        worker_id TEXT NOT NULL,
+        attempt_no INTEGER NOT NULL,
+        result TEXT NOT NULL,
+        error_code TEXT,
+        error_message TEXT,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (campaign_id) REFERENCES dm_campaigns(id) ON DELETE CASCADE,
+        FOREIGN KEY (target_id) REFERENCES dm_campaign_targets(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS dm_user_affinity (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        preferred_worker_id TEXT,
+        preferred_worker_last_dm_at INTEGER,
+        consecutive_misc_count INTEGER DEFAULT 0,
+        war_worker_id TEXT,
+        war_last_dm_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS dm_worker_user_blocks (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        worker_id TEXT NOT NULL,
+        reason TEXT,
+        error_code TEXT,
+        blocked_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id, worker_id)
+      );
+    `);
+
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_campaigns_status ON dm_campaigns(status, report_posted, updated_at)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_targets_claim ON dm_campaign_targets(status, assigned_worker_id, next_attempt_at, batch_no, id)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_targets_campaign_status ON dm_campaign_targets(campaign_id, status)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_attempts_campaign_created ON dm_delivery_attempts(campaign_id, created_at)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user_worker ON dm_worker_user_blocks(guild_id, user_id, worker_id)');
+  });
+
+  await applyMigration('2026-03-02-dm-queue-columns', async () => {
+    const alter = async (sql) => { try { await db.exec(sql); } catch (e) { void e; } };
+
+    // dm_campaign_targets: claim lease + worker tracking
+    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN message_type TEXT');
+    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN claim_expires_at INTEGER');
+    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN last_worker_id TEXT');
+    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN worker_switches INTEGER DEFAULT 0');
+
+    // dm_user_affinity: extra tracking
+    await alter('ALTER TABLE dm_user_affinity ADD COLUMN last_message_type TEXT');
+    await alter('ALTER TABLE dm_user_affinity ADD COLUMN last_dm_at INTEGER');
+
+    // dm_campaigns: config overrides
+    await alter('ALTER TABLE dm_campaigns ADD COLUMN created_by_bot_id TEXT');
+    await alter('ALTER TABLE dm_campaigns ADD COLUMN strict_war_sticky INTEGER DEFAULT 1');
+    await alter('ALTER TABLE dm_campaigns ADD COLUMN max_misc_streak INTEGER DEFAULT 4');
+    await alter('ALTER TABLE dm_campaigns ADD COLUMN sticky_window_hours INTEGER DEFAULT 24');
+
+    // Optimized indexes
+    await alter('CREATE INDEX IF NOT EXISTS idx_dm_targets_pending_claim ON dm_campaign_targets(status, next_attempt_at, claim_expires_at, id)');
+    await alter('CREATE INDEX IF NOT EXISTS idx_dm_affinity_lookup ON dm_user_affinity(guild_id, user_id)');
   });
 
   // Add columns if missing (best-effort)

@@ -4,11 +4,13 @@ const AntiNuke = require('../src/lib/antinuke');
 
 describe('anti-nuke backup safety', () => {
   const originalRequireEncryption = process.env.ANTINUKE_REQUIRE_ENCRYPTION;
+  const originalAllowUnencrypted = process.env.ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS;
   const originalLogAutomaticBackups = process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;
   const originalLogIncrementalBackups = process.env.ANTINUKE_LOG_INCREMENTAL_BACKUPS;
 
   beforeEach(() => {
     process.env.ANTINUKE_REQUIRE_ENCRYPTION = 'false';
+    process.env.ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS = 'true';
     delete process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;
     delete process.env.ANTINUKE_LOG_INCREMENTAL_BACKUPS;
   });
@@ -18,6 +20,11 @@ describe('anti-nuke backup safety', () => {
       delete process.env.ANTINUKE_REQUIRE_ENCRYPTION;
     } else {
       process.env.ANTINUKE_REQUIRE_ENCRYPTION = originalRequireEncryption;
+    }
+    if (originalAllowUnencrypted === undefined) {
+      delete process.env.ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS;
+    } else {
+      process.env.ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS = originalAllowUnencrypted;
     }
     if (originalLogAutomaticBackups === undefined) {
       delete process.env.ANTINUKE_LOG_AUTOMATIC_BACKUPS;

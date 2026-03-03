@@ -209,6 +209,17 @@ describe('/recruit command', () => {
     const recPoints = rec.points || 0;
     expect(recruiterRow.points).toBe(recPoints);
 
+    const { getWeekStartUtcTs } = require('../src/lib/week');
+    const weekStart = getWeekStartUtcTs();
+    const weekly = await db.get(
+      'SELECT recruits7d FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? AND week_start = ?',
+      interaction.guild.id,
+      interaction.user.id,
+      weekStart
+    );
+    expect(weekly).toBeDefined();
+    expect(Number(weekly.recruits7d)).toBe(1);
+
     // Welcome DM should be sent once recruit completes, with resolved team name
     expect(guildMember.send).toHaveBeenCalled();
     const dmArg = guildMember.send.mock.calls[0][0];

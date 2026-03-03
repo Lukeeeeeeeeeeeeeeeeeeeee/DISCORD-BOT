@@ -55,7 +55,8 @@
       "<rootDir>/tests/setup-env.js"
     ],
     "testPathIgnorePatterns": [
-      "<rootDir>/DISCORD-BOT/"
+      "<rootDir>/DISCORD-BOT/",
+      "<rootDir>/tests/diagnostic/"
     ]
   }
 }

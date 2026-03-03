@@ -14,6 +14,18 @@ const runtime = require('./runtime');
 const { buildErrorEmbed } = require('./embeds');
 const { formatUtcDate } = require('./time');
 
+const antiNukeFileSaveQueuesByPath = new Map();
+
+function enqueueStateFileSave(filePath, task) {
+  const key = path.resolve(filePath);
+  const previous = antiNukeFileSaveQueuesByPath.get(key) || Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(task);
+  antiNukeFileSaveQueuesByPath.set(key, next);
+  return next;
+}
+
 class AntiNuke {
   constructor() {
     // Configuration
@@ -88,16 +100,21 @@ class AntiNuke {
     this.LOG_HISTORY_LIMIT = 200;
     this.EMERGENCY_CONFIRM_WINDOW = 30 * 1000;
     this.EMERGENCY_LOCKDOWN_DURATION = 12 * 60 * 60 * 1000;
-    this.ENCRYPTION_KEY = process.env.ANTINUKE_ENCRYPTION_KEY || null;
+    const rawEncryptionKey = process.env.ANTINUKE_ENCRYPTION_KEY;
+    this.ENCRYPTION_KEY = rawEncryptionKey ? String(rawEncryptionKey).trim() : null;
+    const allowUnencryptedEnv = process.env.ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS;
+    this.ALLOW_UNENCRYPTED_BACKUPS = allowUnencryptedEnv
+      ? allowUnencryptedEnv.toLowerCase() === 'true'
+      : false;
     const requireEncEnv = process.env.ANTINUKE_REQUIRE_ENCRYPTION;
     this.REQUIRE_BACKUP_ENCRYPTION = requireEncEnv
       ? requireEncEnv.toLowerCase() === 'true'
       : true;
     if (!this.ENCRYPTION_KEY) {
-      if (this.REQUIRE_BACKUP_ENCRYPTION) {
-        console.warn('ANTINUKE_ENCRYPTION_KEY is missing; encrypted backups are required and will fail until configured.');
+      if (this.REQUIRE_BACKUP_ENCRYPTION || !this.ALLOW_UNENCRYPTED_BACKUPS) {
+        console.warn('ANTINUKE_ENCRYPTION_KEY is missing; backups are blocked until a key is configured.');
       } else {
-        console.warn('ANTINUKE_ENCRYPTION_KEY is missing; backups will be stored unencrypted.');
+        console.warn('ANTINUKE_ENCRYPTION_KEY is missing; backups will be stored unencrypted because ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS=true.');
       }
     }
     this.POINTS = {
@@ -159,6 +176,7 @@ class AntiNuke {
     const repoDataFile = path.join(__dirname, '../data/antinuke_data.json');
     const localDataFile = path.join(__dirname, '../data/antinuke_data.local.json');
     this.DATA_FILE = overrideDataFile ? path.resolve(overrideDataFile) : localDataFile;
+    this.DATA_FILE_TMP = `${this.DATA_FILE}.tmp`;
     this.FALLBACK_DATA_FILE = overrideDataFile ? null : repoDataFile;
     this.stateBackend = 'file';
     this.lastGlobalStateUpdatedAt = 0;
@@ -685,21 +703,58 @@ class AntiNuke {
     }
   }
 
+  getDataFileCandidates() {
+    const candidates = [this.DATA_FILE, this.DATA_FILE_TMP, this.FALLBACK_DATA_FILE]
+      .filter(Boolean)
+      .map(filePath => path.resolve(filePath));
+    return Array.from(new Set(candidates));
+  }
+
+  async writeStateFileAtomic(payload) {
+    const tempPath = this.DATA_FILE_TMP;
+    const handle = await fs.open(tempPath, 'w');
+    try {
+      await handle.writeFile(payload, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close().catch(() => {});
+    }
+    await fs.rename(tempPath, this.DATA_FILE);
+
+    // Best-effort directory sync for crash consistency on platforms that support it.
+    try {
+      const dirHandle = await fs.open(path.dirname(this.DATA_FILE), 'r');
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close().catch(() => {});
+      }
+    } catch (_error) {
+      // ignored
+    }
+  }
+
   async loadDataFromFile() {
     try {
-      let data = null;
-      let loadedFrom = this.DATA_FILE;
-      try {
-        data = await fs.readFile(this.DATA_FILE, 'utf8');
-      } catch (readError) {
-        const fallbackFile = this.FALLBACK_DATA_FILE;
-        const canFallback = Boolean(fallbackFile && fallbackFile !== this.DATA_FILE);
-        if (!canFallback) throw readError;
-        data = await fs.readFile(fallbackFile, 'utf8');
-        loadedFrom = fallbackFile;
+      let parsed = null;
+      let loadedFrom = null;
+      let lastError = null;
+      const candidates = this.getDataFileCandidates();
+
+      for (const candidate of candidates) {
+        try {
+          const data = await fs.readFile(candidate, 'utf8');
+          parsed = JSON.parse(data);
+          loadedFrom = candidate;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
       }
 
-      const parsed = JSON.parse(data);
+      if (!parsed || !loadedFrom) {
+        throw lastError || new Error('No anti-nuke data file could be loaded');
+      }
 
       if (parsed.whitelist) this.whitelist = new Set(parsed.whitelist);
       if (parsed.whitelistByGuild) {
@@ -813,7 +868,7 @@ class AntiNuke {
   }
 
   async saveDataToFile() {
-    try {
+    return enqueueStateFileSave(this.DATA_FILE, async () => {
       try {
         await fs.mkdir(path.dirname(this.DATA_FILE), { recursive: true });
       } catch (e) {
@@ -886,10 +941,10 @@ class AntiNuke {
         emergencyLockdownUntil: Object.fromEntries(this.emergencyLockdownUntil),
         emergencyMode: Object.fromEntries(this.emergencyMode)
       };
-      await fs.writeFile(this.DATA_FILE, JSON.stringify(data, null, 2));
-    } catch (error) {
-      console.error('❌ Failed to save anti-nuke data:', error);
-    }
+      await this.writeStateFileAtomic(JSON.stringify(data, null, 2));
+    }).catch((error) => {
+      console.error('Failed to save anti-nuke data:', error);
+    });
   }
 
   // Set up event listeners
@@ -1098,8 +1153,8 @@ class AntiNuke {
   encryptSnapshot(snapshot) {
     const key = this.getEncryptionKey();
     if (!key) {
-      if (this.REQUIRE_BACKUP_ENCRYPTION) {
-        throw new Error('Backup encryption required but ANTINUKE_ENCRYPTION_KEY is not configured');
+      if (this.REQUIRE_BACKUP_ENCRYPTION || !this.ALLOW_UNENCRYPTED_BACKUPS) {
+        throw new Error('Backup encryption key is required. Set ANTINUKE_ENCRYPTION_KEY or explicitly allow plaintext backups with ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS=true');
       }
       return {
         encrypted: false,

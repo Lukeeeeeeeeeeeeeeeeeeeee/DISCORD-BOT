@@ -11,6 +11,13 @@ function sanitizeEnvToken(rawToken) {
   return token || null;
 }
 
+function parseBooleanEnv(rawValue, defaultValue = false) {
+  if (rawValue === undefined || rawValue === null || String(rawValue).trim() === '') {
+    return defaultValue;
+  }
+  return String(rawValue).trim().toLowerCase() === 'true';
+}
+
 function validateRuntimeEnvironment(opts = {}) {
   const minNodeMajor = Number.isFinite(opts.minNodeMajor) ? opts.minNodeMajor : 18;
   const version = process.versions && process.versions.node ? String(process.versions.node) : '';
@@ -47,9 +54,24 @@ function validateRuntimeEnvironment(opts = {}) {
   if (!process.env.OWNER_ID && !process.env.ANTINUKE_OWNER_ID) {
     warnings.push('OWNER_ID / ANTINUKE_OWNER_ID is not configured; owner-only recovery features will be limited.');
   }
-  if (!process.env.ANTINUKE_ENCRYPTION_KEY) {
-    warnings.push('ANTINUKE_ENCRYPTION_KEY is missing; encrypted anti-nuke backups may fail if encryption is required.');
+
+  const encryptionKey = process.env.ANTINUKE_ENCRYPTION_KEY
+    ? String(process.env.ANTINUKE_ENCRYPTION_KEY).trim()
+    : '';
+  const requireBackupEncryption = parseBooleanEnv(process.env.ANTINUKE_REQUIRE_ENCRYPTION, true);
+  const allowUnencryptedBackups = parseBooleanEnv(process.env.ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS, false);
+
+  if (encryptionKey) {
+    const keyBytes = Buffer.byteLength(encryptionKey, 'utf8');
+    if (keyBytes < 32) {
+      throw new Error('ANTINUKE_ENCRYPTION_KEY must be at least 32 bytes.');
+    }
+  } else if (requireBackupEncryption || !allowUnencryptedBackups) {
+    throw new Error('ANTINUKE_ENCRYPTION_KEY is required. Set it, or explicitly set ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS=true for insecure local-only mode.');
+  } else {
+    warnings.push('Running with unencrypted anti-nuke backups (ANTINUKE_ALLOW_UNENCRYPTED_BACKUPS=true).');
   }
+
   if (!process.env.GUILD_ID) {
     warnings.push('GUILD_ID is not configured; scheduler and guild-scoped jobs may be disabled.');
   }

@@ -338,15 +338,9 @@ async function storeWeeklyCalculation(db, data) {
     const guildId = resolveGuildId(data.guild || data.guildId);
     const weekStart = data.weekStart ?? null;
     const absent = data.absent ? 1 : 0;
-    await db.run(`
-      INSERT OR REPLACE INTO weekly_calculations 
-      (guild_id, recruiter_id, timestamp, week_start, recruits7d, activity_rate, verify_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      guildId,
-      data.recruiterId,
-      Date.now(),
-      weekStart,
+    const nowTs = Date.now();
+    const values = [
+      nowTs,
       data.recruits7d,
       data.activityRate,
       data.verifyRate != null ? data.verifyRate : 0,
@@ -356,7 +350,50 @@ async function storeWeeklyCalculation(db, data) {
       data.previousMinReq,
       data.calculatedMinReq,
       data.roleBase
-    ]);
+    ];
+
+    let updated = null;
+    if (weekStart == null) {
+      updated = await db.run(
+        `UPDATE weekly_calculations
+         SET timestamp = ?, recruits7d = ?, activity_rate = ?, verify_rate = ?, retention = ?, warnings = ?, absent = ?, previous_min_req = ?, calculated_min_req = ?, role_base = ?
+         WHERE guild_id = ? AND recruiter_id = ? AND week_start IS NULL`,
+        ...values,
+        guildId,
+        data.recruiterId
+      );
+    } else {
+      updated = await db.run(
+        `UPDATE weekly_calculations
+         SET timestamp = ?, recruits7d = ?, activity_rate = ?, verify_rate = ?, retention = ?, warnings = ?, absent = ?, previous_min_req = ?, calculated_min_req = ?, role_base = ?
+         WHERE guild_id = ? AND recruiter_id = ? AND week_start = ?`,
+        ...values,
+        guildId,
+        data.recruiterId,
+        weekStart
+      );
+    }
+
+    if (!(updated && Number(updated.changes) > 0)) {
+      await db.run(
+        `INSERT INTO weekly_calculations
+         (guild_id, recruiter_id, timestamp, week_start, recruits7d, activity_rate, verify_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        guildId,
+        data.recruiterId,
+        nowTs,
+        weekStart,
+        data.recruits7d,
+        data.activityRate,
+        data.verifyRate != null ? data.verifyRate : 0,
+        data.retention,
+        data.warnings,
+        absent,
+        data.previousMinReq,
+        data.calculatedMinReq,
+        data.roleBase
+      );
+    }
   } catch (error) {
     console.error('Error storing weekly calculation:', error);
   }

@@ -184,6 +184,72 @@ async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
   }
 }
 
+async function refreshCurrentWeekCalculationAfterRecruit(db, guild, recruiterMember) {
+  if (!recruiterMember) return;
+  try {
+    const guildId = resolveGuildId(guild);
+    const nowTs = Date.now();
+    const weekStart = getWeekStartUtcTs();
+    // Include records inserted at the same millisecond as this refresh.
+    const statsWindow = { sinceTs: weekStart, untilTs: nowTs + 1 };
+    const currentStats = await calculate7DayStats(db, recruiterMember.id, guild || null, { ...statsWindow, guildId });
+
+    const warnings = await db.get(
+      'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+      guildId,
+      recruiterMember.id,
+      nowTs
+    );
+    const activeWarnings = warnings ? Number(warnings.c || 0) : 0;
+    const absence = await db.get(
+      'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+      guildId,
+      recruiterMember.id
+    );
+    const roleBase = getBaseRequirement(recruiterMember);
+
+    const previousCalc = await db.get(
+      'SELECT calculated_min_req FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
+      guildId,
+      recruiterMember.id,
+      weekStart
+    ).catch(() => null);
+    const previousMinReq = previousCalc && previousCalc.calculated_min_req != null
+      ? Number(previousCalc.calculated_min_req)
+      : null;
+
+    const calculatedMinReq = calculateMinRecruitsFixed({
+      roleBase,
+      member: recruiterMember,
+      recruits7d: currentStats.recruits7d,
+      activityRate: currentStats.activityRate,
+      verifyRate: currentStats.verifyRate,
+      retention: currentStats.retention,
+      warnings: activeWarnings,
+      previousMinReq,
+      absent: !!absence,
+      isNewStaff: false
+    });
+
+    await storeWeeklyCalculation(db, {
+      guildId,
+      recruiterId: recruiterMember.id,
+      weekStart,
+      recruits7d: currentStats.recruits7d,
+      activityRate: currentStats.activityRate,
+      verifyRate: currentStats.verifyRate,
+      retention: currentStats.retention,
+      warnings: activeWarnings,
+      absent: !!absence,
+      previousMinReq,
+      calculatedMinReq,
+      roleBase
+    });
+  } catch (e) {
+    reportRecruitError('command.recruit.refreshCurrentWeekCalculation', e);
+  }
+}
+
 async function updateTrialFastTrack(db, guild, recruiterMember, recruitedId) {
   if (!recruiterMember || !recruiterMember.roles || !recruiterMember.roles.cache) return { promoted: false };
   if (!recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) return { promoted: false };
@@ -541,6 +607,14 @@ module.exports = {
           }
         } catch (e) {
           reportRecruitError('command.recruit.trialFastTrack', e);
+        }
+
+        try {
+          if (recruiterMember) {
+            await refreshCurrentWeekCalculationAfterRecruit(db, interaction.guild, recruiterMember);
+          }
+        } catch (e) {
+          reportRecruitError('command.recruit.refreshCurrentWeekCalculation', e);
         }
 
         try {

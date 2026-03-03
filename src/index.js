@@ -18,6 +18,11 @@ const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
 const { startHealthServer } = require('./lib/health-server');
 const { loadCommandsIntoCollection } = require('./lib/command-loader');
 
+// DM worker system
+const BOT_RUNTIME_MODE = (process.env.BOT_RUNTIME_MODE || 'main').toLowerCase();
+const IS_DM_WORKER = BOT_RUNTIME_MODE === 'dm_worker';
+let dmReportScanTimer = null;
+
 try {
   const envWarnings = validateRuntimeEnvironment({ minNodeMajor: 18 });
   for (const warning of envWarnings) {
@@ -56,6 +61,9 @@ const invitePendingAttributions = new Map();
 const voiceSessions = new Map();
 const INVITE_SNAPSHOT_TTL_MS = Number.parseInt(process.env.INVITE_SNAPSHOT_TTL_MS || '900000', 10);
 const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
+const SHUTDOWN_STEP_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_STEP_TIMEOUT_MS || '4000', 10);
+const SHUTDOWN_ANALYTICS_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANALYTICS_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
+const SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
 
 function isInteractionAckError(error) {
   return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
@@ -219,6 +227,17 @@ async function onReady() {
 
   scheduler.start(client, db);
 
+  // Start DM campaign report scanner (main bot only)
+  if (!IS_DM_WORKER) {
+    const dmReporter = require('./services/dm/dm-reporter');
+    const DM_REPORT_SCAN_MS = 30000;
+    dmReportScanTimer = setInterval(() => {
+      void dmReporter.scanAndPostReports(client).catch(err => {
+        logUnexpectedError('dm.reporter.scheduledScan', err);
+      });
+    }, DM_REPORT_SCAN_MS);
+  }
+
   const healthPort = Number.parseInt(process.env.HEALTHCHECK_PORT || '', 10);
   if (Number.isFinite(healthPort) && healthPort > 0 && !healthServer) {
     healthServer = startHealthServer({ db, port: healthPort });
@@ -250,6 +269,28 @@ async function onReady() {
 // Use clientReady to avoid v15 breaking changes (ready alias deprecation in v14).
 client.once('clientReady', onReady);
 
+async function runShutdownStep(label, fn, timeoutMs = SHUTDOWN_STEP_TIMEOUT_MS) {
+  const safeTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SHUTDOWN_STEP_TIMEOUT_MS;
+  let timer = null;
+
+  const stepPromise = Promise.resolve()
+    .then(() => fn())
+    .catch((error) => {
+      logUnexpectedError(`shutdown.${label}`, error);
+    });
+
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`Shutdown step timed out and will be skipped: ${label}`, { timeoutMs: safeTimeoutMs });
+      resolve();
+    }, safeTimeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+
+  await Promise.race([stepPromise, timeoutPromise]);
+  if (timer) clearTimeout(timer);
+}
+
 let shutdownPromise = null;
 async function flushShutdown(signal) {
   if (shutdownPromise) return shutdownPromise;
@@ -258,17 +299,42 @@ async function flushShutdown(signal) {
       if (typeof scheduler.stop === 'function') {
         scheduler.stop();
       }
-      if (analytics && typeof analytics.flushAll === 'function') {
-        await analytics.flushAll();
+      if (dmReportScanTimer) {
+        clearInterval(dmReportScanTimer);
+        dmReportScanTimer = null;
       }
-      await AECS.shutdown();
+      // Stop DM worker if running
+      if (IS_DM_WORKER) {
+        const dmWorker = require('./services/dm/dm-worker');
+        await runShutdownStep(
+          'dmWorker.stopWorker',
+          () => dmWorker.stopWorker(process.env.DM_WORKER_ID || null),
+          SHUTDOWN_STEP_TIMEOUT_MS
+        );
+      }
+      if (analytics && typeof analytics.flushAll === 'function') {
+        await runShutdownStep(
+          'analytics.flushAll',
+          () => analytics.flushAll(),
+          SHUTDOWN_ANALYTICS_TIMEOUT_MS
+        );
+      }
+      await runShutdownStep('aecs.shutdown', () => AECS.shutdown(), SHUTDOWN_STEP_TIMEOUT_MS);
       const antiNuke = runtime.getAntiNuke();
       if (antiNuke && typeof antiNuke.saveData === 'function') {
-        await antiNuke.saveData();
+        await runShutdownStep(
+          'antiNuke.saveData',
+          () => antiNuke.saveData(),
+          SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS
+        );
       }
       const antiNukeRollback = runtime.getAntiNukeRollback();
       if (antiNukeRollback && typeof antiNukeRollback.saveRollbackData === 'function') {
-        await antiNukeRollback.saveRollbackData();
+        await runShutdownStep(
+          'antiNukeRollback.saveRollbackData',
+          () => antiNukeRollback.saveRollbackData(),
+          SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS
+        );
       }
       if (healthServer && typeof healthServer.close === 'function') {
         await new Promise(resolve => {
@@ -733,6 +799,22 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
 
   try {
     await db.get('SELECT 1 AS ok');
+
+    if (IS_DM_WORKER) {
+      // DM Worker mode — lightweight: login + start worker, skip commands/events
+      const workerId = process.env.DM_WORKER_ID;
+      if (!workerId) {
+        console.error('FATAL: DM_WORKER_ID is required when BOT_RUNTIME_MODE=dm_worker');
+        process.exit(1);
+      }
+      await client.login(token);
+      logRuntimeEvent('info', 'startup.dmWorker', 'Starting in DM worker mode', { workerId });
+      const dmWorker = require('./services/dm/dm-worker');
+      dmWorker.startWorker(client, workerId, process.env.DM_WORKER_DISPLAY_NAME || workerId);
+      return;
+    }
+
+    // Main bot mode — full startup
     await antiNukeInitPromise;
     await inviteInitPromise;
     await client.login(token);

@@ -3,6 +3,7 @@ const { ensureCommandAccess } = require('../../lib/command-auth');
 const { getWeekStartUtcTs } = require('../../lib/week');
 const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
+const { formatPointsValue } = require('../../lib/economy');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 
 function reportRecruitsCommandError(scope, error, meta = {}) {
@@ -29,7 +30,7 @@ async function refreshLeaderboards(guild) {
 module.exports = {
   data: {
     name: 'recruits',
-    description: 'Admin: manage weekly recruit totals'
+    description: 'Admin: manage weekly recruit totals and recruiter points'
   },
   async execute(interaction) {
     const allowed = await ensureCommandAccess(interaction, {
@@ -45,7 +46,7 @@ module.exports = {
     const sub = interaction.options && typeof interaction.options.getSubcommand === 'function'
       ? interaction.options.getSubcommand()
       : null;
-    if (group !== 'total' || sub !== 'change') {
+    if (sub !== 'change' || (group !== 'total' && group !== 'points')) {
       return replyError(interaction, 'Unsupported subcommand.', { flags: 64 });
     }
 
@@ -60,23 +61,83 @@ module.exports = {
     };
 
     const member = interaction.options.getUser('member');
-    const requestedTotal = interaction.options.getInteger('total');
     const rawNote = interaction.options.getString('note');
-
-    if (!member || !Number.isInteger(requestedTotal) || requestedTotal < 0) {
-      return replyError(interaction, 'Please provide a valid member and a non-negative total.', { flags: 64 });
-    }
-
-    const guildId = resolveGuildId(interaction.guild);
-    const weekStart = getWeekStartUtcTs();
-    const now = Date.now();
     const note = rawNote ? String(rawNote).trim().slice(0, 250) : null;
+    const guildId = resolveGuildId(interaction.guild);
+    const now = Date.now();
+    if (!member) {
+      return replyError(interaction, 'Please provide a valid member.', { flags: 64 });
+    }
 
     const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
     if (!targetMember) {
       return respond({ content: 'That member is not in this server.' });
     }
 
+    if (group === 'points') {
+      const requestedPointsRaw = interaction.options.getNumber('points');
+      if (!Number.isFinite(requestedPointsRaw) || requestedPointsRaw < 0) {
+        return replyError(interaction, 'Please provide a valid member and a non-negative points total.', { flags: 64 });
+      }
+      const requestedPoints = Math.round(Number(requestedPointsRaw) * 100) / 100;
+
+      try {
+        await db.run(
+          'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
+          guildId,
+          member.id
+        );
+
+        const existing = await db.get(
+          'SELECT COALESCE(CAST(points AS REAL), 0) AS points FROM recruiters WHERE guild_id = ? AND id = ?',
+          guildId,
+          member.id
+        );
+        const previousPoints = existing ? Number(existing.points || 0) : 0;
+
+        await db.run(
+          'UPDATE recruiters SET points = COALESCE(CAST(? AS REAL), 0) WHERE guild_id = ? AND id = ?',
+          requestedPoints,
+          guildId,
+          member.id
+        );
+
+        await refreshLeaderboards(interaction.guild);
+
+        void logRuntimeEvent('info', 'command.recruits.pointsChange.updated', 'Recruiter points updated by admin override', {
+          command: 'recruits',
+          guildId,
+          recruiterId: member.id,
+          by: interaction.user.id,
+          previousPoints,
+          points: requestedPoints,
+          note
+        });
+
+        return respond({
+          content: `Set ${member.tag} recruiter points to **${formatPointsValue(requestedPoints)}** (previous: ${formatPointsValue(previousPoints)}).`
+        });
+      } catch (error) {
+        const dispatchResult = await logUnexpectedError('command.recruits.pointsChange.execute', error, {
+          command: 'recruits',
+          guildId,
+          recruiterId: member.id,
+          by: interaction.user.id
+        });
+        return replyError(
+          interaction,
+          `Failed to update recruiter points.${dispatchResult && dispatchResult.supportId ? ` Support ID: \`${dispatchResult.supportId}\`.` : ''}`,
+          { flags: 64 }
+        );
+      }
+    }
+
+    const requestedTotal = interaction.options.getInteger('total');
+    if (!Number.isInteger(requestedTotal) || requestedTotal < 0) {
+      return replyError(interaction, 'Please provide a valid member and a non-negative total.', { flags: 64 });
+    }
+
+    const weekStart = getWeekStartUtcTs();
     try {
       const realCountRow = await db.get(
         'SELECT COUNT(*) as c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND valid = 1 AND created_at >= ?',

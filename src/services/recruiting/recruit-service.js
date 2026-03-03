@@ -202,6 +202,71 @@ async function storeMinReqSnapshotAfterPromotion(dbHandle, guild, recruiterMembe
   }
 }
 
+async function refreshCurrentWeekCalculationAfterRecruit(dbHandle, guild, recruiterMember) {
+  if (!recruiterMember) return;
+  try {
+    const guildId = resolveGuildId(guild);
+    const nowTs = Date.now();
+    const weekStart = getWeekStartUtcTs();
+    const statsWindow = { sinceTs: weekStart, untilTs: nowTs };
+    const currentStats = await calculate7DayStats(dbHandle, recruiterMember.id, guild || null, { ...statsWindow, guildId });
+
+    const warnings = await dbHandle.get(
+      'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+      guildId,
+      recruiterMember.id,
+      nowTs
+    );
+    const activeWarnings = warnings ? Number(warnings.c || 0) : 0;
+    const absence = await dbHandle.get(
+      'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+      guildId,
+      recruiterMember.id
+    );
+    const roleBase = getBaseRequirement(recruiterMember);
+
+    const previousCalc = await dbHandle.get(
+      'SELECT calculated_min_req FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
+      guildId,
+      recruiterMember.id,
+      weekStart
+    ).catch(() => null);
+    const previousMinReq = previousCalc && previousCalc.calculated_min_req != null
+      ? Number(previousCalc.calculated_min_req)
+      : null;
+
+    const calculatedMinReq = calculateMinRecruitsFixed({
+      roleBase,
+      member: recruiterMember,
+      recruits7d: currentStats.recruits7d,
+      activityRate: currentStats.activityRate,
+      verifyRate: currentStats.verifyRate,
+      retention: currentStats.retention,
+      warnings: activeWarnings,
+      previousMinReq,
+      absent: !!absence,
+      isNewStaff: false
+    });
+
+    await storeWeeklyCalculation(dbHandle, {
+      guildId,
+      recruiterId: recruiterMember.id,
+      weekStart,
+      recruits7d: currentStats.recruits7d,
+      activityRate: currentStats.activityRate,
+      verifyRate: currentStats.verifyRate,
+      retention: currentStats.retention,
+      warnings: activeWarnings,
+      absent: !!absence,
+      previousMinReq,
+      calculatedMinReq,
+      roleBase
+    });
+  } catch (e) {
+    reportRecruitServiceError('service.recruit.refreshCurrentWeekCalculation', e);
+  }
+}
+
 async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedId) {
   if (!recruiterMember || !recruiterMember.roles || !recruiterMember.roles.cache) return { promoted: false };
   if (!recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) return { promoted: false };
@@ -616,6 +681,14 @@ async function execute(interaction, _client, dbHandle = null) {
         }
       } catch (e) {
         reportRecruitServiceError('service.recruit.trialFastTrack.error', e, { recruiterId: interaction.user.id, recruitedId: member.id });
+      }
+
+      try {
+        if (recruiterMember) {
+          await refreshCurrentWeekCalculationAfterRecruit(db, interaction.guild, recruiterMember);
+        }
+      } catch (e) {
+        reportRecruitServiceError('service.recruit.refreshCurrentWeekCalculation', e, { recruiterId: interaction.user.id, recruitedId: member.id });
       }
 
       try {
