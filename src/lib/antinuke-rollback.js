@@ -1,6 +1,18 @@
 const fs = require('fs').promises;
 const path = require('path');
 
+const rollbackSaveQueuesByPath = new Map();
+
+function enqueueRollbackSave(filePath, task) {
+  const key = path.resolve(filePath);
+  const previous = rollbackSaveQueuesByPath.get(key) || Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(task);
+  rollbackSaveQueuesByPath.set(key, next);
+  return next;
+}
+
 class AntiNukeRollback {
   constructor() {
     this.rollbackData = new Map(); // guildId -> rollback data
@@ -9,7 +21,6 @@ class AntiNukeRollback {
     this.ROLLBACK_TTL_MS = Number.parseInt(process.env.ANTINUKE_ROLLBACK_TTL_MS || `${7 * 24 * 60 * 60 * 1000}`, 10);
     this.ROLLBACK_MAX_ACTIONS_PER_GUILD = Number.parseInt(process.env.ANTINUKE_ROLLBACK_MAX_ACTIONS || '200', 10);
     this.ROLLBACK_MAX_GUILDS = Number.parseInt(process.env.ANTINUKE_ROLLBACK_MAX_GUILDS || '250', 10);
-    this._saveQueue = Promise.resolve();
   }
 
   async ensureDataDir() {
@@ -20,13 +31,66 @@ class AntiNukeRollback {
     }
   }
 
+  getRollbackFileCandidates() {
+    const candidates = [
+      this.ROLLBACK_FILE,
+      `${this.ROLLBACK_FILE}.tmp`
+    ].map(filePath => path.resolve(filePath));
+    return Array.from(new Set(candidates));
+  }
+
+  async writeRollbackFileAtomic(payload) {
+    const tmpFile = `${this.ROLLBACK_FILE}.tmp`;
+    const handle = await fs.open(tmpFile, 'w');
+    try {
+      await handle.writeFile(payload, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close().catch(() => {});
+    }
+    await fs.rename(tmpFile, this.ROLLBACK_FILE);
+
+    // Best-effort directory sync for crash consistency.
+    try {
+      const dirHandle = await fs.open(path.dirname(this.ROLLBACK_FILE), 'r');
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close().catch(() => {});
+      }
+    } catch (_error) {
+      // ignored
+    }
+  }
+
   // Initialize rollback system
   async init() {
     try {
-      const data = await fs.readFile(this.ROLLBACK_FILE, 'utf8');
-      const parsed = JSON.parse(data);
+      let parsed = null;
+      let loadedFrom = null;
+      let lastError = null;
+      const candidates = this.getRollbackFileCandidates();
+
+      for (const candidate of candidates) {
+        try {
+          const data = await fs.readFile(candidate, 'utf8');
+          parsed = JSON.parse(data);
+          loadedFrom = candidate;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      if (!parsed || !loadedFrom) {
+        throw lastError || new Error('No rollback state file could be loaded');
+      }
+
       this.rollbackData = new Map(Object.entries(parsed || {}));
       this.pruneRollbackData();
+      if (loadedFrom !== path.resolve(this.ROLLBACK_FILE)) {
+        await this.saveRollbackData();
+      }
       console.log('🔄 Anti-nuke rollback system loaded');
     } catch (error) {
       console.log('🔄 No existing rollback data found, starting fresh');
@@ -80,31 +144,28 @@ class AntiNukeRollback {
 
   // Save rollback data to file
   async saveRollbackData() {
-    this._saveQueue = this._saveQueue.then(async () => {
+    return enqueueRollbackSave(this.ROLLBACK_FILE, async () => {
       try {
         await this.ensureDataDir();
         this.pruneRollbackData();
         const data = Object.fromEntries(this.rollbackData);
-        const tmpFile = `${this.ROLLBACK_FILE}.tmp`;
-        await fs.writeFile(tmpFile, JSON.stringify(data, null, 2));
-        await fs.rename(tmpFile, this.ROLLBACK_FILE);
+        await this.writeRollbackFileAtomic(JSON.stringify(data, null, 2));
       } catch (error) {
         console.error('❌ Failed to save rollback data:', error);
       }
     });
 
-    return this._saveQueue;
   }
 
   normalizeCaptureActionType(actionType) {
     if (!actionType) return actionType;
-    if (actionType === 'beast_mode') return 'ban';
-    if (typeof actionType === 'string' && actionType.startsWith('rapid_')) return 'ban';
+    if (actionType === 'beast_mode') return 'beast_mode';
+    if (typeof actionType === 'string' && actionType.startsWith('rapid_')) return 'rapid_action';
     return actionType;
   }
 
   // Record state before anti-nuke action
-  recordPreActionState(guild, actionType, targetData, metadata = null) {
+  async recordPreActionState(guild, actionType, targetData, metadata = null) {
     const guildId = guild.id;
     
     if (!this.rollbackData.has(guildId)) {
@@ -130,11 +191,11 @@ class AntiNukeRollback {
     guildData.timestamp = rollbackEntry.timestamp;
     
     console.log(`🔄 Recorded pre-action state for ${actionType} in ${guild.name}`);
-    this.saveRollbackData();
+    await this.saveRollbackData();
   }
 
   // Record state after anti-nuke action
-  recordPostActionState(guild, actionType, targetData, metadata = null) {
+  async recordPostActionState(guild, actionType, targetData, metadata = null) {
     const guildId = guild.id;
     const guildData = this.rollbackData.get(guildId);
     
@@ -160,7 +221,7 @@ class AntiNukeRollback {
       }
       guildData.timestamp = Math.max(Number(guildData.timestamp || 0), Number(action.timestamp || Date.now()));
       console.log(`🔄 Recorded post-action state for ${actionType} in ${guild.name}`);
-      this.saveRollbackData();
+      await this.saveRollbackData();
     }
   }
 
@@ -179,6 +240,8 @@ class AntiNukeRollback {
     switch (normalizedActionType) {
       case 'ban':
       case 'kick':
+      case 'beast_mode':
+      case 'rapid_action':
         state.member = targetData ? {
           id: targetData.id,
           tag: targetData.user?.tag,

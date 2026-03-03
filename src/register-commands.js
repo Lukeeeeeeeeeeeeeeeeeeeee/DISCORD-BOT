@@ -42,7 +42,7 @@ const commands = [
     .addUserOption(opt => opt.setName('member').setDescription('Member to recruit').setRequired(true))
     .addStringOption(opt => opt.setName('ign').setDescription('In-game name').setRequired(true))
     .addUserOption(opt => opt.setName('credit_to').setDescription('Optional recruiter to credit for this recruit').setRequired(false)),
-  new SlashCommandBuilder().setName('recruits').setDescription('Admin: manage weekly recruit totals')
+  new SlashCommandBuilder().setName('recruits').setDescription('Admin: manage weekly recruit totals and recruiter points')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommandGroup(group => group
       .setName('total')
@@ -50,6 +50,15 @@ const commands = [
       .addSubcommand(sub => sub.setName('change').setDescription('Set weekly total recruits for a recruiter')
         .addUserOption(opt => opt.setName('member').setDescription('Recruiter to update').setRequired(true))
         .addIntegerOption(opt => opt.setName('total').setDescription('New total for this week').setRequired(true).setMinValue(0).setMaxValue(500))
+        .addStringOption(opt => opt.setName('note').setDescription('Optional audit note').setRequired(false).setMaxLength(250))
+      )
+    )
+    .addSubcommandGroup(group => group
+      .setName('points')
+      .setDescription('Manage recruiter points')
+      .addSubcommand(sub => sub.setName('change').setDescription('Set recruiter points to an exact value')
+        .addUserOption(opt => opt.setName('member').setDescription('Recruiter to update').setRequired(true))
+        .addNumberOption(opt => opt.setName('points').setDescription('New points total').setRequired(true).setMinValue(0).setMaxValue(1000000))
         .addStringOption(opt => opt.setName('note').setDescription('Optional audit note').setRequired(false).setMaxLength(250))
       )
     ),
@@ -104,13 +113,50 @@ const commands = [
     .addUserOption(opt => opt.setName('member').setDescription('Member to check').setRequired(true)),
   new SlashCommandBuilder()
     .setName('dm')
-    .setDescription('DM members of a role or everyone (admin only). Use preview to test.')
-    .addStringOption(opt => opt.setName('message').setDescription('Message to send to matching members').setRequired(true))
-    .addRoleOption(opt => opt.setName('role').setDescription('Role to DM (optional if using everyone)').setRequired(false))
-    .addBooleanOption(opt => opt.setName('everyone').setDescription('DM all server members (overrides role)').setRequired(false))
-    .addIntegerOption(opt => opt.setName('limit').setDescription('Maximum recipients to DM (default: all unsent matches, up to 1000)').setRequired(false).setMinValue(1).setMaxValue(1000))
-    .addIntegerOption(opt => opt.setName('offset').setDescription('Skip first N unsent matches (useful for resuming)').setRequired(false).setMinValue(0).setMaxValue(1000))
-    .addBooleanOption(opt => opt.setName('preview').setDescription('If true, do not send DMs; show a preview').setRequired(false)),
+    .setDescription('DM campaign system (admin only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(sub => sub
+      .setName('create')
+      .setDescription('Create a new DM campaign')
+      .addStringOption(opt => opt.setName('message_type').setDescription('Type of message').setRequired(true)
+        .addChoices(
+          { name: '📨 Misc', value: 'misc' },
+          { name: '⚔️ War Early Notice', value: 'war_early' },
+          { name: '🔥 War Late Notice', value: 'war_late' }
+        ))
+      .addStringOption(opt => opt.setName('message').setDescription('Message to send (max 2000 chars)').setRequired(true))
+      .addStringOption(opt => opt.setName('target_mode').setDescription('Target mode (default: any_roles)').setRequired(false)
+        .addChoices(
+          { name: 'Everyone', value: 'everyone' },
+          { name: 'Any of selected roles (union)', value: 'any_roles' },
+          { name: 'All of selected roles (intersection)', value: 'all_roles' }
+        ))
+      .addRoleOption(opt => opt.setName('role_1').setDescription('Role to DM').setRequired(false))
+      .addRoleOption(opt => opt.setName('role_2').setDescription('Additional role').setRequired(false))
+      .addRoleOption(opt => opt.setName('role_3').setDescription('Additional role').setRequired(false))
+      .addRoleOption(opt => opt.setName('role_4').setDescription('Additional role').setRequired(false))
+      .addRoleOption(opt => opt.setName('role_5').setDescription('Additional role').setRequired(false))
+      .addBooleanOption(opt => opt.setName('preview').setDescription('Preview only — do not queue').setRequired(false))
+    )
+    .addSubcommand(sub => sub
+      .setName('status')
+      .setDescription('Check campaign progress')
+      .addIntegerOption(opt => opt.setName('campaign_id').setDescription('Campaign ID').setRequired(true))
+    )
+    .addSubcommand(sub => sub
+      .setName('cancel')
+      .setDescription('Cancel a running campaign')
+      .addIntegerOption(opt => opt.setName('campaign_id').setDescription('Campaign ID').setRequired(true))
+    )
+    .addSubcommand(sub => sub
+      .setName('report')
+      .setDescription('Post campaign report')
+      .addIntegerOption(opt => opt.setName('campaign_id').setDescription('Campaign ID').setRequired(true))
+    )
+    .addSubcommand(sub => sub
+      .setName('workers')
+      .setDescription('List DM worker bots')
+    ),
   new SlashCommandBuilder().setName('activitycheck').setDescription('Owner-only activity checks')
     .addSubcommand(s => s.setName('role').setDescription('Assign inactive roles to members who did not react to a message')
       .addStringOption(opt => opt.setName('messageid').setDescription('Message ID to audit reactions from').setRequired(true))

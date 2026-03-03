@@ -10,6 +10,8 @@ const ROLE_CHANGE_FLUSH_MS = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_F
 const ROLE_CHANGE_BATCH_BASE = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_BATCH_BASE || '50', 10);
 const ROLE_CHANGE_BATCH_MAX = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_BATCH_MAX || '500', 10);
 const ROLE_CHANGE_RATE_WINDOW_MS = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_RATE_WINDOW_MS || '10000', 10);
+const ROLE_CHANGE_QUEUE_MAX = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_QUEUE_MAX || `${MAX_REQUEUE_SIZE}`, 10);
+const DROP_ON_REQUEUE_CAP = String(process.env.ANALYTICS_DROP_ON_REQUEUE_CAP || 'true').toLowerCase() !== 'false';
 
 function toDayKey(ts = Date.now()) {
   return new Date(ts).toISOString().slice(0, 10);
@@ -24,6 +26,35 @@ function dayKeyToTs(dayKey) {
   const parsed = Date.parse(`${dayKey}T00:00:00Z`);
   if (Number.isFinite(parsed)) return parsed;
   return toDayTs(Date.now());
+}
+
+function isSqliteBusyError(err) {
+  if (!err) return false;
+  const msg = String(err.message || err).toLowerCase();
+  return msg.includes('sqlite_busy')
+    || msg.includes('sqlite_locked')
+    || msg.includes('database is locked');
+}
+
+function capRoleChangeQueue(reason = 'unknown') {
+  if (!Number.isFinite(ROLE_CHANGE_QUEUE_MAX) || ROLE_CHANGE_QUEUE_MAX <= 0) return;
+  if (roleChangeQueue.length <= ROLE_CHANGE_QUEUE_MAX) return;
+
+  const dropCount = roleChangeQueue.length - ROLE_CHANGE_QUEUE_MAX;
+  roleChangeQueue = roleChangeQueue.slice(dropCount);
+  droppedRoleChangeEntries += dropCount;
+
+  if (roleChangeEventTimes.length > ROLE_CHANGE_QUEUE_MAX * 2) {
+    roleChangeEventTimes = roleChangeEventTimes.slice(-ROLE_CHANGE_QUEUE_MAX);
+  }
+
+  console.warn('Analytics role change queue capped', {
+    reason,
+    dropped: dropCount,
+    queued: roleChangeQueue.length,
+    droppedTotal: droppedRoleChangeEntries,
+    cap: ROLE_CHANGE_QUEUE_MAX
+  });
 }
 
 let channelCounts = new Map();
@@ -42,6 +73,8 @@ let roleChangeQueue = [];
 let roleChangeTimer = null;
 let roleChangeFlushInFlight = null;
 let roleChangeEventTimes = [];
+let droppedBufferedEntries = 0;
+let droppedRoleChangeEntries = 0;
 
 function scheduleFlush() {
   if (!FLUSH_INTERVAL_MS || FLUSH_INTERVAL_MS <= 0) return;
@@ -220,6 +253,7 @@ async function flushRoleChanges(opts = {}) {
       } catch (e) {
         console.error('Role change analytics flush failed:', e);
         roleChangeQueue = batch.concat(roleChangeQueue);
+        capRoleChangeQueue(isSqliteBusyError(e) ? 'flush-sqlite-busy' : 'flush-failed');
         break;
       }
       if (!forceAll) break;
@@ -398,16 +432,31 @@ async function flushAll() {
         console.error('Analytics rollback failed:', rollbackErr);
       }
       console.error('Analytics flush failed:', e);
-      mergeSnapshot(snapshot);
       const mergedPending = pendingWrites + snapshotEntries;
-      if (mergedPending > MAX_REQUEUE_SIZE) {
-        console.warn('Analytics pending queue capped after flush failure', {
+      const capped = mergedPending > MAX_REQUEUE_SIZE;
+
+      if (capped && DROP_ON_REQUEUE_CAP) {
+        droppedBufferedEntries += snapshotEntries;
+        pendingWrites = Math.min(MAX_REQUEUE_SIZE, pendingWrites);
+        console.warn('Analytics snapshot dropped after flush failure to prevent unbounded memory growth', {
           mergedPending,
           cap: MAX_REQUEUE_SIZE,
-          snapshotEntries
+          snapshotEntries,
+          droppedBufferedEntries,
+          sqliteBusy: isSqliteBusyError(e)
         });
+      } else {
+        mergeSnapshot(snapshot);
+        if (capped) {
+          console.warn('Analytics pending queue capped after flush failure', {
+            mergedPending,
+            cap: MAX_REQUEUE_SIZE,
+            snapshotEntries,
+            sqliteBusy: isSqliteBusyError(e)
+          });
+        }
+        pendingWrites = Math.min(MAX_REQUEUE_SIZE, mergedPending);
       }
-      pendingWrites = Math.min(MAX_REQUEUE_SIZE, mergedPending);
     }
   })();
 
@@ -431,6 +480,7 @@ async function recordRoleChange({ guildId, userId, roleId, roleName, action, tim
     action,
     timestamp
   });
+  capRoleChangeQueue('enqueue');
   roleChangeEventTimes.push(timestamp);
   pruneRoleChangeRateWindow(timestamp);
   if (roleChangeQueue.length >= getRoleChangeBatchSize(timestamp)) {

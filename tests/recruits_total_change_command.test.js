@@ -37,7 +37,7 @@ jest.mock('../src/lib/logger', () => ({
 
 const command = require('../src/commands/recruiting/recruits');
 
-function makeInteraction({ total = 5, subGroup = 'total', sub = 'change' } = {}) {
+function makeInteraction({ total = 5, points = 5, subGroup = 'total', sub = 'change' } = {}) {
   return {
     guild: {
       id: 'guild-1',
@@ -52,6 +52,7 @@ function makeInteraction({ total = 5, subGroup = 'total', sub = 'change' } = {})
       getSubcommand: jest.fn(() => sub),
       getUser: jest.fn(() => ({ id: 'target-1', tag: 'Target#0001' })),
       getInteger: jest.fn(() => total),
+      getNumber: jest.fn(() => points),
       getString: jest.fn(() => 'manual correction')
     },
     deferReply: jest.fn(async () => null),
@@ -126,6 +127,46 @@ describe('/recruits total change command', () => {
       expect.objectContaining({
         content: expect.stringContaining('weekly recruit total to **8**')
       })
+    );
+  });
+
+  test('updates recruiter points when using points change', async () => {
+    const interaction = makeInteraction({ subGroup: 'points', sub: 'change', points: 12.5 });
+    mockDbGet.mockResolvedValue({ points: 4.25 });
+
+    await command.execute(interaction);
+
+    expect(mockDbRun).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('INSERT OR IGNORE INTO recruiters'),
+      'guild-1',
+      'target-1'
+    );
+    expect(mockDbRun).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('UPDATE recruiters SET points'),
+      12.5,
+      'guild-1',
+      'target-1'
+    );
+    expect(mockRecomputeLeaderboards).toHaveBeenCalledTimes(1);
+    expect(mockRecomputeWarningsLeaderboard).toHaveBeenCalledTimes(1);
+    expect(interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('recruiter points to **12.5**')
+      })
+    );
+  });
+
+  test('validates points input for points change', async () => {
+    const interaction = makeInteraction({ subGroup: 'points', sub: 'change', points: -1 });
+
+    await command.execute(interaction);
+
+    expect(mockReplyError).toHaveBeenCalledWith(
+      interaction,
+      'Please provide a valid member and a non-negative points total.',
+      { flags: 64 }
     );
   });
 

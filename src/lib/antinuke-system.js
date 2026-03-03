@@ -83,13 +83,13 @@ class AntiNukeSystem {
       });
 
       if (guild && member) {
-        this.rollback.recordPreActionState(guild, rollbackActionType, member, meta);
+        await this.rollback.recordPreActionState(guild, rollbackActionType, member, meta);
       }
 
       await originalHandleRapidAction(guildId, userId, actionType, actions);
 
       if (guild && member) {
-        this.rollback.recordPostActionState(guild, rollbackActionType, member, meta);
+        await this.rollback.recordPostActionState(guild, rollbackActionType, member, meta);
       }
     };
 
@@ -104,13 +104,13 @@ class AntiNukeSystem {
       });
 
       if (guild && member) {
-        this.rollback.recordPreActionState(guild, 'beast_mode', member, meta);
+        await this.rollback.recordPreActionState(guild, 'beast_mode', member, meta);
       }
 
       await originalHandleBeastModeTrigger(guildId, userId, score);
 
       if (guild && member) {
-        this.rollback.recordPostActionState(guild, 'beast_mode', member, meta);
+        await this.rollback.recordPostActionState(guild, 'beast_mode', member, meta);
       }
     };
 
@@ -122,13 +122,13 @@ class AntiNukeSystem {
         eventFamily: 'emergency'
       });
       if (guild) {
-        this.rollback.recordPreActionState(guild, 'emergency_lockdown', null, meta);
+        await this.rollback.recordPreActionState(guild, 'emergency_lockdown', null, meta);
       }
 
       await originalHandleEmergencyMode(guildId);
 
       if (guild) {
-        this.rollback.recordPostActionState(guild, 'emergency_lockdown', null, meta);
+        await this.rollback.recordPostActionState(guild, 'emergency_lockdown', null, meta);
       }
     };
 
@@ -140,13 +140,13 @@ class AntiNukeSystem {
         eventFamily: 'mass_ban'
       });
       if (guild) {
-        this.rollback.recordPreActionState(guild, 'role_permissions', null, meta);
+        await this.rollback.recordPreActionState(guild, 'role_permissions', null, meta);
       }
 
       await originalHandleMassBanLockdown(guildId);
 
       if (guild) {
-        this.rollback.recordPostActionState(guild, 'role_permissions', null, meta);
+        await this.rollback.recordPostActionState(guild, 'role_permissions', null, meta);
       }
     };
 
