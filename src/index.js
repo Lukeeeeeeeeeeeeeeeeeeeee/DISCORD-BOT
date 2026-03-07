@@ -64,6 +64,8 @@ const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
 const SHUTDOWN_STEP_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_STEP_TIMEOUT_MS || '4000', 10);
 const SHUTDOWN_ANALYTICS_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANALYTICS_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
 const SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
+const BOOT_ENFORCED_MEMBER_ID = '1381692847018868778';
+const BOOT_ENFORCED_ROLE_ID = '1412808626136940580';
 
 function isInteractionAckError(error) {
   return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
@@ -192,6 +194,42 @@ async function configureAecsTelemetry(client, source = 'startup') {
   return telemetryProvision;
 }
 
+async function ensureBootRoleAssignment() {
+  const guildsToCheck = [];
+  if (GUILD_ID) {
+    const configuredGuild = client.guilds.cache.get(GUILD_ID) || await client.guilds.fetch(GUILD_ID).catch(() => null);
+    if (configuredGuild) guildsToCheck.push(configuredGuild);
+  } else {
+    guildsToCheck.push(...client.guilds.cache.values());
+  }
+
+  for (const guild of guildsToCheck) {
+    try {
+      const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(BOOT_ENFORCED_ROLE_ID) : null;
+      if (!role) continue;
+
+      const member = await guild.members.fetch(BOOT_ENFORCED_MEMBER_ID).catch(() => null);
+      if (!member) continue;
+      if (member.roles && member.roles.cache && member.roles.cache.has(BOOT_ENFORCED_ROLE_ID)) continue;
+
+      await member.roles.add(BOOT_ENFORCED_ROLE_ID, 'Boot enforcement: required role assignment');
+      logRuntimeEvent('info', 'startup.role.enforce', 'Enforced boot role assignment', {
+        details: {
+          guildId: guild.id,
+          memberId: BOOT_ENFORCED_MEMBER_ID,
+          roleId: BOOT_ENFORCED_ROLE_ID
+        }
+      });
+    } catch (err) {
+      logUnexpectedError('startup.role.enforce', err, {
+        guildId: guild && guild.id ? guild.id : null,
+        memberId: BOOT_ENFORCED_MEMBER_ID,
+        roleId: BOOT_ENFORCED_ROLE_ID
+      });
+    }
+  }
+}
+
 async function onReady() {
   if (_readyCalled) return;
   _readyCalled = true;
@@ -265,6 +303,8 @@ async function onReady() {
       console.error('Failed to require register-commands for auto-sync:', err);
     }
   }
+
+  await ensureBootRoleAssignment();
 }
 // Use clientReady to avoid v15 breaking changes (ready alias deprecation in v14).
 client.once('clientReady', onReady);
