@@ -217,6 +217,16 @@ async function createInviteTables() {
       }
     }
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS dm_cancellations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_worker_id TEXT DEFAULT 'all',
+        mode TEXT NOT NULL,
+        phrase TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `);
+
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_affinity_updated ON dm_user_affinity(updated_at)');
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user ON dm_worker_user_blocks(guild_id, user_id)');
 

@@ -11,23 +11,21 @@ const DEFAULT_STICKY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_MAX_MISC_STREAK = 4;
 
 /**
- * Compare workers by weight (desc) then oldest last_seen_at (asc = least-recently-used).
- * Higher weight = more preferred when all else is equal.
- */
-function compareLruWeighted(a, b) {
-    // Higher weight first
-    if ((b.weight || 1) !== (a.weight || 1)) return (b.weight || 1) - (a.weight || 1);
-    // Then oldest last_seen_at (least recently used for load distribution)
-    return (a.last_seen_at || 0) - (b.last_seen_at || 0);
-}
-
-/**
- * Pick the least-recently-used, highest-weight worker from candidates.
+ * Pick the highest-weight worker from candidates.
+ * If multiple workers share the highest weight, randomly pick to guarantee even load balancing.
  */
 function pickLeastRecentlyUsedWeighted(candidates) {
     if (!candidates || candidates.length === 0) return null;
-    const sorted = [...candidates].sort(compareLruWeighted);
-    return sorted[0].worker_id;
+    
+    // Find the maximum weight
+    const maxWeight = Math.max(...candidates.map(c => c.weight || 1));
+    
+    // Get all candidates with the max weight
+    const bestCandidates = candidates.filter(c => (c.weight || 1) === maxWeight);
+    
+    // Randomize to distribute load evenly instead of relying on heartbeat timestamps
+    const randomIndex = Math.floor(Math.random() * bestCandidates.length);
+    return bestCandidates[randomIndex].worker_id;
 }
 
 /**

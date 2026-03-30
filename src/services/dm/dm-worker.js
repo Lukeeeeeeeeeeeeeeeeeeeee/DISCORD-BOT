@@ -37,6 +37,8 @@ class DMWorker {
         this.running = false;
         this.pollTimer = null;
         this.heartbeatTimer = null;
+        this.cancellationTimer = null;
+        this.lastCancellationId = 0;
     }
 
     async heartbeat() {
@@ -262,6 +264,73 @@ class DMWorker {
         return processed;
     }
 
+    async executeCancellation(cancellation) {
+        // Fetch users this worker DMed in the last 24h
+        const attempts = await db.all(
+            `SELECT DISTINCT user_id FROM dm_delivery_attempts 
+             WHERE worker_id = ? AND result = 'sent' AND created_at >= ?`,
+            this.workerId, Date.now() - (24 * 60 * 60 * 1000)
+        );
+        
+        if (!attempts || attempts.length === 0) return;
+        
+        let deletedCount = 0;
+        for (const record of attempts) {
+            try {
+                const user = await this.client.users.fetch(record.user_id).catch(() => null);
+                if (!user) continue;
+                
+                const channel = user.dmChannel || await user.createDM().catch(() => null);
+                if (!channel) continue;
+                
+                const messages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
+                if (!messages) continue;
+                
+                for (const [, msg] of messages) {
+                    if (msg.author.id !== this.client.user.id) continue;
+                    
+                    let shouldDelete = false;
+                    if (cancellation.mode === 'all') {
+                        shouldDelete = true;
+                    } else if (cancellation.mode === 'recent') {
+                        shouldDelete = true;
+                    } else if (cancellation.mode === 'phrase' && cancellation.phrase) {
+                        if (msg.content.includes(cancellation.phrase)) shouldDelete = true;
+                    }
+                    
+                    if (shouldDelete) {
+                        try {
+                            await msg.delete();
+                            deletedCount++;
+                            if (cancellation.mode === 'recent') break; // only most recent
+                        } catch(e) {}
+                    }
+                }
+                await new Promise(r => setTimeout(r, 600)); // Ratelimit safety
+            } catch (err) {}
+        }
+        
+        void logRuntimeEvent('info', 'dm.cancellation', 'Processed message cancellation', {
+            workerId: this.workerId,
+            mode: cancellation.mode,
+            deletedCount
+        });
+    }
+
+    async pollCancellations() {
+        const rows = await db.all(
+            `SELECT * FROM dm_cancellations WHERE id > ? AND (target_worker_id = 'all' OR target_worker_id = ?)`,
+            this.lastCancellationId, this.workerId
+        );
+        
+        if (!rows || rows.length === 0) return;
+        
+        for (const row of rows) {
+            if (row.id > this.lastCancellationId) this.lastCancellationId = row.id;
+            await this.executeCancellation(row);
+        }
+    }
+
     start() {
         if (this.running) return;
         this.running = true;
@@ -291,12 +360,26 @@ class DMWorker {
             }
         };
         this.pollTimer = setTimeout(poll, POLL_MS);
+
+        const pollCancel = async () => {
+            if (!this.running) return;
+            try {
+                await this.pollCancellations();
+            } catch (err) {
+                void logUnexpectedError('dm.worker.cancelpoll', err, { workerId: this.workerId });
+            }
+            if (this.running) {
+                this.cancellationTimer = setTimeout(pollCancel, 10000);
+            }
+        };
+        this.cancellationTimer = setTimeout(pollCancel, 5000); // Start faster
     }
 
     async stop() {
         this.running = false;
         if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
         if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+        if (this.cancellationTimer) { clearTimeout(this.cancellationTimer); this.cancellationTimer = null; }
 
         try {
             await db.run(
