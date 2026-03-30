@@ -20,11 +20,11 @@ function normalizeMessage(message) {
   if (!message) return '';
   // Audit Hardening: Strip dynamic identifiers to prevent suppression-bypass (VULN-04 Regression)
   return String(message)
-    .replace(/\b\d{17,20}\b/g, '[ID]') // Snowflake IDs (refined boundary check)
-    .replace(/\b[a-fA-F0-9]{24}\b/g, '[HEX24]') // 24-char hex (e.g. MongoDB/Pterodactyl IDs)
-    .replace(/\b0x[a-fA-F0-9]+\b/g, '[HEX]') // Hex prefixed with 0x
-    .replace(/\d+/g, '[NUM]') // numbers
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '[UUID]') // UUIDs
+    .replace(/\b\d{17,20}\b/g, '[ID]') // Snowflake IDs
+    .replace(/\b[a-fA-F0-9]{24,128}\b/g, '[HEX_LONG]') // Long hex (IDs, Hashes)
+    .replace(/\b0x[a-fA-F0-9]+\b/g, '[HEX]') // 0x prefixed hex
+    .replace(/\b\d+\b/g, '[NUM]') // whole numbers only
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '[UUID]') 
     .trim();
 }
 

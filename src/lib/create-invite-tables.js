@@ -144,6 +144,36 @@ async function createInviteTables() {
       )
     `);
 
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS dm_user_affinity (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        preferred_worker_id TEXT,
+        preferred_worker_last_dm_at INTEGER,
+        consecutive_misc_count INTEGER DEFAULT 0,
+        war_worker_id TEXT,
+        war_last_dm_at INTEGER,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, user_id)
+      )
+    `);
+
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS dm_worker_user_blocks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        worker_id TEXT NOT NULL,
+        reason TEXT,
+        error_code TEXT,
+        created_at INTEGER NOT NULL,
+        UNIQUE(guild_id, user_id, worker_id)
+      )
+    `);
+
+    await db.run('CREATE INDEX IF NOT EXISTS idx_dm_affinity_updated ON dm_user_affinity(updated_at)');
+    await db.run('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user ON dm_worker_user_blocks(guild_id, user_id)');
+
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_campaigns_status ON dm_campaigns(status, report_posted, updated_at)');
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_targets_claim ON dm_campaign_targets(status, assigned_worker_id, next_attempt_at, batch_no, id)');
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_targets_campaign_status ON dm_campaign_targets(campaign_id, status)');
