@@ -200,6 +200,23 @@ async function createInviteTables() {
       }
     }
 
+    const dmTargetsColumns = [
+      { name: 'assigned_worker_id', type: 'TEXT' },
+      { name: 'claim_id', type: 'TEXT' },
+      { name: 'claim_expires_at', type: 'INTEGER' },
+      { name: 'last_worker_id', type: 'TEXT' },
+      { name: 'worker_switches', type: 'INTEGER DEFAULT 0' },
+      { name: 'next_attempt_at', type: 'INTEGER' },
+      { name: 'updated_at', type: 'INTEGER NOT NULL DEFAULT 0' }
+    ];
+
+    for (const col of dmTargetsColumns) {
+      if (!(await tableHasColumn('dm_campaign_targets', col.name))) {
+        console.log(`[Migration] Adding column ${col.name} to dm_campaign_targets...`);
+        await db.run(`ALTER TABLE dm_campaign_targets ADD COLUMN ${col.name} ${col.type}`);
+      }
+    }
+
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_affinity_updated ON dm_user_affinity(updated_at)');
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user ON dm_worker_user_blocks(guild_id, user_id)');
 

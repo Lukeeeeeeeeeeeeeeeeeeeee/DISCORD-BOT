@@ -269,7 +269,11 @@ class Dispatcher {
     } catch (error) {
       // AECS Hardening: Suppress 429 feedback loops definitively
       const errMsg = error && error.message ? String(error.message) : '';
-      if (errMsg.includes('429') || errMsg.includes('Too Many Requests')) {
+      const isRateLimit = errMsg.includes('429') || 
+                          errMsg.includes('Too Many Requests') || 
+                          (error && error.status === 429);
+      
+      if (isRateLimit) {
         return;
       }
       console.error('AECS telemetry webhook failed:', error);
