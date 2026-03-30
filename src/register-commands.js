@@ -122,6 +122,34 @@ const commands = [
   new SlashCommandBuilder().setName('info').setDescription('Info about a recruited member')
     .addUserOption(opt => opt.setName('member').setDescription('Member to check').setRequired(true)),
   new SlashCommandBuilder()
+    .setName('unsend')
+    .setDescription('Fleet-wide DM cancellation (delete sent messages)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(option =>
+      option.setName('mode')
+        .setDescription('What kind of messages to delete (within last 24h)')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Delete specific phrase', value: 'phrase' },
+          { name: 'Delete most recent message', value: 'recent' },
+          { name: 'Delete ALL messages in recent DMs', value: 'all' }
+        )
+    )
+    .addStringOption(option =>
+      option.setName('target')
+        .setDescription('Which bots should execute this? (default: all)')
+        .setRequired(false)
+        .addChoices(
+          { name: 'All Worker Bots + Main', value: 'all' },
+          { name: 'Main Bot Only', value: 'main' }
+        )
+    )
+    .addStringOption(option =>
+      option.setName('phrase')
+        .setDescription('The exact phrase to delete (required if mode is phrase)')
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
     .setName('dm')
     .setDescription('DM campaign system (admin only)')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
