@@ -920,30 +920,34 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     await inviteInitPromise;
     await client.login(token);
 
-    // Auto-spawn internal DM workers if configured
-    const dmWorkerTokens = (process.env.DM_WORKER_TOKENS || '').split(',').map(t => sanitizeEnvToken(t)).filter(Boolean);
-    if (dmWorkerTokens.length > 0 || process.env.ENABLE_INTERNAL_WORKER === 'true') {
-      // Start worker using main bot's token if enabled
-      if (process.env.ENABLE_INTERNAL_WORKER === 'true') {
-        logRuntimeEvent('info', 'startup.internalWorker.main', 'Starting internal DM worker on main bot account');
-        dmWorker.startWorker(client, 'main_internal', 'Main Internal Worker');
-      }
+    // ── DM Worker Spawning ──────────────────────────────────────────────────
+    const dmWorkerTokens = (process.env.DM_WORKER_TOKENS || '')
+      .split(',')
+      .map(t => sanitizeEnvToken(t))
+      .filter(Boolean);
 
-      // Start additional worker bots for each provided token
-      for (let i = 0; i < dmWorkerTokens.length; i++) {
-        const workerToken = dmWorkerTokens[i];
-        const workerId = `auto_worker_${i + 1}`;
-        const workerClient = new Client({ intents });
-        
-        workerClient.login(workerToken).then(() => {
-          logRuntimeEvent('info', 'startup.internalWorker.extra', `Starting internal DM worker bot #${i + 1}`, { workerId });
-          dmWorker.startWorker(workerClient, workerId, `Auto Worker ${i + 1}`);
-        }).catch(err => {
-          logUnexpectedError('startup.internalWorker.extra', err, { workerId });
-          console.error(`FAILED to start auto-worker #${i + 1}:`, err.message);
-        });
-      }
+    // 1. Optional: Start worker on the main bot account
+    if (process.env.ENABLE_INTERNAL_WORKER === 'true') {
+      logRuntimeEvent('info', 'startup.internalWorker.main', 'Starting DM worker on main bot account');
+      dmWorker.startWorker(client, 'main', client.user.username || 'Main Bot');
     }
+
+    // 2. Start additional worker bots for each provided token
+    for (let i = 0; i < dmWorkerTokens.length; i++) {
+      const workerToken = dmWorkerTokens[i];
+      const workerId = `worker_node_${i + 1}`;
+      const workerClient = new Client({ intents });
+
+      workerClient.login(workerToken).then(() => {
+        const displayName = workerClient.user ? workerClient.user.username : `Worker ${i + 1}`;
+        logRuntimeEvent('info', 'startup.worker.spawned', `Spawned worker bot: ${displayName}`, { workerId });
+        dmWorker.startWorker(workerClient, workerId, displayName);
+      }).catch(err => {
+        logUnexpectedError('startup.worker.spawned.failure', err, { workerId });
+        console.error(`FAILED to start worker bot #${i + 1}:`, err.message);
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
   } catch (err) {
     if (err && typeof err.message === 'string' && err.message.toLowerCase().includes('database')) {
       console.error('FATAL: Database initialization failed. Fix migrations/schema before starting the bot.', err);

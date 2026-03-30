@@ -280,7 +280,10 @@ class DMWorker {
             try {
                 await this.pollOnce();
             } catch (err) {
-                void logUnexpectedError('dm.worker.poll', err, { workerId: this.workerId });
+                void logUnexpectedError('dm.worker.poll', err, { 
+                    workerId: this.workerId,
+                    errorMessage: err && err.message ? err.message : String(err)
+                });
             }
             if (this.running) {
                 this.pollTimer = setTimeout(poll, POLL_MS);

@@ -21,8 +21,9 @@ function normalizeMessage(message) {
   // Audit Hardening: Strip dynamic identifiers to prevent suppression-bypass (VULN-04 Regression)
   return String(message)
     .replace(/\b\d{17,20}\b/g, '[ID]') // Snowflake IDs (refined boundary check)
-    .replace(/0x[a-fA-F0-9]+/g, '[HEX]') // Fix: 0-0 typo corrected to 0-9
-    .replace(/\b\d+\b/g, '[NUM]') // Plain numbers
+    .replace(/\b[a-fA-F0-9]{24}\b/g, '[HEX24]') // 24-char hex (e.g. MongoDB/Pterodactyl IDs)
+    .replace(/\b0x[a-fA-F0-9]+\b/g, '[HEX]') // Hex prefixed with 0x
+    .replace(/\d+/g, '[NUM]') // numbers
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '[UUID]') // UUIDs
     .trim();
 }
