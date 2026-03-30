@@ -207,7 +207,8 @@ async function handleWorkers(interaction) {
   }
 
   const lines = workers.map(w => {
-    const statusIcon = w.status === 'online' ? '🟢' : '🔴';
+    const isOnline = w.last_seen_at && (Date.now() - w.last_seen_at < 60000);
+    const statusIcon = isOnline ? '🟢' : '🔴';
     const enabledIcon = w.enabled ? '✅' : '❌';
     const lastSeen = w.last_seen_at ? `<t:${Math.floor(w.last_seen_at / 1000)}:R>` : 'never';
     return `${statusIcon} \`${w.worker_id}\` ${w.display_name || ''} — ${enabledIcon} Enabled | Weight: ${w.weight || 1} | Last seen: ${lastSeen}`;
