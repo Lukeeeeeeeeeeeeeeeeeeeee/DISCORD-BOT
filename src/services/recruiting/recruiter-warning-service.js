@@ -162,4 +162,41 @@ async function handleWarningsRevoke({ interaction, db, guildId }) {
   }
 }
 
-module.exports = { handleWarn, handleWarningsRevoke };
+async function handleWarningsResetAll({ interaction, db, guildId }) {
+  if (!hasAdminOrStaffPermissions(interaction.member)) return replyError(interaction, 'Admin/Staff only.');
+  const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+  await defer();
+
+  const confirm = interaction.options.getString('confirm');
+  if (confirm !== 'CONFIRM') {
+    return respond({ content: 'Please type **CONFIRM** as the confirmation parameter to reset ALL warnings.' });
+  }
+
+  try {
+    await withTransaction(db, async (tx) => {
+      // Mark all warnings as revoked
+      await tx.run('UPDATE warnings SET revoked = 1 WHERE guild_id = ?', guildId);
+      // Reset warnings count for all recruiters
+      await tx.run('UPDATE recruiters SET warnings = 0 WHERE guild_id = ?', guildId);
+    });
+
+    try {
+      await scheduler.recomputeLeaderboards(db, interaction.guild);
+      await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
+    } catch (e) {
+      reportWarningServiceError('service.recruiter.warning.resetAll.recomputeLeaderboards', e, { guildId });
+    }
+
+    void logRuntimeEvent('info', 'service.recruiter.warning.resetAll', 'All warnings reset', {
+      by: interaction.user.id,
+      guildId
+    });
+
+    return respond({ content: 'Successfully reset ALL recruiter warnings for this guild.' });
+  } catch (e) {
+    reportWarningServiceError('service.recruiter.warning.resetAll', e, { guildId });
+    return respond({ content: 'Failed to reset all warnings.' });
+  }
+}
+
+module.exports = { handleWarn, handleWarningsRevoke, handleWarningsResetAll };

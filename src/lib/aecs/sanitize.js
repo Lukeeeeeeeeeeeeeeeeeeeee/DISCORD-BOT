@@ -1,10 +1,16 @@
+const SECRET_RE = /[a-zA-Z0-9_-]{24,32}\.[a-zA-Z0-9_-]{6,12}\.[a-zA-Z0-9_-]{27,45}|[a-zA-Z0-9_-]{70,}/g;
+const BLACKLISTED_KEYS = new Set(['token', 'secret', 'password', 'key', 'auth', 'authorization', 'api_key', 'apikey']);
+
 function isPlainObject(value) {
   if (!value || typeof value !== 'object') return false;
   return Object.getPrototypeOf(value) === Object.prototype;
 }
 
 function sanitizeString(value, maxLength = 4000) {
-  const text = String(value);
+  let text = String(value);
+  // Mask potential tokens/secrets
+  text = text.replace(SECRET_RE, '[SCRUBBED]');
+  
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength)}...[truncated]`;
 }
@@ -33,11 +39,24 @@ function sanitizePrimitive(value) {
   return '[Object]';
 }
 
+function shouldSkipKey(key) {
+  if (!key) return true;
+  const lower = key.toLowerCase();
+  for (const black of BLACKLISTED_KEYS) {
+    if (lower.includes(black)) return true;
+  }
+  return false;
+}
+
 function sanitizeBySchema(meta, schema) {
   if (!isPlainObject(schema)) return {};
   const input = isPlainObject(meta) ? meta : {};
   const output = {};
   for (const key of Object.keys(schema)) {
+    if (shouldSkipKey(key)) {
+      output[key] = '[REDACTED]';
+      continue;
+    }
     const fieldType = schema[key];
     const value = input[key];
     if (fieldType === 'string') {
@@ -78,6 +97,10 @@ function sanitizeBySafeKeys(meta, safeMetaKeys) {
   const keys = Array.isArray(safeMetaKeys) ? safeMetaKeys : [];
   for (const key of keys) {
     if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+    if (shouldSkipKey(key)) {
+      output[key] = '[REDACTED]';
+      continue;
+    }
     output[key] = sanitizePrimitive(input[key]);
   }
   return output;
@@ -94,6 +117,10 @@ function sanitizeMeta(meta, definition) {
   const output = {};
   const keys = Object.keys(meta).slice(0, 20);
   for (const key of keys) {
+    if (shouldSkipKey(key)) {
+      output[key] = '[REDACTED]';
+      continue;
+    }
     output[key] = sanitizePrimitive(meta[key]);
   }
   return output;
@@ -114,6 +141,14 @@ function clampImpact(value) {
   if (n > 100) return 100;
   return Math.round(n);
 }
+
+module.exports = {
+  sanitizeMeta,
+  sanitizePrimitive,
+  normalizeSeverity,
+  clampImpact,
+  isPlainObject
+};
 
 module.exports = {
   sanitizeMeta,

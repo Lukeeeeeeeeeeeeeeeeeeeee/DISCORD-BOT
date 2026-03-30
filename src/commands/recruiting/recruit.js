@@ -533,6 +533,16 @@ module.exports = {
       }
 
       try {
+        // Pre-flight hierarchy check (VULN-11)
+        const botMember = await interaction.guild.members.fetchMe();
+        const rolesToVerify = [ROLE_IDS.ROOKIE, chosenRole];
+        for (const roleId of rolesToVerify) {
+          const role = interaction.guild.roles.cache.get(roleId);
+          if (role && role.comparePositions(botMember.roles.highest) >= 0) {
+            return replyError(interaction, `I cannot assign the **${role.name}** role because it is higher than (or equal to) my own highest role. Please move my role higher in the server settings.`);
+          }
+        }
+
         // remove unverified if present
         if (recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)) await recruitedGuildMember.roles.remove(ROLE_IDS.UNVERIFIED);
         // ensure only one onboarding team role remains on the member
@@ -638,36 +648,21 @@ module.exports = {
           reportRecruitError('command.recruit.recomputeLeaderboards', e);
         }
 
-        let dmFailure = null;
+        // Queue DM instead of direct send (VULN-10)
         try {
-          await recruitedGuildMember.send({
-            content: buildRecruitWelcomeMessage(teamName),
-            allowedMentions: { parse: [] }
-          });
+          await db.run(
+            'INSERT INTO dm_queue (guild_id, user_id, message, created_at) VALUES (?, ?, ?, ?)',
+            guildId,
+            member.id,
+            buildRecruitWelcomeMessage(teamName),
+            Date.now()
+          );
         } catch (err) {
-          const isBlocked = isExpectedWelcomeDmFailure(err);
-          dmFailure = isBlocked ? 'blocked' : 'error';
-          const tag = member && (member.tag || member.username) ? (member.tag || member.username) : member.id;
-          if (isBlocked) {
-            void logRuntimeEvent('warn', 'command.recruit.welcomeDm.skipped', 'Rookie welcome DM skipped (DM blocked/closed)', {
-              command: 'recruit',
-              guildId,
-              recruitedId: member.id,
-              tag
-            });
-          } else {
-            reportRecruitError('command.recruit.welcomeDm.send', err);
-          }
+          reportRecruitError('command.recruit.queueWelcomeDm', err);
         }
 
-        const dmNote = dmFailure === 'blocked'
-          ? ' Note: I could not DM them (their DMs are closed).'
-          : dmFailure === 'error'
-            ? ' Note: I could not DM them due to an unexpected error.'
-            : '';
-
         const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';
-        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}.${dmNote}` });
+        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}. Their welcome DM has been queued for delivery.` });
       } catch (err) {
         const dispatchResult = await logUnexpectedError('command.recruit.execute.inner', err, {
           command: 'recruit',

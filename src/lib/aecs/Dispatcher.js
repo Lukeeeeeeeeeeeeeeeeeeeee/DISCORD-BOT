@@ -16,8 +16,25 @@ function createSupportId(traceId) {
   return out;
 }
 
-function createFingerprint(scope, code) {
-  return crypto.createHash('md5').update(`${scope || 'global'}|${code}`).digest('hex');
+function normalizeMessage(message) {
+  if (!message) return '';
+  // Audit Hardening: Strip dynamic identifiers to prevent suppression-bypass (VULN-04 Regression)
+  return String(message)
+    .replace(/\b\d{17,20}\b/g, '[ID]') // Snowflake IDs (refined boundary check)
+    .replace(/0x[a-fA-F0-9]+/g, '[HEX]') // Fix: 0-0 typo corrected to 0-9
+    .replace(/\b\d+\b/g, '[NUM]') // Plain numbers
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '[UUID]') // UUIDs
+    .trim();
+}
+
+/**
+ * Creates a unique fingerprint for an error based on scope, code, and normalized message (FIX: VULN-04)
+ */
+function createFingerprint(scope, code, message) {
+  const base = `${scope || 'global'}|${code}`;
+  const normalized = normalizeMessage(message);
+  const salt = normalized ? `|${crypto.createHash('md5').update(normalized).digest('hex').slice(0, 8)}` : '';
+  return crypto.createHash('md5').update(`${base}${salt}`).digest('hex');
 }
 
 function hashIdFromFingerprint(fingerprint) {
@@ -186,8 +203,8 @@ class Dispatcher {
           suppressed: state.suppressed,
           windowMs: this.suppressionWindowMs
         },
-        hash: createFingerprint('aecs.circuit_breaker', state.code),
-        hashId: hashIdFromFingerprint(createFingerprint('aecs.circuit_breaker', state.code))
+        hash: createFingerprint('aecs.circuit_breaker', state.code, state.message),
+        hashId: hashIdFromFingerprint(createFingerprint('aecs.circuit_breaker', state.code, state.message))
       };
 
       if (this.vault) this.vault.queue(summaryRecord);
@@ -269,11 +286,10 @@ class Dispatcher {
     let severity = normalizeSeverity(definition && definition.severity ? definition.severity : 'ERROR');
     if (impact >= this.fatalImpactThreshold) severity = 'FATAL';
 
-    const supportId = createSupportId(traceContext.traceId || codexError.code);
-    const fingerprint = createFingerprint(scope, codexError.code);
-    const hashId = hashIdFromFingerprint(fingerprint);
-
     const message = codexError.message || (definition && definition.title) || 'Codex error';
+    const supportId = createSupportId(traceContext.traceId || codexError.code);
+    const fingerprint = createFingerprint(scope, codexError.code, message);
+    const hashId = hashIdFromFingerprint(fingerprint);
 
     const record = {
       version: definition && definition.version ? definition.version : '6.1.0',

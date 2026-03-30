@@ -1,14 +1,48 @@
 const { AECS, CodexError } = require('./aecs');
 
+const SECRET_KEYS = new Set(['token', 'secret', 'password', 'key', 'auth', 'authorization', 'api_key', 'apikey']);
+
+function stripSecrets(obj, depth = 0) {
+  if (depth > 5 || !obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(item => stripSecrets(item, depth + 1));
+  
+  const sanitized = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const lowerKey = key.toLowerCase();
+    let isSecret = false;
+    for (const secretKey of SECRET_KEYS) {
+      const regex = new RegExp(`\\b${secretKey}\\b`, 'i');
+      if (regex.test(lowerKey)) {
+        isSecret = true;
+        break;
+      }
+    }
+    
+    if (isSecret) {
+      sanitized[key] = '[REDACTED]';
+    } else if (typeof value === 'object' && value !== null) {
+      sanitized[key] = stripSecrets(value, depth + 1);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+}
+
 function formatErrorForLog(error) {
   if (!error) return { message: 'Unknown error' };
   if (error instanceof Error) {
-    return {
+    const base = {
       name: error.name,
       message: error.message,
       stack: error.stack,
       code: error.code
     };
+    // Copy any extra properties but strip secrets
+    for (const key of Object.keys(error)) {
+      if (!(key in base)) base[key] = error[key];
+    }
+    return stripSecrets(base);
   }
   return { message: String(error) };
 }
@@ -33,11 +67,18 @@ function toMeta(scope, error, meta) {
     payload.name = error.name;
     payload.message = error.message;
     if (error.code !== undefined) payload.errorCode = String(error.code);
+    
+    // Include extra error properties if safe
+    for (const key of Object.keys(error)) {
+       if (!['name', 'message', 'stack', 'code'].includes(key)) {
+         payload[`err_${key}`] = error[key];
+       }
+    }
   } else if (error !== undefined && error !== null) {
     payload.message = String(error);
   }
 
-  return payload;
+  return stripSecrets(payload);
 }
 
 function logUnexpectedError(scope, error, meta = {}) {
@@ -75,12 +116,12 @@ function normalizeRuntimeEventLevel(level, scope, message) {
 
 function logRuntimeEvent(level, scope, message, meta = {}) {
   const normalizedLevel = normalizeRuntimeEventLevel(level, scope, message);
-  const payload = {
+  const payload = stripSecrets({
     scope,
     message,
     level: normalizedLevel,
     ...(meta || {})
-  };
+  });
 
   const code = normalizedLevel === 'error' ? 'SYS-500' : (normalizedLevel === 'warn' ? 'SYS-210' : 'SYS-110');
   const codex = new CodexError(code, payload, { message: String(message || 'Runtime event') });
@@ -93,7 +134,7 @@ function logRuntimeEvent(level, scope, message, meta = {}) {
       scope,
       message,
       level: normalizedLevel,
-      meta,
+      meta: stripSecrets(meta),
       dispatchError: formatErrorForLog(dispatchError)
     };
     if (normalizedLevel === 'error') {

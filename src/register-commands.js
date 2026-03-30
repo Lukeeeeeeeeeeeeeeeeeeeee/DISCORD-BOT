@@ -67,7 +67,7 @@ const commands = [
     .addSubcommand(s => s.setName('info').setDescription('Show recruiter info').addUserOption(o => o.setName('member').setDescription('Recruiter to query')))
     .addSubcommand(s => s.setName('buy').setDescription('Buy recruiter items')
       .addStringOption(o => o.setName('item').setDescription('Item to purchase').setRequired(true)
-        .addChoices(...BUY_ITEM_CHOICES)))
+        .addChoices(...BUY_ITEM_CHOICES.slice(0, 25))))
     .addSubcommand(s => s.setName('multiplier-list').setDescription('List available multipliers'))
     .addSubcommand(s => s.setName('multiplier-view').setDescription('View active multiplier').addUserOption(o => o.setName('member').setDescription('Recruiter to query')))
     .addSubcommand(s => s.setName('multiplier-active').setDescription('Show active multipliers'))
@@ -82,9 +82,18 @@ const commands = [
       .addStringOption(o => o.setName('expiry_date').setDescription('Exact expiry date in YYYY-MM-DD (optional)').setRequired(false))
       .addStringOption(o => o.setName('label').setDescription('Optional event label (for tracking/reporting)').setRequired(false)))
     .addSubcommand(s => s.setName('multiplier-reset').setDescription('Admin: reset a multiplier')
-      .addUserOption(o => o.setName('member').setDescription('Recruiter to reset').setRequired(true)))
-    .addSubcommand(s => s.setName('warn').setDescription('Admin: issue a warning to a recruiter').addUserOption(o => o.setName('member').setDescription('Recruiter to warn').setRequired(true)).addStringOption(o => o.setName('note').setDescription('Warning note (optional)')).addIntegerOption(o => o.setName('expires_days').setDescription('Expire after N days (optional, admin only)').setRequired(false)))
-    .addSubcommand(s => s.setName('warnings-revoke').setDescription('Admin: revoke warnings for a recruiter').addUserOption(o => o.setName('member').setDescription('Recruiter to revoke warnings for').setRequired(true)).addIntegerOption(o => o.setName('warning_id').setDescription('Specific warning id to revoke (optional)'))),
+      .addUserOption(o => o.setName('member').setDescription('Recruiter to reset').setRequired(true))),
+  new SlashCommandBuilder().setName('warning').setDescription('Manage recruiter warnings (Admin only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('warn').setDescription('Issue a warning to a recruiter')
+      .addUserOption(o => o.setName('member').setDescription('Recruiter to warn').setRequired(true))
+      .addStringOption(o => o.setName('note').setDescription('Warning note (optional)'))
+      .addIntegerOption(o => o.setName('expires_days').setDescription('Expire after N days (optional)').setRequired(false)))
+    .addSubcommand(s => s.setName('revoke').setDescription('Revoke warnings for a recruiter')
+      .addUserOption(o => o.setName('member').setDescription('Recruiter to revoke warnings for').setRequired(true))
+      .addIntegerOption(o => o.setName('warning_id').setDescription('Specific warning id to revoke (optional)')))
+    .addSubcommand(s => s.setName('reset-all').setDescription('Reset ALL recruiter warnings in the guild (high risk)')
+      .addStringOption(o => o.setName('confirm').setDescription('Type CONFIRM to proceed').setRequired(true))),
   new SlashCommandBuilder().setName('revoke-recruit').setDescription('Revoke a recruit and update invite channels (admin only)')
     .addUserOption(opt => opt.setName('member').setDescription('Member to revoke recruit status from').setRequired(true))
     .addStringOption(opt => opt.setName('reason').setDescription('Reason for revocation').setRequired(false)),

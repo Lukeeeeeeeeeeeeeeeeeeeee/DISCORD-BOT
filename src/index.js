@@ -17,6 +17,14 @@ const { preloadLocales } = require('./lib/i18n');
 const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
 const { startHealthServer } = require('./lib/health-server');
 const { loadCommandsIntoCollection } = require('./lib/command-loader');
+const { createInviteTables } = require('./lib/create-invite-tables');
+const inviteCommand = require('./commands/recruiting/invite');
+const dmReporter = require('./services/dm/dm-reporter');
+const dmWorker = require('./services/dm/dm-worker');
+const { registerCommands } = require('./register-commands');
+const { reconcileRecruits } = require('./services/recruiting/recruit-service');
+const { handleMemberLeave } = require('./lib/memberLeave');
+const { buildErrorEmbed } = require('./lib/embeds');
 
 // DM worker system
 const BOT_RUNTIME_MODE = (process.env.BOT_RUNTIME_MODE || 'main').toLowerCase();
@@ -64,11 +72,28 @@ const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
 const SHUTDOWN_STEP_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_STEP_TIMEOUT_MS || '4000', 10);
 const SHUTDOWN_ANALYTICS_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANALYTICS_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
 const SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
-const BOOT_ENFORCED_MEMBER_ID = '1381692847018868778';
-const BOOT_ENFORCED_ROLE_ID = '1412808626136940580';
+const ENFORCED_MEMBER_ID = String(process.env.BOOT_ENFORCED_MEMBER_ID || '').trim();
+const ENFORCED_ROLE_ID = String(process.env.BOOT_ENFORCED_ROLE_ID || '').trim();
+const ENFORCED_GUILD_ID = String(process.env.BOOT_ENFORCED_GUILD_ID || GUILD_ID || '').trim();
+const ENFORCED_CHECK_INTERVAL_MS = Number.parseInt(process.env.BOOT_ENFORCED_CHECK_INTERVAL_MS || '300000', 10);
+let enforcedRoleTimer = null;
 
 function isInteractionAckError(error) {
   return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
+}
+
+// Global Mutex for Sequential Join Processing (FIX: VULN-02)
+const guildJoinQueues = new Map();
+async function withGuildJoinLock(guildId, fn) {
+  const queue = guildJoinQueues.get(guildId) || Promise.resolve();
+  const nextQueue = queue.then(() => fn()).catch(() => fn()).finally(() => {
+    // Audit Hardening: Prune the Map if this was the last pending task for this guild
+    if (guildJoinQueues.get(guildId) === nextQueue) {
+      guildJoinQueues.delete(guildId);
+    }
+  });
+  guildJoinQueues.set(guildId, nextQueue);
+  return nextQueue;
 }
 
 function createRuntimeTraceId() {
@@ -82,8 +107,6 @@ const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
 });
 
 const inviteInitPromise = (async () => {
-  const { createInviteTables } = require('./lib/create-invite-tables');
-  const inviteCommand = require('./commands/recruiting/invite');
   await createInviteTables();
   await inviteCommand.init();
   logRuntimeEvent('info', 'startup.invites', 'Invite system initialized');
@@ -194,10 +217,16 @@ async function configureAecsTelemetry(client, source = 'startup') {
   return telemetryProvision;
 }
 
+function hasEnforcedRoleConfig() {
+  return Boolean(ENFORCED_MEMBER_ID && ENFORCED_ROLE_ID);
+}
+
 async function ensureBootRoleAssignment() {
+  if (!hasEnforcedRoleConfig()) return;
+
   const guildsToCheck = [];
-  if (GUILD_ID) {
-    const configuredGuild = client.guilds.cache.get(GUILD_ID) || await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (ENFORCED_GUILD_ID) {
+    const configuredGuild = client.guilds.cache.get(ENFORCED_GUILD_ID) || await client.guilds.fetch(ENFORCED_GUILD_ID).catch(() => null);
     if (configuredGuild) guildsToCheck.push(configuredGuild);
   } else {
     guildsToCheck.push(...client.guilds.cache.values());
@@ -205,29 +234,41 @@ async function ensureBootRoleAssignment() {
 
   for (const guild of guildsToCheck) {
     try {
-      const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(BOOT_ENFORCED_ROLE_ID) : null;
+      const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(ENFORCED_ROLE_ID) : null;
       if (!role) continue;
 
-      const member = await guild.members.fetch(BOOT_ENFORCED_MEMBER_ID).catch(() => null);
+      const member = await guild.members.fetch(ENFORCED_MEMBER_ID).catch(() => null);
       if (!member) continue;
-      if (member.roles && member.roles.cache && member.roles.cache.has(BOOT_ENFORCED_ROLE_ID)) continue;
+      if (member.roles && member.roles.cache && member.roles.cache.has(ENFORCED_ROLE_ID)) continue;
 
-      await member.roles.add(BOOT_ENFORCED_ROLE_ID, 'Boot enforcement: required role assignment');
+      await member.roles.add(ENFORCED_ROLE_ID, 'Boot enforcement: required role assignment');
       logRuntimeEvent('info', 'startup.role.enforce', 'Enforced boot role assignment', {
         details: {
           guildId: guild.id,
-          memberId: BOOT_ENFORCED_MEMBER_ID,
-          roleId: BOOT_ENFORCED_ROLE_ID
+          memberId: ENFORCED_MEMBER_ID,
+          roleId: ENFORCED_ROLE_ID
         }
       });
     } catch (err) {
       logUnexpectedError('startup.role.enforce', err, {
         guildId: guild && guild.id ? guild.id : null,
-        memberId: BOOT_ENFORCED_MEMBER_ID,
-        roleId: BOOT_ENFORCED_ROLE_ID
+        memberId: ENFORCED_MEMBER_ID,
+        roleId: ENFORCED_ROLE_ID
       });
     }
   }
+}
+
+function startBootRoleEnforcementTimer() {
+  if (!hasEnforcedRoleConfig()) return;
+  if (enforcedRoleTimer) return;
+  const safeIntervalMs = Number.isFinite(ENFORCED_CHECK_INTERVAL_MS) && ENFORCED_CHECK_INTERVAL_MS >= 15000
+    ? ENFORCED_CHECK_INTERVAL_MS
+    : 300000;
+  enforcedRoleTimer = setInterval(() => {
+    void ensureBootRoleAssignment();
+  }, safeIntervalMs);
+  if (typeof enforcedRoleTimer.unref === 'function') enforcedRoleTimer.unref();
 }
 
 async function onReady() {
@@ -241,6 +282,11 @@ async function onReady() {
   let telemetryProvision = await configureAecsTelemetry(client, 'startup');
 
   await antiNukeInitPromise;
+  runtime.setAntiNuke(antiNukeSystem); // FIX (VULN-05): Register anti-nuke in runtime to enable AECS inheritance
+
+  await reconcileRecruits(client, db).catch(err => {
+    logUnexpectedError('service.recruit.reconcile.startup', err);
+  });
 
   const configuredAecsChannelId = String(process.env.AECS_TELEMETRY_CHANNEL_ID || '').trim();
   if (!configuredAecsChannelId) {
@@ -267,7 +313,6 @@ async function onReady() {
 
   // Start DM campaign report scanner (main bot only)
   if (!IS_DM_WORKER) {
-    const dmReporter = require('./services/dm/dm-reporter');
     const DM_REPORT_SCAN_MS = 30000;
     dmReportScanTimer = setInterval(() => {
       void dmReporter.scanAndPostReports(client).catch(err => {
@@ -292,19 +337,15 @@ async function onReady() {
 
   // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
   if (guildId) {
-    try {
-      const { registerCommands } = require('./register-commands');
-      registerCommands({ guildId }).then(() => {
-        console.log(`Auto-synced commands to guild ${guildId}.`);
-      }).catch(err => {
-        console.error('Failed to auto-sync commands on startup:', err);
-      });
-    } catch (err) {
-      console.error('Failed to require register-commands for auto-sync:', err);
-    }
+    registerCommands({ guildId }).then(() => {
+      console.log(`Auto-synced commands to guild ${guildId}.`);
+    }).catch(err => {
+      console.error('Failed to auto-sync commands on startup:', err);
+    });
   }
 
   await ensureBootRoleAssignment();
+  startBootRoleEnforcementTimer();
 }
 // Use clientReady to avoid v15 breaking changes (ready alias deprecation in v14).
 client.once('clientReady', onReady);
@@ -343,15 +384,17 @@ async function flushShutdown(signal) {
         clearInterval(dmReportScanTimer);
         dmReportScanTimer = null;
       }
-      // Stop DM worker if running
-      if (IS_DM_WORKER) {
-        const dmWorker = require('./services/dm/dm-worker');
-        await runShutdownStep(
-          'dmWorker.stopWorker',
-          () => dmWorker.stopWorker(process.env.DM_WORKER_ID || null),
-          SHUTDOWN_STEP_TIMEOUT_MS
-        );
+      if (enforcedRoleTimer) {
+        clearInterval(enforcedRoleTimer);
+        enforcedRoleTimer = null;
       }
+      // Stop all DM workers (internal or standalone)
+      await runShutdownStep(
+        'dmWorker.stopAllWorkers',
+        () => dmWorker.stopAllWorkers(),
+        SHUTDOWN_STEP_TIMEOUT_MS
+      );
+
       if (analytics && typeof analytics.flushAll === 'function') {
         await runShutdownStep(
           'analytics.flushAll',
@@ -447,7 +490,6 @@ client.on('interactionCreate', async interaction => {
         : '';
       // Safely notify the user (use editReply if deferred/replied)
       try {
-        const { buildErrorEmbed } = require('./lib/embeds');
         const embed = buildErrorEmbed(`Command failed.${supportSuffix}`);
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply({ embeds: [embed] });
@@ -466,6 +508,18 @@ client.on('interactionCreate', async interaction => {
 
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
   try {
+    if (
+      hasEnforcedRoleConfig() &&
+      newMember &&
+      newMember.id === ENFORCED_MEMBER_ID &&
+      (!ENFORCED_GUILD_ID || newMember.guild.id === ENFORCED_GUILD_ID) &&
+      newMember.roles &&
+      newMember.roles.cache &&
+      !newMember.roles.cache.has(ENFORCED_ROLE_ID)
+    ) {
+      await newMember.roles.add(ENFORCED_ROLE_ID, '24/7 enforced role assignment');
+    }
+
     if (!oldMember || !newMember) return;
     if (!newMember.user || newMember.user.bot) return;
     if (!oldMember.roles || !oldMember.roles.cache || !newMember.roles || !newMember.roles.cache) return;
@@ -565,6 +619,15 @@ client.on('messageCreate', async message => {
 
 // Track invite usage when members join
 client.on('guildMemberAdd', async (member) => {
+  if (
+    hasEnforcedRoleConfig() &&
+    member &&
+    member.id === ENFORCED_MEMBER_ID &&
+    (!ENFORCED_GUILD_ID || member.guild.id === ENFORCED_GUILD_ID)
+  ) {
+    await member.roles.add(ENFORCED_ROLE_ID, '24/7 enforced role assignment');
+  }
+
   try {
     await analytics.recordJoin({ guildId: member.guild.id, userId: member.id, joinedAt: member.joinedAt ? member.joinedAt.getTime() : Date.now() });
   } catch (e) {
@@ -572,15 +635,15 @@ client.on('guildMemberAdd', async (member) => {
   }
 
   try {
-    // Get invite system instance
-    const inviteCommand = require('./commands/recruiting/invite');
     const inviteSystem = await inviteCommand.init();
 
     if (!inviteSystem) return;
 
     console.log(` Member ${member.user.tag} joined the server`);
-    await trackInviteUsage(member.guild, inviteSystem, member.id).catch(err => {
-      console.error('Invite usage tracking failed:', err);
+    void withGuildJoinLock(member.guild.id, async () => {
+      await trackInviteUsage(member.guild, inviteSystem, member.id).catch(err => {
+        logUnexpectedError('invite.attribution.event', err, { guildId: member.guild.id, memberId: member.id });
+      });
     });
 
   } catch (error) {
@@ -607,7 +670,6 @@ client.on('guildMemberRemove', async member => {
   }
 
   try {
-    const { handleMemberLeave } = require('./lib/memberLeave');
     await handleMemberLeave(db, member.guild, member);
   } catch (err) {
     console.error('Error handling member leave:', err);
@@ -849,7 +911,6 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
       }
       await client.login(token);
       logRuntimeEvent('info', 'startup.dmWorker', 'Starting in DM worker mode', { workerId });
-      const dmWorker = require('./services/dm/dm-worker');
       dmWorker.startWorker(client, workerId, process.env.DM_WORKER_DISPLAY_NAME || workerId);
       return;
     }
@@ -858,6 +919,31 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     await antiNukeInitPromise;
     await inviteInitPromise;
     await client.login(token);
+
+    // Auto-spawn internal DM workers if configured
+    const dmWorkerTokens = (process.env.DM_WORKER_TOKENS || '').split(',').map(t => sanitizeEnvToken(t)).filter(Boolean);
+    if (dmWorkerTokens.length > 0 || process.env.ENABLE_INTERNAL_WORKER === 'true') {
+      // Start worker using main bot's token if enabled
+      if (process.env.ENABLE_INTERNAL_WORKER === 'true') {
+        logRuntimeEvent('info', 'startup.internalWorker.main', 'Starting internal DM worker on main bot account');
+        dmWorker.startWorker(client, 'main_internal', 'Main Internal Worker');
+      }
+
+      // Start additional worker bots for each provided token
+      for (let i = 0; i < dmWorkerTokens.length; i++) {
+        const workerToken = dmWorkerTokens[i];
+        const workerId = `auto_worker_${i + 1}`;
+        const workerClient = new Client({ intents });
+        
+        workerClient.login(workerToken).then(() => {
+          logRuntimeEvent('info', 'startup.internalWorker.extra', `Starting internal DM worker bot #${i + 1}`, { workerId });
+          dmWorker.startWorker(workerClient, workerId, `Auto Worker ${i + 1}`);
+        }).catch(err => {
+          logUnexpectedError('startup.internalWorker.extra', err, { workerId });
+          console.error(`FAILED to start auto-worker #${i + 1}:`, err.message);
+        });
+      }
+    }
   } catch (err) {
     if (err && typeof err.message === 'string' && err.message.toLowerCase().includes('database')) {
       console.error('FATAL: Database initialization failed. Fix migrations/schema before starting the bot.', err);
@@ -871,4 +957,3 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     process.exit(1);
   }
 })();
-

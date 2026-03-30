@@ -762,4 +762,55 @@ async function execute(interaction, _client, dbHandle = null) {
   }
 }
 
-module.exports = { execute };
+async function reconcileRecruits(client, dbHandle) {
+  const db = dbHandle || defaultDb;
+  const guilds = client.guilds.cache;
+
+  for (const [guildId, guild] of guilds) {
+    try {
+      const botMember = await resolveBotMember(guild, client);
+      if (!botMember || !hasManageRolesPermission(botMember)) continue;
+
+      // Audit Hardening: Filtered Fetching (VULN-09 Regression) 
+      // Prevents O(N) startup blockage for large guilds
+      if (!ROLE_IDS.ROOKIE) {
+        void logRuntimeEvent('error', 'recruit.reconciliation.config_missing', 'ROLE_IDS.ROOKIE is not configured. Skipping reconciliation.');
+        continue;
+      }
+      const members = await guild.members.fetch({ role: ROLE_IDS.ROOKIE }).catch(() => new Map());
+      const rookies = members; // members is now filtered to just Rookies
+
+      for (const [memberId, member] of rookies) {
+        const record = await recruitsRepo.getLatestByRecruitedId(db, guildId, memberId);
+
+        // CASE: Member has role but no DB record, or record is invalid (VULN-03)
+        if (!record || record.valid === 0) {
+          const traceId = createTraceId();
+          try {
+            // Heal the state by marking valid if it was a partial transaction failure
+            if (record) {
+              await db.run('UPDATE recruits SET valid = 1 WHERE id = ?', record.id);
+              void logRuntimeEvent('info', 'recruit.reconciliation.healed', 'Healed zombie recruit state', {
+                guildId,
+                memberId,
+                recruitId: record.id
+              });
+            } else {
+              // Orphaned role - log for audit
+              void logRuntimeEvent('warn', 'recruit.reconciliation.orphaned', 'Member has Rookie role but no DB record', {
+                guildId,
+                memberId
+              });
+            }
+          } catch (err) {
+            reportRecruitServiceError('service.recruit.reconcile.member', err, { guildId, memberId, traceId });
+          }
+        }
+      }
+    } catch (err) {
+      reportRecruitServiceError('service.recruit.reconcile.guild', err, { guildId });
+    }
+  }
+}
+
+module.exports = { execute, reconcileRecruits };

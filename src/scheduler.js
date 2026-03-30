@@ -50,80 +50,6 @@ async function acquireSchedulerLock(db, { guildId, key, ttlMs, scope }) {
   }
 }
 
-let weeklyCalcEnsured = false;
-let recruitsEnsured = false;
-async function ensureWeeklyCalculationsTable(db) {
-  if (weeklyCalcEnsured || !db) return;
-  try {
-    if (typeof db.exec !== 'function') {
-      weeklyCalcEnsured = true;
-      return;
-    }
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS weekly_calculations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id TEXT NOT NULL DEFAULT 'GLOBAL',
-        recruiter_id TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        week_start INTEGER,
-        recruits7d INTEGER DEFAULT 0,
-        activity_rate REAL DEFAULT 0,
-        verify_rate REAL DEFAULT 0,
-        retention REAL DEFAULT 0,
-        warnings INTEGER DEFAULT 0,
-        absent INTEGER DEFAULT 0,
-        previous_min_req INTEGER,
-        calculated_min_req INTEGER NOT NULL,
-        role_base INTEGER NOT NULL
-      );
-    `);
-    try {
-      await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)');
-    } catch (e) {
-      void e;
-    }
-    weeklyCalcEnsured = true;
-  } catch (e) {
-    // best-effort, fallback to runtime calculation if schema can't be ensured
-    weeklyCalcEnsured = true;
-  }
-}
-
-async function ensureRecruitsTable(db) {
-  if (recruitsEnsured || !db) return;
-  try {
-    if (typeof db.exec !== 'function') {
-      recruitsEnsured = true;
-      return;
-    }
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS recruits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id TEXT NOT NULL DEFAULT 'GLOBAL',
-        recruiter_id TEXT NOT NULL,
-        recruited_id TEXT NOT NULL,
-        region TEXT NOT NULL,
-        ign TEXT,
-        created_at INTEGER NOT NULL,
-        valid INTEGER DEFAULT 1,
-        points INTEGER DEFAULT 0
-      );
-      CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_created ON recruits(guild_id, recruiter_id, created_at);
-      DROP INDEX IF EXISTS uniq_recruit_guild;
-      DROP INDEX IF EXISTS uniq_recruit;
-      CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(guild_id, recruited_id);
-    `);
-    try {
-      await db.run('ALTER TABLE recruits ADD COLUMN guild_id TEXT NOT NULL DEFAULT "GLOBAL"');
-    } catch (e) {
-      void e;
-    }
-    recruitsEnsured = true;
-  } catch (e) {
-    recruitsEnsured = true;
-  }
-}
-
 async function seedRecruiters(db, ids, contextLabel, guildId = resolveGuildId()) {
   if (!db || !ids || !ids.length) return;
   try {
@@ -395,12 +321,6 @@ function stop() {
 }
 
 async function recomputeLeaderboardsInternal(db, guild) {
-  await ensureWeeklyCalculationsTable(db).catch(err => {
-    logUnexpectedError('scheduler.recomputeLeaderboards.ensureWeeklyCalculationsTable', err);
-  });
-  await ensureRecruitsTable(db).catch(err => {
-    logUnexpectedError('scheduler.recomputeLeaderboards.ensureRecruitsTable', err);
-  });
   const regions = [
     { key: 'EU', channel: CHANNELS.INVITES_EU },
     { key: 'NA', channel: CHANNELS.INVITES_NA },
@@ -601,12 +521,6 @@ async function recomputeLeaderboards(db, guild) {
 async function recomputeWarningsLeaderboardInternal(db, guild) {
   if (!db || !guild) return;
   const guildId = guild.id || resolveGuildId();
-  await ensureWeeklyCalculationsTable(db).catch(err => {
-    logUnexpectedError('scheduler.recomputeWarnings.ensureWeeklyCalculationsTable', err);
-  });
-  await ensureRecruitsTable(db).catch(err => {
-    logUnexpectedError('scheduler.recomputeWarnings.ensureRecruitsTable', err);
-  });
   const { upsertLeaderboardMessage, makeDemotionWatchText } = require('./lib/messages');
   const channel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
     ? guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS)
