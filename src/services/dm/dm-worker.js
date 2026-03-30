@@ -487,6 +487,10 @@ function toPositiveInt(value, fallback) {
 }
 
 async function routeTargetToWorker(target, selfWorkerId) {
+    if (target.assigned_worker_id === selfWorkerId) {
+        return { selectedWorkerId: selfWorkerId, action: 'send' };
+    }
+
     const affinity = await getAffinity(target.guild_id, target.user_id);
     const blockedWorkerIds = await getBlockedWorkerIds(target.guild_id, target.user_id);
     const eligibleWorkers = await getEligibleWorkers();
