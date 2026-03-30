@@ -14,7 +14,7 @@ module.exports = {
     severity: 'ERROR',
     baseImpact: 70,
     tags: ['sqlite', 'runtime'],
-    safeMetaKeys: ['table', 'query', 'action', 'guildId', 'userId', 'scope', 'errorCode'],
+    safeMetaKeys: ['table', 'query', 'action', 'guildId', 'userId', 'scope', 'errorCode', 'errorMessage', 'stack'],
     recoveryHint: 'Check DB connectivity, locking state, and pending migrations.'
   },
   'DB-502': {

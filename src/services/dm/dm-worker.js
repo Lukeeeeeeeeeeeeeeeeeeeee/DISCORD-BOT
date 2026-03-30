@@ -282,7 +282,8 @@ class DMWorker {
             } catch (err) {
                 void logUnexpectedError('dm.worker.poll', err, { 
                     workerId: this.workerId,
-                    errorMessage: err && err.message ? err.message : String(err)
+                    errorMessage: err && err.message ? err.message : String(err),
+                    stack: err && err.stack ? err.stack.slice(0, 500) : null
                 });
             }
             if (this.running) {

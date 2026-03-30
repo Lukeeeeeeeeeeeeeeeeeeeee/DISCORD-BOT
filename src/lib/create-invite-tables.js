@@ -89,6 +89,8 @@ async function createInviteTables() {
         total_blocked INTEGER DEFAULT 0,
         total_undeliverable INTEGER DEFAULT 0,
         total_retries INTEGER DEFAULT 0,
+        max_misc_streak INTEGER DEFAULT 4,
+        sticky_window_hours INTEGER DEFAULT 24,
         started_at INTEGER,
         finished_at INTEGER,
         created_at INTEGER NOT NULL,
@@ -166,10 +168,37 @@ async function createInviteTables() {
         worker_id TEXT NOT NULL,
         reason TEXT,
         error_code TEXT,
-        created_at INTEGER NOT NULL,
+        blocked_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
         UNIQUE(guild_id, user_id, worker_id)
       )
     `);
+
+    // Schema Hardening: Add missing columns if they don't exist (for existing DBs)
+    const dmCampaignsColumns = [
+      { name: 'max_misc_streak', type: 'INTEGER DEFAULT 4' },
+      { name: 'sticky_window_hours', type: 'INTEGER DEFAULT 24' },
+      { name: 'started_at', type: 'INTEGER' }
+    ];
+
+    for (const col of dmCampaignsColumns) {
+      if (!(await tableHasColumn('dm_campaigns', col.name))) {
+        console.log(`[Migration] Adding column ${col.name} to dm_campaigns...`);
+        await db.run(`ALTER TABLE dm_campaigns ADD COLUMN ${col.name} ${col.type}`);
+      }
+    }
+
+    const dmBlocksColumns = [
+      { name: 'blocked_at', type: 'INTEGER NOT NULL DEFAULT 0' },
+      { name: 'updated_at', type: 'INTEGER NOT NULL DEFAULT 0' }
+    ];
+
+    for (const col of dmBlocksColumns) {
+      if (!(await tableHasColumn('dm_worker_user_blocks', col.name))) {
+        console.log(`[Migration] Adding column ${col.name} to dm_worker_user_blocks...`);
+        await db.run(`ALTER TABLE dm_worker_user_blocks ADD COLUMN ${col.name} ${col.type}`);
+      }
+    }
 
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_affinity_updated ON dm_user_affinity(updated_at)');
     await db.run('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user ON dm_worker_user_blocks(guild_id, user_id)');
