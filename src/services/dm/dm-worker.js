@@ -251,7 +251,7 @@ class DMWorker {
             processed++;
             campaignsToCheck.add(target.campaign_id);
 
-            if (processed < claimed.length && result && result.sent) {
+            if (result && result.sent) {
                 const jitter = Math.floor(Math.random() * 200);
                 await new Promise(r => setTimeout(r, SEND_DELAY_MS + jitter));
             }
@@ -404,9 +404,18 @@ async function getBlockedWorkerIds(guildId, userId) {
     return new Set(rows.map(r => r.worker_id));
 }
 
+let eligibleWorkersCache = { data: null, expiresAt: 0 };
+
 async function getEligibleWorkers(staleMs = 60000) {
-    const cutoff = Date.now() - staleMs;
-    return db.all(`SELECT * FROM dm_workers WHERE enabled = 1 AND last_seen_at >= ?`, cutoff);
+    const now = Date.now();
+    if (eligibleWorkersCache.data && now < eligibleWorkersCache.expiresAt) {
+        return eligibleWorkersCache.data;
+    }
+    const cutoff = now - staleMs;
+    const workers = await db.all(`SELECT * FROM dm_workers WHERE enabled = 1 AND last_seen_at >= ?`, cutoff);
+    eligibleWorkersCache.data = workers;
+    eligibleWorkersCache.expiresAt = now + 5000;
+    return workers;
 }
 
 async function updateAffinity(guildId, userId, workerId, messageType) {
