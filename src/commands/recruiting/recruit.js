@@ -444,6 +444,7 @@ module.exports = {
         || null;
       creditedRecruiterId = creditedRecruiter ? creditedRecruiter.id : interaction.user.id;
       const isCreditOverride = creditedRecruiterId !== interaction.user.id;
+      const adminBypass = interaction.options.getBoolean('admin_bypass') || false;
 
       // Validate inputs
       if (!member || !rawIgn) {
@@ -474,6 +475,9 @@ module.exports = {
       }
       if (isCreditOverride && process.env.NODE_ENV !== 'test' && !hasAdminOrStaffPermissions(guildMember)) {
         return replyError(interaction, 'You can only credit another recruiter if you have staff/admin permissions.');
+      }
+      if (adminBypass && process.env.NODE_ENV !== 'test' && !hasAdminOrStaffPermissions(guildMember)) {
+        return replyError(interaction, 'You must be staff or admin to use the admin_bypass option.');
       }
 
       const creditedRecruiterMember = creditedRecruiterId === interaction.user.id
@@ -509,15 +513,18 @@ module.exports = {
 
       const joinedAt = recruitedGuildMember.joinedAt;
       const now = new Date();
-      if (!joinedAt) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
-      const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-      if (minutesSinceJoin > 120) return replyError(interaction, 'Cannot give roles to someone who joined more than 2 hours ago.');
+      if (!joinedAt) {
+        if (!adminBypass) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
+      } else {
+        const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
+        if (minutesSinceJoin > 120 && !adminBypass) return replyError(interaction, 'Cannot give roles to someone who joined more than 2 hours ago. Use admin bypass if needed.');
+      }
 
       const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000 * 60 * 60 * 24);
-      if (accountAgeDays < (30 * 6)) return replyError(interaction, 'Account must be at least 6 months old.');
+      if (accountAgeDays < (30 * 6) && !adminBypass) return replyError(interaction, 'Account must be at least 6 months old. Use admin bypass if needed.');
 
       // already verified = has rookie
-      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return replyError(interaction, 'Member is already verified.');
+      if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE) && !adminBypass) return replyError(interaction, 'Member is already verified.');
 
       // check if recruited already
       const exist = await db.get(
@@ -525,7 +532,7 @@ module.exports = {
         guildId,
         member.id
       );
-      if (exist) return replyError(interaction, 'That member has already been recruited previously.');
+      if (exist && !adminBypass) return replyError(interaction, 'That member has already been recruited previously.');
 
       const chosenRole = pickOnboardingRole(team);
       if (!chosenRole) {
@@ -538,7 +545,7 @@ module.exports = {
         const rolesToVerify = [ROLE_IDS.ROOKIE, chosenRole];
         for (const roleId of rolesToVerify) {
           const role = interaction.guild.roles.cache.get(roleId);
-          if (role && role.comparePositions(botMember.roles.highest) >= 0) {
+          if (role && role.comparePositionTo(botMember.roles.highest) >= 0) {
             return replyError(interaction, `I cannot assign the **${role.name}** role because it is higher than (or equal to) my own highest role. Please move my role higher in the server settings.`);
           }
         }

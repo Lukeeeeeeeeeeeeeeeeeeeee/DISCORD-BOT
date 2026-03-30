@@ -1167,34 +1167,41 @@ async function init() {
     await alter('CREATE INDEX IF NOT EXISTS idx_dm_affinity_lookup ON dm_user_affinity(guild_id, user_id)');
   });
 
-  // Add columns if missing (best-effort)
-  try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE flags ADD COLUMN dismissed INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE recruits ADD COLUMN points INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE warnings ADD COLUMN expired_at INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE warnings ADD COLUMN revoked INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN week_start INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { void e; }
+  async function ensureColumnWithRetry(table, colDef) {
+    for (let i = 0; i < 10; i++) {
+      try {
+        await db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef}`);
+        return;
+      } catch (e) {
+        if (e && e.message && e.message.includes('duplicate column name')) return;
+        if (i === 9) console.error(`[Fatal] Exceeded retries ensuring column ${colDef} on ${table}`, e);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+  }
+
+  await ensureColumnWithRetry('recruiters', 'promoted INTEGER DEFAULT 0');
+  await ensureColumnWithRetry('recruiters', 'channel_base INTEGER DEFAULT 4');
+  await ensureColumnWithRetry('flags', 'dismissed INTEGER DEFAULT 0');
+  await ensureColumnWithRetry('recruits', 'points INTEGER DEFAULT 0');
+  await ensureColumnWithRetry('warnings', 'expired_at INTEGER');
+  await ensureColumnWithRetry('warnings', 'revoked INTEGER DEFAULT 0');
+  await ensureColumnWithRetry('weekly_calculations', 'week_start INTEGER');
+  await ensureColumnWithRetry('weekly_calculations', 'absent INTEGER DEFAULT 0');
+  await ensureColumnWithRetry('weekly_calculations', 'verify_rate REAL DEFAULT 0');
+
   try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { void e; }
   try { await db.exec('CREATE TABLE IF NOT EXISTS weekly_recruit_overrides (guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, week_start INTEGER NOT NULL, total INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, note TEXT, PRIMARY KEY (guild_id, recruiter_id, week_start))'); } catch (e) { void e; }
   try { await db.exec('CREATE INDEX IF NOT EXISTS idx_weekly_recruit_overrides_guild_week ON weekly_recruit_overrides(guild_id, week_start)'); } catch (e) { void e; }
   try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_daily_guild ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  await applyMigration('2026-03-03-protect-points-reset', async () => {
-    // We want to prevent points from being reset to 0 in bulk.
-    // However, the /recruits points change command MIGHT want to set points to exactly 0.
-    // Instead of a database-level trigger which might break intentional commands,
-    // we just ensure no code path does UPDATE recruiters SET points = 0.
-    // The previous commented-out code in scheduler.js was the only place.
-    // No trigger needed.
-  });
+  await ensureColumnWithRetry('analytics_daily_channels', 'day_ts INTEGER');
+  await ensureColumnWithRetry('analytics_daily_channel_speakers', 'day_ts INTEGER');
+  await ensureColumnWithRetry('analytics_daily_guild', 'day_ts INTEGER');
+  await ensureColumnWithRetry('analytics_daily_guild_speakers', 'day_ts INTEGER');
+  await ensureColumnWithRetry('analytics_voice_daily', 'day_ts INTEGER');
+  await ensureColumnWithRetry('analytics_user_daily_messages', 'day_ts INTEGER');
+
+  await applyMigration('2026-03-03-protect-points-reset', async () => {});
 
   await runIntegrityChecks(db, 'startup');
 
