@@ -111,6 +111,28 @@ async function init() {
     INSERT OR IGNORE INTO dm_global_backoff (id, backoff_until, updated_at) VALUES (1, 0, ?);
   `, Date.now());
 
+  const getTableInfo = async (table) => {
+    try {
+      return await db.all(`PRAGMA table_info(${table})`);
+    } catch (e) {
+      return [];
+    }
+  };
+
+  const hasColumn = async (table, column) => {
+    const info = await getTableInfo(table);
+    return info.some(row => row && row.name === column);
+  };
+
+  const hasCompositePk = async (table, columns) => {
+    const info = await getTableInfo(table);
+    const pkCols = info
+      .filter(row => row && row.pk)
+      .sort((a, b) => a.pk - b.pk)
+      .map(row => row.name);
+    return columns.length === pkCols.length && columns.every((col, idx) => pkCols[idx] === col);
+  };
+
   const attemptCols = await getTableInfo('dm_delivery_attempts');
   if (!attemptCols.some(c => c.name === 'message_id')) {
     await db.exec('ALTER TABLE dm_delivery_attempts ADD COLUMN message_id TEXT');
@@ -604,28 +626,6 @@ async function init() {
       console.error('Schema migration failed', { id, error: err });
       throw err;
     }
-  };
-
-  const getTableInfo = async (table) => {
-    try {
-      return await db.all(`PRAGMA table_info(${table})`);
-    } catch (e) {
-      return [];
-    }
-  };
-
-  const hasColumn = async (table, column) => {
-    const info = await getTableInfo(table);
-    return info.some(row => row && row.name === column);
-  };
-
-  const hasCompositePk = async (table, columns) => {
-    const info = await getTableInfo(table);
-    const pkCols = info
-      .filter(row => row && row.pk)
-      .sort((a, b) => a.pk - b.pk)
-      .map(row => row.name);
-    return columns.length === pkCols.length && columns.every((col, idx) => pkCols[idx] === col);
   };
 
   await applyMigration('2026-02-06-recruiter-triggers', async () => {
