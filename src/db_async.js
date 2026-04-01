@@ -456,7 +456,9 @@ async function init() {
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     report_posted INTEGER DEFAULT 0,
-    report_posted_at INTEGER
+    report_posted_at INTEGER,
+    message_hash TEXT,
+    last_notified_percentage INTEGER DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS dm_campaign_targets (
@@ -1263,6 +1265,8 @@ async function init() {
   await ensureColumnWithRetry('weekly_calculations', 'week_start INTEGER');
   await ensureColumnWithRetry('weekly_calculations', 'absent INTEGER DEFAULT 0');
   await ensureColumnWithRetry('weekly_calculations', 'verify_rate REAL DEFAULT 0');
+  await ensureColumnWithRetry('dm_campaigns', 'message_hash TEXT');
+  await ensureColumnWithRetry('dm_campaigns', 'last_notified_percentage INTEGER DEFAULT 0');
 
   try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { void e; }
   try { await db.exec('CREATE TABLE IF NOT EXISTS weekly_recruit_overrides (guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, week_start INTEGER NOT NULL, total INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, note TEXT, PRIMARY KEY (guild_id, recruiter_id, week_start))'); } catch (e) { void e; }

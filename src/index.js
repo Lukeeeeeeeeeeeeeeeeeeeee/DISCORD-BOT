@@ -332,6 +332,9 @@ async function onReady() {
       void dmReporter.scanAndPostReports(client).catch(err => {
         logUnexpectedError('dm.reporter.scheduledScan', err);
       });
+      void dmReporter.scanAndPostProgressHeartbeats(client).catch(err => {
+        logUnexpectedError('dm.reporter.scheduledHeartbeat', err);
+      });
     }, DM_REPORT_SCAN_MS);
   }
 

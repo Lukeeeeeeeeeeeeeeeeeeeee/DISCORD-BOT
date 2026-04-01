@@ -6,6 +6,7 @@
  */
 'use strict';
 
+const crypto = require('crypto');
 const db = require('../../db_async');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 
@@ -61,6 +62,10 @@ async function getEnabledWorkerCount() {
         void logUnexpectedError('dm.campaign.workerCount', err);
         return 1;
     }
+}
+
+function hashMessage(message) {
+    return crypto.createHash('sha256').update(String(message || '').trim()).digest('hex').slice(0, 24);
 }
 
 async function computeInsertBatchSize(totalTargets) {
@@ -150,47 +155,76 @@ async function createCampaign({
 
     // ── resolve targets ──
     const memberIds = await resolveTargetMemberIds(guild, { targetMode, roleIds });
-    // Dedupe (should already be unique, but belt-and-suspenders)
     const uniqueIds = [...new Set(memberIds.map(String))];
 
     if (uniqueIds.length === 0) {
         return { campaignId: null, totalTargets: 0, totalBatches: 0, preview };
     }
-    if (uniqueIds.length > HARD_MAX_TARGETS) {
-        throw new Error(`Target count ${uniqueIds.length} exceeds hard max ${HARD_MAX_TARGETS}. Narrow your target or raise limit.`);
+
+    // ── deduplicate against history (14 days) ──
+    const messageHash = hashMessage(messageBody);
+    const lookbackMs = 14 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const threshold = now - lookbackMs;
+
+    // Use a high-performance subquery to find all user_ids who successfully received this message hash
+    const alreadySentRows = await db.all(
+        `SELECT DISTINCT user_id FROM dm_campaign_targets 
+         WHERE status = 'sent' 
+         AND created_at > ?
+         AND campaign_id IN (SELECT id FROM dm_campaigns WHERE message_hash = ?)`,
+        threshold, messageHash
+    );
+    const alreadySentSet = new Set(alreadySentRows.map(r => String(r.user_id)));
+    const finalIds = uniqueIds.filter(id => !alreadySentSet.has(id));
+    const excludedCount = uniqueIds.length - finalIds.length;
+
+    if (finalIds.length === 0) {
+        return { 
+            campaignId: null, 
+            totalTargets: 0, 
+            totalBatches: 0, 
+            preview, 
+            excludedByDedupe: excludedCount 
+        };
     }
 
-    const insertBatchSize = await computeInsertBatchSize(uniqueIds.length);
-    const totalBatches = Math.ceil(uniqueIds.length / insertBatchSize);
+    if (finalIds.length > HARD_MAX_TARGETS) {
+        throw new Error(`Target count ${finalIds.length} exceeds hard max ${HARD_MAX_TARGETS}.`);
+    }
+
+    const insertBatchSize = await computeInsertBatchSize(finalIds.length);
+    const totalBatches = Math.ceil(finalIds.length / insertBatchSize);
 
     if (preview) {
-        const sample = uniqueIds.slice(0, 10);
+        const sample = finalIds.slice(0, 10);
         return {
             campaignId: null,
-            totalTargets: uniqueIds.length,
+            totalTargets: finalIds.length,
             totalBatches,
             preview: true,
-            sampleUserIds: sample
+            sampleUserIds: sample,
+            excludedByDedupe: excludedCount
         };
     }
 
     // ── write campaign row ──
-    const now = nowMs();
     const campaignResult = await db.run(
         `INSERT INTO dm_campaigns
-       (guild_id, requested_by, message_type, message_body, target_mode, target_role_ids,
+       (guild_id, requested_by, message_type, message_body, message_hash, target_mode, target_role_ids,
         status, report_channel_id, requested_channel_id,
         total_targets, total_batches, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
         guild.id,
         requestedBy,
         messageType,
         messageBody,
+        messageHash,
         targetMode,
         JSON.stringify(roleIds),
         reportChannelId,
         requestedChannelId,
-        uniqueIds.length,
+        finalIds.length,
         totalBatches,
         now,
         now
@@ -199,7 +233,7 @@ async function createCampaign({
     const campaignId = campaignResult.lastID;
 
     // ── insert target rows in batches ──
-    const batches = chunkArray(uniqueIds, insertBatchSize);
+    const batches = chunkArray(finalIds, insertBatchSize);
     for (let batchNo = 0; batchNo < batches.length; batchNo++) {
         const batch = batches[batchNo];
         const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
@@ -226,7 +260,7 @@ async function createCampaign({
         insertBatchSize
     });
 
-    return { campaignId, totalTargets: uniqueIds.length, totalBatches, preview: false };
+    return { campaignId, totalTargets: finalIds.length, totalBatches, preview: false, excludedByDedupe: excludedCount };
 }
 
 /**
@@ -375,6 +409,25 @@ async function getUnreportedCampaigns() {
 }
 
 /**
+ * Find campaigns that are currently active for progress monitoring.
+ */
+async function getRunningCampaigns() {
+    return db.all(
+        `SELECT * FROM dm_campaigns WHERE status = 'running'`
+    );
+}
+
+/**
+ * Update the last notified progress percentage for a campaign.
+ */
+async function updateCampaignNotificationThreshold(campaignId, percentage) {
+    await db.run(
+        `UPDATE dm_campaigns SET last_notified_percentage = ?, updated_at = ? WHERE id = ?`,
+        percentage, Date.now(), campaignId
+    );
+}
+
+/**
  * List/manage workers.
  */
 async function listWorkers() {
@@ -410,6 +463,8 @@ module.exports = {
     getReport,
     markReportPosted,
     getUnreportedCampaigns,
+    getRunningCampaigns,
+    updateCampaignNotificationThreshold,
     listWorkers,
     setWorkerEnabled,
     unblockUserForWorker,

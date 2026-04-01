@@ -7,7 +7,11 @@
 'use strict';
 
 const db = require('../../db_async');
-const { getReport, markReportPosted, getUnreportedCampaigns } = require('./dm-campaign-service');
+const { getReport,    markReportPosted,
+    getUnreportedCampaigns,
+    getRunningCampaigns,
+    updateCampaignNotificationThreshold
+} = require('./dm-campaign-service');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { CHANNELS } = require('../../constants');
 
@@ -247,9 +251,76 @@ async function scanAndPostReports(client) {
     }
 }
 
+/**
+ * Scan for running campaigns and post progress heartbeats at thresholds (25, 50, 75).
+ */
+async function scanAndPostProgressHeartbeats(client) {
+    try {
+        const campaigns = await getRunningCampaigns();
+        let heartbeatsSent = 0;
+
+        for (const campaign of campaigns) {
+            const totalReported = (campaign.total_sent || 0) + (campaign.total_failed || 0) + (campaign.total_blocked || 0) + (campaign.total_undeliverable || 0);
+            const totalRecipients = campaign.total_targets || 1;
+            const progress = (totalReported / totalRecipients) * 100;
+
+            let threshold = 0;
+            if (progress >= 75) threshold = 75;
+            else if (progress >= 50) threshold = 50;
+            else if (progress >= 25) threshold = 25;
+
+            // Only notify if we crossed a new threshold
+            if (threshold > (campaign.last_notified_percentage || 0)) {
+                await postProgressHeartbeat(client, campaign.id, threshold, progress);
+                await updateCampaignNotificationThreshold(campaign.id, threshold);
+                heartbeatsSent++;
+            }
+        }
+        return heartbeatsSent;
+    } catch (err) {
+        void logUnexpectedError('dm.reporter.heartbeat.scan', err);
+        return 0;
+    }
+}
+
+/**
+ * Post an interim progress report.
+ */
+async function postProgressHeartbeat(client, campaignId, threshold, progress) {
+    try {
+        const reportData = await getReport(campaignId);
+        if (!reportData) return;
+
+        const { campaign } = reportData;
+        const channelId = campaign.report_channel_id
+            || (CHANNELS && CHANNELS.ECONOMY_NOTIFICATIONS)
+            || null;
+
+        if (!channelId) return;
+
+        const channel = await client.channels.fetch(channelId);
+        if (!channel || !channel.send) return;
+
+        const embed = buildReportEmbed(reportData);
+        embed.title = `⏳ DM Campaign Progress: ${threshold}%`;
+        embed.description = `Broadcast is **${Math.floor(progress)}%** complete.`;
+        embed.color = 0x3498DB; // Blue for progress
+
+        await channel.send({ embeds: [embed] });
+
+        void logRuntimeEvent('info', 'dm.reporter.heartbeat.posted', 'DM campaign heartbeat posted', {
+            campaignId,
+            threshold
+        });
+    } catch (err) {
+        void logUnexpectedError('dm.reporter.heartbeat.post', err, { campaignId });
+    }
+}
+
 module.exports = {
     buildReportEmbed,
     buildCsvReport,
     postReport,
-    scanAndPostReports
+    scanAndPostReports,
+    scanAndPostProgressHeartbeats
 };
