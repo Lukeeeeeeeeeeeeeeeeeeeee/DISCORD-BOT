@@ -280,144 +280,143 @@ async function flushAll() {
     if (!hasPending(snapshot)) return;
 
     try {
-      await db.exec('BEGIN');
-
-      for (const entry of snapshot.channelCounts.values()) {
-        await db.run(
-          `INSERT INTO analytics_daily_channels (day, day_ts, guild_id, channel_id, message_count, unique_speakers, last_message_at)
-           VALUES (?, ?, ?, ?, ?, 0, ?)
-           ON CONFLICT(day, guild_id, channel_id) DO UPDATE SET
-             message_count = message_count + excluded.message_count,
-             last_message_at = MAX(last_message_at, excluded.last_message_at),
-             day_ts = excluded.day_ts`,
-          entry.day,
-          entry.dayTs,
-          entry.guildId,
-          entry.channelId,
-          entry.count,
-          entry.lastMessageAt
-        );
-      }
-
-      for (const [key, speakers] of snapshot.channelSpeakers.entries()) {
-        if (!speakers || speakers.size === 0) continue;
-        const [day, guildId, channelId] = key.split(':');
-        const dayTs = dayKeyToTs(day);
-        for (const userId of speakers.values()) {
-          await db.run(
-            'INSERT OR IGNORE INTO analytics_daily_channel_speakers (day, day_ts, guild_id, channel_id, user_id) VALUES (?, ?, ?, ?, ?)',
-            day,
-            dayTs,
-            guildId,
-            channelId,
-            userId
+      await withTransaction(db, async (tx) => {
+        for (const entry of snapshot.channelCounts.values()) {
+          await tx.run(
+            `INSERT INTO analytics_daily_channels (day, day_ts, guild_id, channel_id, message_count, unique_speakers, last_message_at)
+             VALUES (?, ?, ?, ?, ?, 0, ?)
+             ON CONFLICT(day, guild_id, channel_id) DO UPDATE SET
+               message_count = message_count + excluded.message_count,
+               last_message_at = MAX(last_message_at, excluded.last_message_at),
+               day_ts = excluded.day_ts`,
+            entry.day,
+            entry.dayTs,
+            entry.guildId,
+            entry.channelId,
+            entry.count,
+            entry.lastMessageAt
           );
         }
-      }
 
-      for (const entry of snapshot.guildCounts.values()) {
-        await db.run(
-          `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
-           VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0)
-           ON CONFLICT(day, guild_id) DO UPDATE SET
-             message_count = message_count + excluded.message_count,
-             day_ts = excluded.day_ts`,
-          entry.day,
-          entry.dayTs,
-          entry.guildId,
-          entry.messageCount
-        );
-      }
+        for (const [key, speakers] of snapshot.channelSpeakers.entries()) {
+          if (!speakers || speakers.size === 0) continue;
+          const [day, guildId, channelId] = key.split(':');
+          const dayTs = dayKeyToTs(day);
+          for (const userId of speakers.values()) {
+            await tx.run(
+              'INSERT OR IGNORE INTO analytics_daily_channel_speakers (day, day_ts, guild_id, channel_id, user_id) VALUES (?, ?, ?, ?, ?)',
+              day,
+              dayTs,
+              guildId,
+              channelId,
+              userId
+            );
+          }
+        }
 
-      for (const [key, speakers] of snapshot.guildSpeakers.entries()) {
-        if (!speakers || speakers.size === 0) continue;
-        const [day, guildId] = key.split(':');
-        const dayTs = dayKeyToTs(day);
-        for (const userId of speakers.values()) {
-          await db.run(
-            'INSERT OR IGNORE INTO analytics_daily_guild_speakers (day, day_ts, guild_id, user_id) VALUES (?, ?, ?, ?)',
-            day,
-            dayTs,
-            guildId,
-            userId
+        for (const entry of snapshot.guildCounts.values()) {
+          await tx.run(
+            `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+             VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0)
+             ON CONFLICT(day, guild_id) DO UPDATE SET
+               message_count = message_count + excluded.message_count,
+               day_ts = excluded.day_ts`,
+            entry.day,
+            entry.dayTs,
+            entry.guildId,
+            entry.messageCount
           );
         }
-      }
 
-      for (const entry of snapshot.userDailyMessages.values()) {
-        await db.run(
-          `INSERT INTO analytics_user_daily_messages (day, day_ts, guild_id, user_id, message_count)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(day, guild_id, user_id) DO UPDATE SET
-             message_count = message_count + excluded.message_count,
-             day_ts = excluded.day_ts`,
-          entry.day,
-          entry.dayTs,
-          entry.guildId,
-          entry.userId,
-          entry.count
-        );
-      }
+        for (const [key, speakers] of snapshot.guildSpeakers.entries()) {
+          if (!speakers || speakers.size === 0) continue;
+          const [day, guildId] = key.split(':');
+          const dayTs = dayKeyToTs(day);
+          for (const userId of speakers.values()) {
+            await tx.run(
+              'INSERT OR IGNORE INTO analytics_daily_guild_speakers (day, day_ts, guild_id, user_id) VALUES (?, ?, ?, ?)',
+              day,
+              dayTs,
+              guildId,
+              userId
+            );
+          }
+        }
 
-      for (const entry of snapshot.commandUsage.values()) {
-        await db.run(
-          `INSERT INTO analytics_command_usage (day, day_ts, guild_id, command_name, count)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(day, guild_id, command_name) DO UPDATE SET
-             count = count + excluded.count,
-             day_ts = excluded.day_ts`,
-          entry.day,
-          entry.dayTs,
-          entry.guildId,
-          entry.commandName,
-          entry.count
-        );
-      }
+        for (const entry of snapshot.userDailyMessages.values()) {
+          await tx.run(
+            `INSERT INTO analytics_user_daily_messages (day, day_ts, guild_id, user_id, message_count)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(day, guild_id, user_id) DO UPDATE SET
+               message_count = message_count + excluded.message_count,
+               day_ts = excluded.day_ts`,
+            entry.day,
+            entry.dayTs,
+            entry.guildId,
+            entry.userId,
+            entry.count
+          );
+        }
 
-      for (const entry of snapshot.voiceDaily.values()) {
-        await db.run(
-          `INSERT INTO analytics_voice_daily (day, day_ts, guild_id, user_id, minutes)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(day, guild_id, user_id) DO UPDATE SET
-             minutes = minutes + excluded.minutes,
-             day_ts = excluded.day_ts`,
-          entry.day,
-          entry.dayTs,
-          entry.guildId,
-          entry.userId,
-          entry.minutes
-        );
-      }
+        for (const entry of snapshot.commandUsage.values()) {
+          await tx.run(
+            `INSERT INTO analytics_command_usage (day, day_ts, guild_id, command_name, count)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(day, guild_id, command_name) DO UPDATE SET
+               count = count + excluded.count,
+               day_ts = excluded.day_ts`,
+            entry.day,
+            entry.dayTs,
+            entry.guildId,
+            entry.commandName,
+            entry.count
+          );
+        }
 
-      for (const entry of snapshot.userActivity.values()) {
-        await db.run(
-          `INSERT INTO analytics_user_activity (guild_id, user_id, last_message_at, last_voice_at, last_active_at)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT(guild_id, user_id) DO UPDATE SET
-             last_message_at = CASE
-               WHEN excluded.last_message_at IS NULL THEN last_message_at
-               WHEN last_message_at IS NULL OR excluded.last_message_at > last_message_at THEN excluded.last_message_at
-               ELSE last_message_at
-             END,
-             last_voice_at = CASE
-               WHEN excluded.last_voice_at IS NULL THEN last_voice_at
-               WHEN last_voice_at IS NULL OR excluded.last_voice_at > last_voice_at THEN excluded.last_voice_at
-               ELSE last_voice_at
-             END,
-             last_active_at = CASE
-               WHEN excluded.last_active_at IS NULL THEN last_active_at
-               WHEN last_active_at IS NULL OR excluded.last_active_at > last_active_at THEN excluded.last_active_at
-               ELSE last_active_at
-             END`,
-          entry.guildId,
-          entry.userId,
-          entry.lastMessageAt,
-          entry.lastVoiceAt,
-          entry.lastActiveAt
-        );
-      }
+        for (const entry of snapshot.voiceDaily.values()) {
+          await tx.run(
+            `INSERT INTO analytics_voice_daily (day, day_ts, guild_id, user_id, minutes)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(day, guild_id, user_id) DO UPDATE SET
+               minutes = minutes + excluded.minutes,
+               day_ts = excluded.day_ts`,
+            entry.day,
+            entry.dayTs,
+            entry.guildId,
+            entry.userId,
+            entry.minutes
+          );
+        }
 
-      await db.exec('COMMIT');
+        for (const entry of snapshot.userActivity.values()) {
+          await tx.run(
+            `INSERT INTO analytics_user_activity (guild_id, user_id, last_message_at, last_voice_at, last_active_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(guild_id, user_id) DO UPDATE SET
+               last_message_at = CASE
+                 WHEN excluded.last_message_at IS NULL THEN last_message_at
+                 WHEN last_message_at IS NULL OR excluded.last_message_at > last_message_at THEN excluded.last_message_at
+                 ELSE last_message_at
+               END,
+               last_voice_at = CASE
+                 WHEN excluded.last_voice_at IS NULL THEN last_voice_at
+                 WHEN last_voice_at IS NULL OR excluded.last_voice_at > last_voice_at THEN excluded.last_voice_at
+                 ELSE last_voice_at
+               END,
+               last_active_at = CASE
+                 WHEN excluded.last_active_at IS NULL THEN last_active_at
+                 WHEN last_active_at IS NULL OR excluded.last_active_at > last_active_at THEN excluded.last_active_at
+                 ELSE last_active_at
+               END`,
+            entry.guildId,
+            entry.userId,
+            entry.lastMessageAt,
+            entry.lastVoiceAt,
+            entry.lastActiveAt
+          );
+        }
+      }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
+
       const durationMs = Date.now() - startedAt;
       if (durationMs >= FLUSH_WARN_MS) {
         console.warn('Analytics flush completed slowly', {
@@ -426,11 +425,6 @@ async function flushAll() {
         });
       }
     } catch (e) {
-      try {
-        await db.exec('ROLLBACK');
-      } catch (rollbackErr) {
-        console.error('Analytics rollback failed:', rollbackErr);
-      }
       console.error('Analytics flush failed:', e);
       const mergedPending = pendingWrites + snapshotEntries;
       const capped = mergedPending > MAX_REQUEUE_SIZE;

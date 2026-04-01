@@ -1167,15 +1167,55 @@ async function init() {
     await alter('CREATE INDEX IF NOT EXISTS idx_dm_affinity_lookup ON dm_user_affinity(guild_id, user_id)');
   });
 
+  await applyMigration('2026-03-31-dm-claim-id', async () => {
+    const alter = async (sql) => { try { await db.exec(sql); } catch (e) { void e; } };
+    // claim_id column used by dm-worker.js for atomic batch claiming
+    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN claim_id TEXT');
+    await alter('CREATE INDEX IF NOT EXISTS idx_dm_targets_claim_id ON dm_campaign_targets(claim_id)');
+  });
+
+  // Component 10 — dm_queue defensive migration
+  // The committed HEAD of recruit.js had 'INSERT INTO dm_queue' (scope: command.recruit.queueWelcomeDm)
+  // which caused CMD-500 AECS errors on every /recruit invocation because the table was never created.
+  // The working tree already sends welcome DMs directly via member.send() — this migration is defensive:
+  // it ensures the table exists so any old-code-path deployments don't crash before the new code lands.
+  await applyMigration('2026-04-01-dm-queue', async () => {
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS dm_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        message TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        processed_at INTEGER,
+        error TEXT
+      )
+    `);
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_queue_status ON dm_queue(status, created_at)');
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_queue_guild_user ON dm_queue(guild_id, user_id)');
+  });
+
+  // R-02: Only retry on transient SQLite busy/lock errors. Any other error (table not found, syntax)
+  // should rethrow immediately — retrying 10×1s delays startup and masks the real misconfiguration.
   async function ensureColumnWithRetry(table, colDef) {
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 3; i++) {
       try {
         await db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef}`);
         return;
       } catch (e) {
-        if (e && e.message && e.message.includes('duplicate column name')) return;
-        if (i === 9) console.error(`[Fatal] Exceeded retries ensuring column ${colDef} on ${table}`, e);
-        await new Promise(r => setTimeout(r, 1000));
+        if (e && e.message && e.message.includes('duplicate column name')) return; // already added, done
+        const isTransient = e && e.message && (
+          e.message.includes('database is locked') ||
+          e.message.includes('SQLITE_BUSY')
+        );
+        if (!isTransient) {
+          // Non-transient error — rethrow immediately instead of retrying 10×1s.
+          console.error(`[ensureColumnWithRetry] Non-retryable error on ${table}.${colDef}:`, e.message);
+          throw e;
+        }
+        if (i === 2) throw e; // exhausted retries
+        await new Promise(r => setTimeout(r, 500));
       }
     }
   }
@@ -1201,6 +1241,9 @@ async function init() {
   await ensureColumnWithRetry('analytics_voice_daily', 'day_ts INTEGER');
   await ensureColumnWithRetry('analytics_user_daily_messages', 'day_ts INTEGER');
 
+  // Z-02: This migration has an empty body — it exists purely as a schema version marker.
+  // It signals that the "protect points reset" migration was applied, preventing older code
+  // from running a destructive data reset on startup. Do not remove this entry.
   await applyMigration('2026-03-03-protect-points-reset', async () => {});
 
   await runIntegrityChecks(db, 'startup');

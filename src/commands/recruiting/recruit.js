@@ -542,10 +542,11 @@ module.exports = {
       try {
         // Pre-flight hierarchy check (VULN-11)
         const botMember = await interaction.guild.members.fetchMe();
+        const botHighestRole = botMember && botMember.roles && botMember.roles.highest;
         const rolesToVerify = [ROLE_IDS.ROOKIE, chosenRole];
         for (const roleId of rolesToVerify) {
           const role = interaction.guild.roles.cache.get(roleId);
-          if (role && role.comparePositionTo(botMember.roles.highest) >= 0) {
+          if (role && botHighestRole && role.comparePositionTo(botHighestRole) >= 0) {
             return replyError(interaction, `I cannot assign the **${role.name}** role because it is higher than (or equal to) my own highest role. Please move my role higher in the server settings.`);
           }
         }
@@ -655,21 +656,16 @@ module.exports = {
           reportRecruitError('command.recruit.recomputeLeaderboards', e);
         }
 
-        // Queue DM instead of direct send (VULN-10)
+        // Send welcome DM directly from the main bot
         try {
-          await db.run(
-            'INSERT INTO dm_queue (guild_id, user_id, message, created_at) VALUES (?, ?, ?, ?)',
-            guildId,
-            member.id,
-            buildRecruitWelcomeMessage(teamName),
-            Date.now()
-          );
+          await recruitedGuildMember.send({ content: buildRecruitWelcomeMessage(teamName) });
         } catch (err) {
-          reportRecruitError('command.recruit.queueWelcomeDm', err);
+          // Log but don't abort if DM fails (e.g. user has DMs disabled)
+          reportRecruitError('command.recruit.sendWelcomeDm', err);
         }
 
         const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';
-        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}. Their welcome DM has been queued for delivery.` });
+        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}. Their welcome DM has been sent.` });
       } catch (err) {
         const dispatchResult = await logUnexpectedError('command.recruit.execute.inner', err, {
           command: 'recruit',

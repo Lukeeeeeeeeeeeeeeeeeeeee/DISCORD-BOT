@@ -1,17 +1,7 @@
 const ECONOMY_CONFIG = {
   BASE_VALUE: 4,
-  ROLE_MODIFIERS: {
-    NONE: 1.00,
-    VIP: 0.90,
-    MVP: 0.85,
-    CUSTOM: 0.80
-  },
-  ROLE_POINTS: {
-    NONE: 0,
-    VIP: 25,
-    MVP: 35,
-    CUSTOM: 50
-  },
+  // NOTE: ROLE_MODIFIERS and ROLE_POINTS were removed — they were only used by calculateMinRecruitsRequired
+  // which has been deleted (E-01: zero callers, superseded by calculateMinRecruitsFixed in recruiting-system.js).
   MULTIPLIERS: {
     'm1.5_7d': { value: 1.5, cost: 2, days: 7 },
     'm1.75_7d': { value: 1.75, cost: 3, days: 7 },
@@ -75,39 +65,15 @@ function setRetentionCachedValue(cacheKey, value, nowTs) {
   if (oldestKey) retentionCache.delete(oldestKey);
 }
 
-function calculateMinRecruitsRequired({
-  channelBase = ECONOMY_CONFIG.BASE_VALUE,
-  roleModifier = ECONOMY_CONFIG.ROLE_MODIFIERS.NONE,
-  total28d = 0,
-  distinctWeeks = 1,
-  retention = 0,
-  activeWarnings = 0,
-  daysSinceLastRecruit = Number.POSITIVE_INFINITY,
-  activeMultiplierValue = 1.0
-} = {}) {
-  const B = channelBase;
-  const R = roleModifier;
-  const T = Math.max(0, total28d);
-  const Wk = Math.max(1, Math.min(4, Math.floor(distinctWeeks) || 1));
-  const activityRate = T / Wk;
-  let S = 1 + ECONOMY_CONFIG.STRENGTH_ALPHA * Math.log(1 + activityRate);
-  S = Math.max(ECONOMY_CONFIG.STRENGTH_MIN, Math.min(S, ECONOMY_CONFIG.STRENGTH_MAX));
-  const Q = 1 + ECONOMY_CONFIG.QUALITY_FACTOR * Math.max(0, Math.min(1, retention));
-  const W = 1 + ECONOMY_CONFIG.WARNING_WEIGHT * Math.max(0, activeWarnings);
+// E-01: calculateMinRecruitsRequired() was deleted — it was superseded by calculateMinRecruitsFixed()
+// in recruiting-system.js and had zero callers at the time of the audit.
 
-  let I = ECONOMY_CONFIG.INACTIVITY_DEFAULT;
-  if (daysSinceLastRecruit < 7) I = 1.0;
-  else if (daysSinceLastRecruit < 28) I = 0.95;
-  else if (daysSinceLastRecruit < 56) I = 0.85;
-  else I = 0.70;
-
-  const M = Math.max(1.0, activeMultiplierValue);
-  const raw = (B * R * S * Q * W * I) / Math.sqrt(M);
-  const minReq = Math.ceil(raw);
-  return Math.max(2, Math.min(8, minReq));
-}
-
-function calculateRecruitPoints({ recruiterRole: _recruiterRole = 'NONE', multiplierValue = 1.0 } = {}) {
+/**
+ * Award points for a successful recruit.
+ * A-05: The `recruiterRole` parameter has been removed — it was named `_recruiterRole` (unused)
+ * in the original implementation. Points are purely base × multiplierValue.
+ */
+function calculateRecruitPoints({ multiplierValue = 1.0 } = {}) {
   const base = 1; // Base 1 point for every recruit
   const raw = base * (Number.isFinite(multiplierValue) ? multiplierValue : 1.0);
   return Math.round(raw * 100) / 100;
@@ -357,7 +323,7 @@ async function computeRetentionFromGuild(guild, recruitedIds = [], daysWindow = 
 
 module.exports = {
   ECONOMY_CONFIG,
-  calculateMinRecruitsRequired,
+  // NOTE: calculateMinRecruitsRequired was removed (E-01) — use calculateMinRecruitsFixed from recruiting-system.js.
   calculateRecruitPoints,
   formatPointsValue,
   getActiveMultiplier,

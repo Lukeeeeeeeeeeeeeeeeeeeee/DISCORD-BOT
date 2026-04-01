@@ -13,6 +13,7 @@ const path = require('path');
 const runtime = require('./runtime');
 const { buildErrorEmbed } = require('./embeds');
 const { formatUtcDate } = require('./time');
+const { withTransaction } = require('./transactions');
 
 const antiNukeFileSaveQueuesByPath = new Map();
 
@@ -654,10 +655,9 @@ class AntiNuke {
 
     try {
       await this.ensureStateTable(db);
-      await db.exec('BEGIN');
-      try {
+      await withTransaction(db, async (tx) => {
         const globalPayload = JSON.stringify({ whitelist: Array.from(this.getAllWhitelistedUsers()) });
-        await db.run(
+        await tx.run(
           `INSERT INTO antinuke_state (key, payload, updated_at)
            VALUES (?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
@@ -669,7 +669,7 @@ class AntiNuke {
         for (const guildId of guildIds) {
           const payload = JSON.stringify(this.serializeGuildState(guildId) || {});
           const key = `guild:${guildId}`;
-          await db.run(
+          await tx.run(
             `INSERT INTO antinuke_state (key, payload, updated_at)
              VALUES (?, ?, ?)
              ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
@@ -678,13 +678,8 @@ class AntiNuke {
             now
           );
         }
-
-        await db.exec('COMMIT');
-        this.lastGlobalStateUpdatedAt = now;
-      } catch (e) {
-        await db.exec('ROLLBACK');
-        throw e;
-      }
+      });
+      this.lastGlobalStateUpdatedAt = now;
     } catch (error) {
       console.error('Failed to save anti-nuke data to DB:', error);
     }

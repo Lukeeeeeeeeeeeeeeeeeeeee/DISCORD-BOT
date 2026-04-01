@@ -49,8 +49,15 @@ async function sendWithRetries(sendFn, opts = {}) {
 }
 
 /**
- * Perform weekly recalculation for all recruiters
- * Runs every Monday at 00:00 UTC
+ * Perform weekly recalculation for all recruiters.
+ * Runs every Monday at 00:00 UTC via scheduler.js.
+ *
+ * E-06: NOTE — scheduler.js also calls runWeeklySnapshotAndReset() which performs overlapping work
+ * (7-day stats, storeWeeklyCalculation, DMs). To avoid double-processing and duplicate DMs,
+ * ensure only ONE of these two paths executes per Monday boundary. The scheduler.js
+ * acquireSchedulerLock (keyed on weekStart) guards runWeeklySnapshotAndReset. If this function
+ * is also called on the same schedule without a lock, recruiters may receive two DMs.
+ * Audit: consider removing this function and routing fully to runWeeklySnapshotAndReset.
  */
 async function performWeeklyRecalculations(guild) {
   const database = db;
@@ -260,7 +267,12 @@ async function sendWeeklyRecalculationDM(result, options = {}) {
 }
 
 /**
- * Post retention and minReq information to invite channels
+ * Post retention and minReq information to invite channels.
+ *
+ * A-04: DEAD CODE — This function is exported but has zero callers anywhere in the codebase.
+ * It posts per-recruiter retention embeds to regional invite channels. If channel posting
+ * is desired, wire this into performWeeklyRecalculations() above. Otherwise, delete it.
+ * Do NOT call this in a loop per-recruiter — it would spam channels with N embeds per Monday.
  */
 async function postRetentionToInviteChannels(guild, result) {
   const { staffMember, stats7d, newMinReq } = result;

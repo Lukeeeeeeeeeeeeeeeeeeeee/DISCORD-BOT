@@ -136,17 +136,28 @@ class DMWorker {
             return { ok: false, sent: false, category: 'no_eligible_worker' };
         }
 
-        const heartbeatIntervalMs = 15000;
-        const leaseExtensionMs = 60000;
+        // Q-02: Use module-level tunables (HEARTBEAT_MS / CLAIM_LEASE_MS) so env changes apply consistently.
+        // Q-01: The status literal must be 'claimed' — using an undefined variable would corrupt the row on every refresh tick.
         const leaseRefresher = setInterval(() => {
-            void updateTargetStatus(targetId, status, {
-                claimExpiresAt: Date.now() + leaseExtensionMs
+            void updateTargetStatus(targetId, 'claimed', {
+                claimExpiresAt: Date.now() + CLAIM_LEASE_MS
             }).catch(err => {
                 void logUnexpectedError('dm.worker.leaseRefresher', err, { targetId });
             });
-        }, heartbeatIntervalMs);
+        }, HEARTBEAT_MS);
 
         try {
+            // D-05: Check campaign status before sending — a cancellation may have arrived mid-batch.
+            const campaign = await db.get('SELECT status FROM dm_campaigns WHERE id = ?', campaign_id);
+            if (campaign && campaign.status === 'cancelled') {
+                clearInterval(leaseRefresher);
+                await updateTargetStatus(targetId, 'cancelled', {
+                    claimExpiresAt: null,
+                    assignedWorkerId: null
+                });
+                return { ok: false, sent: false, category: 'campaign_cancelled' };
+            }
+
             const guild = await this.client.guilds.fetch(guild_id);
             const member = await guild.members.fetch(user_id);
 
@@ -291,8 +302,10 @@ class DMWorker {
                     
                     let shouldDelete = false;
                     if (cancellation.mode === 'all') {
+                        // Q-04: 'all' deletes every message in the fetched batch — no break, intentional.
                         shouldDelete = true;
                     } else if (cancellation.mode === 'recent') {
+                        // Q-04: 'recent' also sets shouldDelete but breaks after the first deletion below.
                         shouldDelete = true;
                     } else if (cancellation.mode === 'phrase' && cancellation.phrase) {
                         if (msg.content.includes(cancellation.phrase)) shouldDelete = true;
@@ -302,7 +315,7 @@ class DMWorker {
                         try {
                             await msg.delete();
                             deletedCount++;
-                            if (cancellation.mode === 'recent') break; // only most recent
+                            if (cancellation.mode === 'recent') break; // only delete the most recent message
                         } catch(e) {}
                     }
                 }
@@ -318,10 +331,21 @@ class DMWorker {
     }
 
     async pollCancellations() {
-        const rows = await db.all(
-            `SELECT * FROM dm_cancellations WHERE id > ? AND (target_worker_id = 'all' OR target_worker_id = ?)`,
-            this.lastCancellationId, this.workerId
-        );
+        // Q-05: dm_cancellations is created by createInviteTables() (not db_async.js migrations).
+        // If the table doesn't exist yet (startup race) silently skip rather than flooding errors.
+        let rows;
+        try {
+            rows = await db.all(
+                `SELECT * FROM dm_cancellations WHERE id > ? AND (target_worker_id = 'all' OR target_worker_id = ?)`,
+                this.lastCancellationId, this.workerId
+            );
+        } catch (err) {
+            if (err && err.message && err.message.includes('no such table')) {
+                // Table not yet created — silently skip this poll cycle.
+                return;
+            }
+            throw err;
+        }
         
         if (!rows || rows.length === 0) return;
         

@@ -1,22 +1,13 @@
-const sqlite3 = require('sqlite3').verbose();
-const dbPath = 'C:/discord-bot/data/recruiter.db'; // Use absolute path for Windows
-const db = new sqlite3.Database(dbPath);
-
-console.log('Checking dm_campaigns schema...');
-db.all("PRAGMA table_info(dm_campaigns)", (err, rows) => {
-    if (err) {
-        console.error('Error reading dm_campaigns:', err);
-    } else {
-        console.log('dm_campaigns columns:', rows.map(r => r.name).join(', '));
+const db = require('./src/db_async');
+(async () => {
+    try {
+        const tables = await db.all("SELECT name FROM sqlite_master WHERE type='table'");
+        console.log('Tables:', tables.map(t => t.name).join(', '));
+        const columns = await db.all("PRAGMA table_info(dm_queue)").catch(() => []);
+        console.log('dm_queue columns:', columns.map(c => c.name).join(', '));
+    } catch (e) {
+        console.error(e);
+    } finally {
+        await db.close();
     }
-
-    console.log('\nChecking dm_worker_user_blocks schema...');
-    db.all("PRAGMA table_info(dm_worker_user_blocks)", (err, rows) => {
-        if (err) {
-            console.error('Error reading dm_worker_user_blocks:', err);
-        } else {
-            console.log('dm_worker_user_blocks columns:', rows.map(r => r.name).join(', '));
-        }
-        db.close();
-    });
-});
+})();

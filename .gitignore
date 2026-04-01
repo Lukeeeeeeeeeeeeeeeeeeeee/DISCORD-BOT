@@ -1,4 +1,4 @@
-﻿# Node modules
+# Node modules
 node_modules/
 
 # Database backups
@@ -25,3 +25,8 @@ data/aecs/
 
 # Local anti-nuke runtime state
 src/data/antinuke_data.local.json
+# Z-03: Catch-all for any *.local.json runtime state files
+*.local.json
+
+# Z-05: Mistyped 'git status' redirect artifact in repo root
+tatus

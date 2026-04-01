@@ -25,6 +25,56 @@ function debugLog(...args) {
   if (DEBUG_SCHEDULER) console.log(...args);
 }
 
+// M-02: Extract the repeated staff-role fallback into a single utility rather than
+// duplicating the Array.isArray / filter(Boolean) pattern across 4+ files.
+function resolveStaffRoles() {
+  return Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
+    ? ROLE_IDS.STAFF.filter(Boolean)
+    : [
+      ROLE_IDS.HELPER,
+      ROLE_IDS.HELPER_PLUS,
+      ROLE_IDS.MOD,
+      ROLE_IDS.CHIEF,
+      ROLE_IDS.CHIEF_OF_WAR,
+      ROLE_IDS.CHIEF_OF_COMMUNITY,
+      ROLE_IDS.CHIEF_OF_RECRUITMENT,
+      ROLE_IDS.CO_LEADER,
+      ROLE_IDS.LEADER,
+      ROLE_IDS.HIGH_STAFF
+    ].filter(Boolean);
+}
+
+// P-01: Single-query batch replacement for per-recruiter isNewStaff() calls inside leaderboard loops.
+// isNewStaff() makes one DB query per recruiter — for 50 recruiters that's 50 serial round-trips.
+// This helper fetches the minimum recruit creation date for every recruiter in one query and returns
+// a Map<recruiterId, boolean> for O(1) lookup inside the hot path.
+async function batchIsNewStaff(db, recruiterIds, guildId, newStaffWindow = 14 * 24 * 60 * 60 * 1000) {
+  if (!recruiterIds || recruiterIds.length === 0) return new Map();
+  const cutoff = Date.now() - newStaffWindow;
+  try {
+    const placeholders = recruiterIds.map(() => '?').join(',');
+    const rows = await db.all(
+      `SELECT recruiter_id, MIN(created_at) AS first_recruit_at FROM recruits
+       WHERE guild_id = ? AND recruiter_id IN (${placeholders}) AND valid = 1
+       GROUP BY recruiter_id`,
+      guildId, ...recruiterIds
+    );
+    const result = new Map();
+    const rowMap = new Map((rows || []).map(r => [r.recruiter_id, r.first_recruit_at]));
+    for (const id of recruiterIds) {
+      const firstAt = rowMap.get(id);
+      // "new staff" = first recruit was within the window (or no recruits yet)
+      result.set(id, firstAt == null || Number(firstAt) >= cutoff);
+    }
+    return result;
+  } catch (e) {
+    // Fallback: treat everyone as not-new-staff on error to avoid blocking leaderboard refresh.
+    const fallback = new Map();
+    for (const id of recruiterIds) fallback.set(id, false);
+    return fallback;
+  }
+}
+
 const SNAPSHOT_CONCURRENCY = Number.parseInt(process.env.SNAPSHOT_CONCURRENCY || '3', 10);
 
 const { runWithConcurrency } = require('./lib/concurrency');
@@ -117,20 +167,7 @@ async function resolveGuild(client) {
 async function resolveAllRecruiterIds(guild, db) {
   if (!guild) return [];
   const guildId = guild.id || resolveGuildId();
-  const staffRoleIds = Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
-    ? ROLE_IDS.STAFF.filter(Boolean)
-    : [
-      ROLE_IDS.HELPER,
-      ROLE_IDS.HELPER_PLUS,
-      ROLE_IDS.MOD,
-      ROLE_IDS.CHIEF,
-      ROLE_IDS.CHIEF_OF_WAR,
-      ROLE_IDS.CHIEF_OF_COMMUNITY,
-      ROLE_IDS.CHIEF_OF_RECRUITMENT,
-      ROLE_IDS.CO_LEADER,
-      ROLE_IDS.LEADER,
-      ROLE_IDS.HIGH_STAFF
-    ].filter(Boolean);
+  const staffRoleIds = resolveStaffRoles();
 
   const recruiterRoleIds = [
     ROLE_IDS.RECRUITER,
@@ -431,6 +468,9 @@ async function recomputeLeaderboardsInternal(db, guild) {
       const enriched = [];
       const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
 
+      // P-01: Batch isNewStaff lookup — replaces N sequential DB queries with a single GROUP BY query.
+      const isNewStaffMap = await batchIsNewStaff(db, Array.from(allRecruiterIds), guildId).catch(() => new Map());
+
       for (const r of (rowsBase || [])) {
         const absence = meta.absences.has(r.recruiter_id);
         const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;
@@ -438,7 +478,8 @@ async function recomputeLeaderboardsInternal(db, guild) {
         const staffMember = (memberMap && memberMap.get(r.recruiter_id))
           || (guild && guild.members && guild.members.cache ? guild.members.cache.get(r.recruiter_id) : null);
         const roleBase = getBaseRequirement(staffMember);
-        const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
+        // P-01: Look up from pre-fetched map instead of awaiting a per-recruiter DB query.
+        const newStaffCheck = isNewStaffMap.get(r.recruiter_id) ?? false;
 
         const isTrialRecruiter = !!staffMember
           && staffMember.roles
@@ -609,6 +650,10 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
 
   const rows = [];
   const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+
+  // P-01: Batch isNewStaff lookup for warnings leaderboard.
+  const isNewStaffMap2 = await batchIsNewStaff(db, recruiterIds, guildId).catch(() => new Map());
+
   for (const r of rowsBase || []) {
     const absence = meta.absences.has(r.recruiter_id);
     const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;
@@ -616,7 +661,8 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
     const staffMember = (memberMap && memberMap.get(r.recruiter_id))
       || (guild && guild.members && guild.members.cache ? guild.members.cache.get(r.recruiter_id) : null);
     const roleBase = getBaseRequirement(staffMember);
-    const newStaffCheck = await isNewStaff(db, r.recruiter_id).catch(() => false);
+    // P-01: Look up from pre-fetched map instead of awaiting a per-recruiter DB query.
+    const newStaffCheck = isNewStaffMap2.get(r.recruiter_id) ?? false;
 
     const systemWarningRow = meta.systemWarnings.has(r.recruiter_id);
 
@@ -679,6 +725,9 @@ async function recomputeWarningsLeaderboard(db, guild) {
   }
 }
 
+// E-03: This stub intentionally does nothing.
+// TODO(dead-code): reconcileTrialRecruiters was migrated to another module.
+// Remove this function and its caller once confirmed no external references exist.
 async function reconcileTrialRecruiters(_db, _client) {
   // Intentionally disabled/handled elsewhere.
 }

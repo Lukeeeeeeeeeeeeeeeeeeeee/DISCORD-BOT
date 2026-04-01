@@ -1,12 +1,15 @@
 const { hasAdministrator, hasAdminOrStaffPermissions } = require('./permissions');
 const { replyError } = require('./embeds');
+// D-01: Import MessageFlags so ephemeral replies use the named constant rather than magic number 64.
+const { MessageFlags } = require('discord.js');
 
 async function ensureCommandAccess(interaction, options = {}) {
   const {
     allowStaff = false,
     requireAboveBot = false,
     deniedMessage,
-    flags = 64
+    // D-01: Use MessageFlags.Ephemeral instead of magic number 64.
+    flags = MessageFlags.Ephemeral
   } = options;
 
   const member = interaction && interaction.member ? interaction.member : null;

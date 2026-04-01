@@ -1,9 +1,10 @@
 require('dotenv').config();
 const path = require('path');
-const { Client, GatewayIntentBits, Collection } = require('discord.js');
+const { Client, GatewayIntentBits, Collection, PermissionsBitField, MessageFlags } = require('discord.js');
 const db = require('./db_async');
 const scheduler = require('./scheduler');
 const { GUILD_ID, ROLE_IDS, RECRUITER_ROLE_IDS } = require('./constants');
+const { withTransaction } = require('./lib/transactions');
 const AntiNukeSystem = require('./lib/antinuke-system');
 const { dispatchCommand } = require('./lib/command-dispatcher');
 const { trackRookieChatMessage } = require('./lib/rookie-chat');
@@ -174,7 +175,8 @@ async function configureAecsTelemetry(client, source = 'startup') {
     ? routeSummary.map((entry) => `${entry.route}:${entry.status}${entry.reason ? `(${entry.reason})` : ''}`).join(', ')
     : 'no routes';
 
-  console.log(`[AECS] Telemetry ${source}: ${summaryText}`);
+  // Q-08: Route through structured logger so AECS telemetry setup is visible in telemetry itself.
+  logRuntimeEvent('info', `${source}.aecs.telemetry.routes`, `[AECS] Telemetry ${source}: ${summaryText}`);
 
   if (telemetryProvision.skipped) {
     logRuntimeEvent('warn', `${source}.aecs.telemetry`, 'AECS telemetry provisioning skipped', {
@@ -338,9 +340,9 @@ async function onReady() {
   // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
   if (guildId) {
     registerCommands({ guildId }).then(() => {
-      console.log(`Auto-synced commands to guild ${guildId}.`);
+      logRuntimeEvent('info', 'startup.commands.sync', `Auto-synced commands to guild ${guildId}.`, { guildId });
     }).catch(err => {
-      console.error('Failed to auto-sync commands on startup:', err);
+      logUnexpectedError('startup.commands.sync', err, { guildId });
     });
   }
 
@@ -449,24 +451,33 @@ async function flushShutdown(signal) {
 
 process.on('SIGINT', () => void flushShutdown('SIGINT'));
 process.on('SIGTERM', () => void flushShutdown('SIGTERM'));
-process.on('uncaughtException', async (err) => {
+// R-01: These handlers must NOT be async functions — Node.js ignores the returned promise so any
+// secondary throw becomes an unhandled rejection that may crash before graceful shutdown completes.
+// We use synchronous .then().catch() chains to ensure secondary failures are caught.
+process.on('uncaughtException', (err) => {
   const codex = new CodexError('SYS-910', {
     scope: 'process.uncaughtException',
     name: err && err.name ? err.name : 'Error',
     message: err && err.message ? err.message : String(err)
   }, { originalError: err instanceof Error ? err : null });
-  await AECS.dispatch(codex, { scope: 'process.uncaughtException' });
-  await flushShutdown('uncaughtException');
+  Promise.resolve()
+    .then(() => AECS.dispatch(codex, { scope: 'process.uncaughtException' }))
+    .catch(() => {})
+    .then(() => flushShutdown('uncaughtException'))
+    .catch(() => process.exit(1));
 });
-process.on('unhandledRejection', async (reason) => {
+process.on('unhandledRejection', (reason) => {
   const error = reason instanceof Error ? reason : new Error(String(reason));
   const codex = new CodexError('SYS-910', {
     scope: 'process.unhandledRejection',
     name: error.name,
     message: error.message
   }, { originalError: error });
-  await AECS.dispatch(codex, { scope: 'process.unhandledRejection' });
-  await flushShutdown('unhandledRejection');
+  Promise.resolve()
+    .then(() => AECS.dispatch(codex, { scope: 'process.unhandledRejection' }))
+    .catch(() => {})
+    .then(() => flushShutdown('unhandledRejection'))
+    .catch(() => process.exit(1));
 });
 
 client.on('interactionCreate', async interaction => {
@@ -494,7 +505,7 @@ client.on('interactionCreate', async interaction => {
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply({ embeds: [embed] });
         } else {
-          await interaction.reply({ embeds: [embed], flags: 64 });
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         }
       } catch (err2) {
         // If the interaction is expired, Discord returns code 10062 - ignore silently
@@ -508,9 +519,13 @@ client.on('interactionCreate', async interaction => {
 
 client.on('guildMemberUpdate', async (oldMember, newMember) => {
   try {
+    // B-01: Null guard must be FIRST — enforced-role block below accesses newMember.guild which
+    // would throw if newMember is falsy (possible during shard reconnects).
+    if (!oldMember || !newMember) return;
+    if (!newMember.user || newMember.user.bot) return;
+
     if (
       hasEnforcedRoleConfig() &&
-      newMember &&
       newMember.id === ENFORCED_MEMBER_ID &&
       (!ENFORCED_GUILD_ID || newMember.guild.id === ENFORCED_GUILD_ID) &&
       newMember.roles &&
@@ -519,9 +534,6 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
     ) {
       await newMember.roles.add(ENFORCED_ROLE_ID, '24/7 enforced role assignment');
     }
-
-    if (!oldMember || !newMember) return;
-    if (!newMember.user || newMember.user.bot) return;
     if (!oldMember.roles || !oldMember.roles.cache || !newMember.roles || !newMember.roles.cache) return;
 
     const staffRoles = Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
@@ -625,7 +637,16 @@ client.on('guildMemberAdd', async (member) => {
     member.id === ENFORCED_MEMBER_ID &&
     (!ENFORCED_GUILD_ID || member.guild.id === ENFORCED_GUILD_ID)
   ) {
-    await member.roles.add(ENFORCED_ROLE_ID, '24/7 enforced role assignment');
+    // D-05: Wrap in try/catch — role add can fail if bot lacks hierarchy (50013). Labelled correctly.
+    try {
+      await member.roles.add(ENFORCED_ROLE_ID, '24/7 enforced role assignment');
+    } catch (err) {
+      logUnexpectedError('startup.role.enforce.memberAdd', err, {
+        guildId: member.guild && member.guild.id ? member.guild.id : null,
+        memberId: ENFORCED_MEMBER_ID,
+        roleId: ENFORCED_ROLE_ID
+      });
+    }
   }
 
   try {
@@ -639,7 +660,8 @@ client.on('guildMemberAdd', async (member) => {
 
     if (!inviteSystem) return;
 
-    console.log(` Member ${member.user.tag} joined the server`);
+    // Q-08/Z-01: Use structured logger; removed leading space from original string.
+    logRuntimeEvent('info', 'event.guildMemberAdd', `Member ${member.user.tag} joined the server`, { userId: member.id, guildId: member.guild.id });
     void withGuildJoinLock(member.guild.id, async () => {
       await trackInviteUsage(member.guild, inviteSystem, member.id).catch(err => {
         logUnexpectedError('invite.attribution.event', err, { guildId: member.guild.id, memberId: member.id });
@@ -715,39 +737,39 @@ async function persistInviteSnapshot(guildId, snapshot) {
   if (!guildId || !snapshot) return;
   const codes = Array.from(snapshot.keys());
   try {
-    await db.exec('BEGIN');
-    const now = Date.now();
-    for (const code of codes) {
-      const uses = Number(snapshot.get(code) || 0);
-      await db.run(
-        `INSERT INTO invite_snapshots (guild_id, invite_code, uses, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(guild_id, invite_code) DO UPDATE SET uses = excluded.uses, updated_at = excluded.updated_at`,
-        guildId,
-        code,
-        uses,
-        now
-      );
-    }
-    if (codes.length) {
-      const placeholders = codes.map(() => '?').join(', ');
-      await db.run(
-        `DELETE FROM invite_snapshots WHERE guild_id = ? AND invite_code NOT IN (${placeholders})`,
-        guildId,
-        ...codes
-      );
-    } else {
-      await db.run('DELETE FROM invite_snapshots WHERE guild_id = ?', guildId);
-    }
-    await db.exec('COMMIT');
+    await withTransaction(db, async (tx) => {
+      const now = Date.now();
+      for (const code of codes) {
+        const uses = Number(snapshot.get(code) || 0);
+        await tx.run(
+          `INSERT INTO invite_snapshots (guild_id, invite_code, uses, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(guild_id, invite_code) DO UPDATE SET uses = excluded.uses, updated_at = excluded.updated_at`,
+          guildId,
+          code,
+          uses,
+          now
+        );
+      }
+      if (codes.length) {
+        const placeholders = codes.map(() => '?').join(', ');
+        await tx.run(
+          `DELETE FROM invite_snapshots WHERE guild_id = ? AND invite_code NOT IN (${placeholders})`,
+          guildId,
+          ...codes
+        );
+      } else {
+        await tx.run('DELETE FROM invite_snapshots WHERE guild_id = ?', guildId);
+      }
+    });
   } catch (e) {
-    try { await db.exec('ROLLBACK'); } catch (err) { void err; }
     console.error('Failed to persist invite snapshot:', e);
   }
 }
 
 async function cacheGuildInvites(guild) {
   if (!guild || typeof guild.invites?.fetch !== 'function') return;
+  if (!guild.members.me || !guild.members.me.permissions.has(PermissionsBitField.Flags.ManageGuild)) return;
   const invites = await guild.invites.fetch().catch(err => {
     console.error('Failed to fetch guild invites:', err);
     return null;
@@ -762,6 +784,7 @@ async function cacheGuildInvites(guild) {
 
 async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
   if (!guild || typeof guild.invites?.fetch !== 'function') return;
+  if (!guild.members.me || !guild.members.me.permissions.has(PermissionsBitField.Flags.ManageGuild)) return;
   const lock = inviteTrackLocks.get(guild.id) || Promise.resolve();
   const run = lock.then(async () => {
     let previous = inviteSnapshots.get(guild.id);

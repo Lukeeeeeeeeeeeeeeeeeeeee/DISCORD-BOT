@@ -1,8 +1,13 @@
 const { ROLE_IDS } = require('../constants');
 const { getRegionInfo } = require('./regions');
+const { PermissionsBitField } = require('discord.js');
 
 async function retrySetNickname(member, nickname, delaysMs = [0, 1000, 2000]) {
     if (!member || !nickname) return false;
+    const botMember = member.guild?.members?.me;
+    if (botMember && !botMember.permissions.has(PermissionsBitField.Flags.ManageNicknames)) return false;
+    if (botMember && member.id !== botMember.id && botMember.roles.highest.position <= member.roles.highest.position) return false;
+
     for (let i = 0; i < delaysMs.length; i++) {
         const delay = delaysMs[i];
         if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
@@ -70,29 +75,34 @@ async function promoteMember({ member, db, guild, verifierId }) {
       && typeof member.roles.remove === 'function'
       && typeof member.roles.add === 'function';
 
-    if (hasGranularRoleOps) {
-        const removeList = uniqueRolesToRemove.filter(roleId => member.roles.cache.has(roleId));
-        if (removeList.length > 0) {
-            await member.roles.remove(removeList, 'Rookie promotion cleanup').catch(err => {
-                console.error('Failed to remove onboarding roles during rookie promotion:', err);
-            });
-        }
+    const botMember = member.guild?.members?.me;
+    const canManageRoles = botMember && botMember.permissions.has(PermissionsBitField.Flags.ManageRoles) && botMember.roles.highest.position > member.roles.highest.position;
 
-        const addList = targetRoleIds.filter(roleId => !member.roles.cache.has(roleId));
-        if (addList.length > 0) {
-            await member.roles.add(addList, 'Rookie promotion').catch(err => {
-                console.error('Failed to add target roles during rookie promotion:', err);
+    if (canManageRoles) {
+        if (hasGranularRoleOps) {
+            const removeList = uniqueRolesToRemove.filter(roleId => member.roles.cache.has(roleId));
+            if (removeList.length > 0) {
+                await member.roles.remove(removeList, 'Rookie promotion cleanup').catch(err => {
+                    console.error('Failed to remove onboarding roles during rookie promotion:', err);
+                });
+            }
+
+            const addList = targetRoleIds.filter(roleId => !member.roles.cache.has(roleId));
+            if (addList.length > 0) {
+                await member.roles.add(addList, 'Rookie promotion').catch(err => {
+                    console.error('Failed to add target roles during rookie promotion:', err);
+                });
+            }
+        } else {
+            // Fallback for partial mocks/legacy wrappers that do not expose add/remove.
+            const currentRoleIds = new Set(member.roles.cache.map(r => r.id));
+            for (const roleId of uniqueRolesToRemove) currentRoleIds.delete(roleId);
+            for (const roleId of targetRoleIds) currentRoleIds.add(roleId);
+            const finalRoleIds = Array.from(currentRoleIds).filter(id => id !== member.guild.id);
+            await member.roles.set(finalRoleIds, 'Rookie promotion').catch(err => {
+                console.error('Failed to update roles during rookie promotion:', err);
             });
         }
-    } else {
-        // Fallback for partial mocks/legacy wrappers that do not expose add/remove.
-        const currentRoleIds = new Set(member.roles.cache.map(r => r.id));
-        for (const roleId of uniqueRolesToRemove) currentRoleIds.delete(roleId);
-        for (const roleId of targetRoleIds) currentRoleIds.add(roleId);
-        const finalRoleIds = Array.from(currentRoleIds).filter(id => id !== member.guild.id);
-        await member.roles.set(finalRoleIds, 'Rookie promotion').catch(err => {
-            console.error('Failed to update roles during rookie promotion:', err);
-        });
     }
 
     // Update Nickname

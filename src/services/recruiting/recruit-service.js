@@ -732,7 +732,7 @@ async function execute(interaction, _client, dbHandle = null) {
         return replyError(interaction, 'Unable to find one of the users mentioned.');
       }
 
-       if (isTransientSqliteError(err)) {
+      if (isTransientSqliteError(err)) {
         return replyError(interaction, 'Recruiting system is busy right now. Please retry in a few seconds.');
       }
 
