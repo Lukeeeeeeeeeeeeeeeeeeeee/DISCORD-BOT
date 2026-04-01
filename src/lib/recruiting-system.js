@@ -339,21 +339,21 @@ async function storeWeeklyCalculation(db, data) {
       data.recruiterId,
       nowTs,
       weekStart,
-      data.recruits7d,
-      data.activityRate,
+      data.recruits7d || 0,
+      data.activityRate || 0,
       data.verifyRate != null ? data.verifyRate : 0,
-      data.retention,
-      data.warnings,
-      absent,
+      data.retention || 0,
+      data.warnings || 0,
+      absent || 0,
       data.previousMinReq ?? null,
-      Number.isFinite(data.calculatedMinReq) ? data.calculatedMinReq : 2,
+      Math.floor(Number.isFinite(data.calculatedMinReq) ? data.calculatedMinReq : 2),
       data.roleBase ?? 2
     ];
 
     await db.run(
       `INSERT INTO weekly_calculations
        (guild_id, recruiter_id, timestamp, week_start, recruits7d, activity_rate, verify_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 2), COALESCE(?, 2))
        ON CONFLICT(guild_id, recruiter_id, week_start) DO UPDATE SET
          timestamp = excluded.timestamp,
          recruits7d = excluded.recruits7d,
@@ -363,8 +363,8 @@ async function storeWeeklyCalculation(db, data) {
          warnings = excluded.warnings,
          absent = excluded.absent,
          previous_min_req = excluded.previous_min_req,
-         calculated_min_req = excluded.calculated_min_req,
-         role_base = excluded.role_base`,
+         calculated_min_req = COALESCE(excluded.calculated_min_req, 2),
+         role_base = COALESCE(excluded.role_base, 2)`,
       ...values
     );
   } catch (error) {

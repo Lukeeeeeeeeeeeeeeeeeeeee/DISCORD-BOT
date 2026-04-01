@@ -52,6 +52,9 @@ async function warmMemberCacheIfNeeded(guild, totalRoleMembers, reason, options 
 module.exports = {
   data: { name: 'leaderboard' },
   async execute(interaction) {
+    if (interaction.options.getSubcommand() !== 'show') {
+      await interaction.deferReply({ ephemeral: true }).catch(() => {});
+    }
     const sub = interaction.options.getSubcommand();
     const guildId = resolveGuildId(interaction.guild);
     if (sub === 'show') {
