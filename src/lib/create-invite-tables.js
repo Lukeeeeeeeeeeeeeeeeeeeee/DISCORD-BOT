@@ -96,7 +96,8 @@ async function createInviteTables() {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         report_posted INTEGER DEFAULT 0,
-        report_posted_at INTEGER
+        report_posted_at INTEGER,
+        report_attempts INTEGER DEFAULT 0
       )
     `);
 
@@ -178,7 +179,8 @@ async function createInviteTables() {
     const dmCampaignsColumns = [
       { name: 'max_misc_streak', type: 'INTEGER DEFAULT 4' },
       { name: 'sticky_window_hours', type: 'INTEGER DEFAULT 24' },
-      { name: 'started_at', type: 'INTEGER' }
+      { name: 'started_at', type: 'INTEGER' },
+      { name: 'report_attempts', type: 'INTEGER DEFAULT 0' }
     ];
 
     for (const col of dmCampaignsColumns) {

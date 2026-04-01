@@ -6,7 +6,12 @@
  */
 'use strict';
 
-// ── Configuration defaults ──────────────────────────────────────────────────
+// ── Registry [Singleton Alert] ───────────────────────────────────────────────
+// In a single-process environment, this cache is shared. For multi-process
+// horizontal scaling, this should be moved to a distributed store (e.g. Redis).
+let eligibleWorkersCache = { data: null, expiresAt: 0 };
+const { envInt } = require('../../lib/env-utils');
+const WEIGHTED_STALE_MS = envInt('DM_SELECTOR_STALE_MS', 60000);
 const DEFAULT_STICKY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_MAX_MISC_STREAK = 4;
 
@@ -34,13 +39,43 @@ function pickWorkerWeightedRandom(candidates) {
 }
 
 /**
+ * Fetch enabled and online workers from the database with a local cache.
+ * 
+ * @param {number} [staleThresholdMs=120000] 
+ * @returns {Promise<Array>}
+ */
+async function getEligibleWorkers(staleThresholdMs = 120000) {
+    const now = Date.now();
+    
+    // CACHE HIT: Use WEIGHTED_STALE_MS from env or default (60s)
+    if (eligibleWorkersCache.data && now < eligibleWorkersCache.expiresAt) {
+        return eligibleWorkersCache.data;
+    }
+
+    try {
+        const db = require('../../db_async');
+        const rows = await db.all(
+            `SELECT worker_id, display_name, weight, status FROM dm_workers 
+             WHERE enabled = 1 AND status = 'online' AND last_seen_at >= ?`,
+            now - staleThresholdMs
+        );
+        eligibleWorkersCache = { data: rows, expiresAt: now + WEIGHTED_STALE_MS };
+        return rows;
+    } catch (err) {
+        const { logUnexpectedError } = require('../../lib/logger');
+        logUnexpectedError('dm.selector.getEligibleWorkers', err);
+        return [];
+    }
+}
+
+/**
  * Core selector: choose which worker should handle a DM for a target user.
  *
  * @param {object} opts
  * @param {string} opts.messageType         'misc' | 'war_early' | 'war_late'
  * @param {object|null} opts.affinity       Row from dm_user_affinity (or null if new user)
  * @param {object[]} opts.eligibleWorkers   Array of dm_workers rows that are enabled + online
- * @param {Set<string>} opts.blockedWorkerIds  Worker IDs that are blocked for this user
+ * @param {Set<string>|Array<string>} opts.blockedWorkerIds  Worker IDs that are blocked for this user
  * @param {number} [opts.stickyWindowMs]    Override for 24h sticky window
  * @param {number} [opts.maxMiscStreak]     Override for max consecutive misc sends
  * @param {number} [now=Date.now()]         Current timestamp for affinity windows
@@ -146,6 +181,7 @@ function getRetryAfterMs(error, fallbackMs = 2000) {
 }
 
 module.exports = {
+    getEligibleWorkers,
     pickWorker,
     pickWorkerWeightedRandom,
     classifyDmError,

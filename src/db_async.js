@@ -457,6 +457,7 @@ async function init() {
     updated_at INTEGER NOT NULL,
     report_posted INTEGER DEFAULT 0,
     report_posted_at INTEGER,
+    report_attempts INTEGER DEFAULT 0,
     message_hash TEXT,
     last_notified_percentage INTEGER DEFAULT 0
   );
@@ -1267,6 +1268,7 @@ async function init() {
   await ensureColumnWithRetry('weekly_calculations', 'verify_rate REAL DEFAULT 0');
   await ensureColumnWithRetry('dm_campaigns', 'message_hash TEXT');
   await ensureColumnWithRetry('dm_campaigns', 'last_notified_percentage INTEGER DEFAULT 0');
+  await ensureColumnWithRetry('dm_campaigns', 'report_attempts INTEGER DEFAULT 0');
   await ensureColumnWithRetry('dm_cancellations', 'campaign_id INTEGER');
 
   try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { void e; }

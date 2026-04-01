@@ -7,7 +7,8 @@
 'use strict';
 
 const db = require('../../db_async');
-const { getReport,    markReportPosted,
+const { getReport, markReportPosted,
+    incrementReportAttempts,
     getUnreportedCampaigns,
     getRunningCampaigns,
     updateCampaignNotificationThreshold
@@ -241,10 +242,24 @@ async function postReport(client, campaignId, channelIdOverride) {
 async function scanAndPostReports(client) {
     try {
         const campaigns = await getUnreportedCampaigns();
+        let reportsSent = 0;
         for (const campaign of campaigns) {
-            await postReport(client, campaign.id);
+            // SAFETY: Skip campaigns that have failed report posting too many times (likely deleted channel or perms)
+            if ((campaign.report_attempts || 0) >= 10) {
+                continue;
+            }
+
+            try {
+                // Increment attempts first so we don't loop forever if the process crashes mid-post
+                await incrementReportAttempts(campaign.id);
+
+                await postReport(client, campaign.id);
+                reportsSent++;
+            } catch (err) {
+                void logUnexpectedError('dm.reporter.scan', err, { campaignId: campaign.id });
+            }
         }
-        return campaigns.length;
+        return reportsSent;
     } catch (err) {
         void logUnexpectedError('dm.reporter.scan', err);
         return 0;

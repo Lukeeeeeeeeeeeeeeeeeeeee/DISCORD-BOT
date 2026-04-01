@@ -8,6 +8,7 @@
 
 const crypto = require('crypto');
 const db = require('../../db_async');
+const { envInt } = require('../../lib/env-utils');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 
 // ── Tunables ────────────────────────────────────────────────────────────────
@@ -21,11 +22,7 @@ const VALID_CAMPAIGN_STATUSES = new Set(['queued', 'running', 'completed', 'comp
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function nowMs() { return Date.now(); }
 
-function envInt(key, fallback, min = 1, max = Number.MAX_SAFE_INTEGER) {
-    const parsed = Number.parseInt(process.env[key], 10);
-    if (!Number.isFinite(parsed)) return fallback;
-    return Math.min(max, Math.max(min, parsed));
-}
+function nowMs() { return Date.now(); }
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -167,6 +164,20 @@ async function createCampaign({
     // ── deduplicate against history (14 days) ──
     const messageHash = hashMessage(messageBody);
     const lookbackMs = 14 * 24 * 60 * 60 * 1000;
+    if (uniqueIds.length > HARD_MAX_TARGETS) {
+        throw new Error(`Total resolved targets ${uniqueIds.length} exceeds the hard safety limit of ${HARD_MAX_TARGETS}. Refine your filters.`);
+    }
+
+    // IDEMPOTENCY GUARD: Check if an identical campaign is already active in this guild
+    const activeDuplicate = await db.get(
+        `SELECT id FROM dm_campaigns 
+         WHERE guild_id = ? AND message_hash = ? AND status IN ('queued', 'running')`,
+        guild.id, messageHash
+    );
+    if (activeDuplicate) {
+        throw new Error(`An active campaign (ID: ${activeDuplicate.id}) already exists with this exact message in this server. Wait for it to finish or cancel it.`);
+    }
+
     const now = Date.now();
     const threshold = now - lookbackMs;
 
@@ -190,10 +201,6 @@ async function createCampaign({
             preview, 
             excludedByDedupe: excludedCount 
         };
-    }
-
-    if (finalIds.length > HARD_MAX_TARGETS) {
-        throw new Error(`Target count ${finalIds.length} exceeds hard max ${HARD_MAX_TARGETS}.`);
     }
 
     const insertBatchSize = await computeInsertBatchSize(finalIds.length);
@@ -400,6 +407,16 @@ async function markReportPosted(campaignId) {
 }
 
 /**
+ * Increment report attempts to track failure streaks.
+ */
+async function incrementReportAttempts(campaignId) {
+    await db.run(
+        `UPDATE dm_campaigns SET report_attempts = report_attempts + 1, updated_at = ? WHERE id = ?`,
+        Date.now(), campaignId
+    );
+}
+
+/**
  * Find campaigns that are done but report not yet posted.
  */
 async function getUnreportedCampaigns() {
@@ -465,6 +482,7 @@ module.exports = {
     cancelCampaign,
     getReport,
     markReportPosted,
+    incrementReportAttempts,
     getUnreportedCampaigns,
     getRunningCampaigns,
     updateCampaignNotificationThreshold,

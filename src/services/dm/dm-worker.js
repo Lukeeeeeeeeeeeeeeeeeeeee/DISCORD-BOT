@@ -9,15 +9,9 @@
 const db = require('../../db_async');
 const { pickWorker, classifyDmError, getRetryAfterMs } = require('./dm-worker-selector');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
+const { envInt } = require('../../lib/env-utils');
 
 // ── Tunables (env) ──────────────────────────────────────────────────────────
-function envInt(key, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
-    const raw = process.env[key];
-    if (raw === undefined || raw === null || raw.trim() === '') return fallback;
-    const v = Number.parseInt(raw, 10);
-    if (!Number.isFinite(v)) return fallback;
-    return Math.min(max, Math.max(min, v));
-}
 
 const POLL_MS = envInt('DM_QUEUE_POLL_MS', 800, 200, 30000);
 const CLAIM_BATCH = 1; // Atomic Sync: Only 1 DM at a time per worker to force parallel fleet distribution

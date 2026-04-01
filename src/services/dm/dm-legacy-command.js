@@ -2,7 +2,6 @@ const { CHANNELS } = require('../../constants');
 const { ensureCommandAccess } = require('../../lib/command-auth');
 const { replyError } = require('../../lib/embeds');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
-const { resolveGuildId } = require('../../lib/guild');
 const { createCampaign } = require('../dm/dm-campaign-service');
 
 module.exports = {
@@ -34,7 +33,6 @@ module.exports = {
     await interaction.deferReply({ flags: 64 });
 
     try {
-      const guildId = resolveGuildId(interaction.guild);
       const targetMode = dmEveryone ? 'everyone' : 'any_roles';
       const roleIds = role ? [role.id] : [];
 
