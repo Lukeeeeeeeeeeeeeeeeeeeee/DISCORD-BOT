@@ -260,9 +260,15 @@ async function scanAndPostProgressHeartbeats(client) {
         let heartbeatsSent = 0;
 
         for (const campaign of campaigns) {
-            const totalReported = (campaign.total_sent || 0) + (campaign.total_failed || 0) + (campaign.total_blocked || 0) + (campaign.total_undeliverable || 0);
+            // ROBUST MATH: Subtract remaining targets from total to avoid state-addition fragility
+            const remainingRow = await db.get(
+                `SELECT COUNT(*) as cnt FROM dm_campaign_targets 
+                 WHERE campaign_id = ? AND status IN ('pending', 'claimed', 'sending', 'retry_wait')`,
+                campaign.id
+            );
+            const remaining = remainingRow ? remainingRow.cnt : 0;
             const totalRecipients = campaign.total_targets || 1;
-            const progress = (totalReported / totalRecipients) * 100;
+            const progress = ((totalRecipients - remaining) / totalRecipients) * 100;
 
             let threshold = 0;
             if (progress >= 75) threshold = 75;

@@ -67,34 +67,44 @@ class DMWorker {
         const leaseExpiry = now + CLAIM_LEASE_MS;
         const claimId = `claim_${this.workerId}_${now}_${Math.random().toString(36).slice(2, 7)}`;
 
-        await db.run(
-            `UPDATE dm_campaign_targets
-             SET status = 'pending', assigned_worker_id = NULL, claim_id = NULL, updated_at = ?
-             WHERE status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?`,
-            now, now
-        );
+        // ATOMIC CLAIM: Use a transaction to ensure stale cleanup and new claims are atomic
+        try {
+            await db.run('BEGIN IMMEDIATE');
 
-        await db.run(
-            `UPDATE dm_campaign_targets
-             SET status = 'claimed',
-                 assigned_worker_id = ?,
-                 claim_id = ?,
-                 claim_expires_at = ?,
-                 updated_at = ?
-             WHERE id IN (
-                 SELECT t.id
-                 FROM dm_campaign_targets t
-                 JOIN dm_campaigns c ON c.id = t.campaign_id
-                 WHERE (t.status = 'pending' OR (t.status = 'sending' AND t.claim_expires_at <= ?))
-                   AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= ?)
-                   AND (t.claim_expires_at IS NULL OR t.claim_expires_at <= ?)
-                   AND (t.assigned_worker_id IS NULL OR t.assigned_worker_id = ?)
-                   AND c.status IN ('queued', 'running')
-                 ORDER BY t.batch_no ASC, t.id ASC
-                 LIMIT ?
-             ) AND (status = 'pending' OR status = 'sending')`,
-            this.workerId, claimId, leaseExpiry, now, now, now, now, this.workerId, batchSize
-        );
+            // 1. Expire stale claims
+            await db.run(
+                `UPDATE dm_campaign_targets
+                 SET status = 'pending', assigned_worker_id = NULL, claim_id = NULL, updated_at = ?
+                 WHERE status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?`,
+                now, now
+            );
+
+            // 2. Claim new targets
+            await db.run(
+                `UPDATE dm_campaign_targets
+                 SET status = 'claimed',
+                     assigned_worker_id = ?,
+                     claim_id = ?,
+                     claim_expires_at = ?,
+                     updated_at = ?
+                 WHERE id IN (
+                     SELECT t.id
+                     FROM dm_campaign_targets t
+                     JOIN dm_campaigns c ON c.id = t.campaign_id
+                     WHERE (t.status = 'pending' OR (t.status = 'sending' AND t.claim_expires_at <= ?))
+                       AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= ?)
+                       AND c.status IN ('queued', 'running')
+                     ORDER BY t.batch_no ASC, t.id ASC
+                     LIMIT ?
+                 ) AND (status = 'pending' OR status = 'sending')`,
+                this.workerId, claimId, leaseExpiry, now, now, now, batchSize
+            );
+
+            await db.run('COMMIT');
+        } catch (err) {
+            await db.run('ROLLBACK').catch(() => null);
+            throw err;
+        }
 
         const rows = await db.all(
             `SELECT t.id, t.campaign_id, t.guild_id, t.user_id, t.batch_no, t.attempts, t.worker_switches,
@@ -308,11 +318,15 @@ class DMWorker {
     }
 
     async executeCancellation(cancellation) {
+        // SURGICAL: Filter by campaign_id if available to prevent broad deletions
+        const campaignId = cancellation.campaign_id;
+        if (!campaignId) return;
+
         // Fetch attempts with potential message IDs for surgical deletion
         const attempts = await db.all(
             `SELECT user_id, message_id FROM dm_delivery_attempts 
-             WHERE worker_id = ? AND result = 'sent' AND created_at >= ?`,
-            this.workerId, Date.now() - (48 * 60 * 60 * 1000)
+             WHERE worker_id = ? AND campaign_id = ? AND result = 'sent' AND created_at >= ?`,
+            this.workerId, campaignId, Date.now() - (48 * 60 * 60 * 1000)
         );
         
         if (!attempts || attempts.length === 0) return;
@@ -595,13 +609,36 @@ async function routeTargetToWorker(target, selfWorkerId) {
 }
 
 async function checkCampaignCompletion(campaignId) {
-    const remaining = await db.get(`SELECT COUNT(*) as cnt FROM dm_campaign_targets WHERE campaign_id = ? AND status IN ('pending', 'claimed', 'retry_wait')`, campaignId);
+    const remaining = await db.get(
+        `SELECT COUNT(*) as cnt FROM dm_campaign_targets 
+         WHERE campaign_id = ? AND status IN ('pending', 'claimed', 'sending', 'retry_wait')`,
+        campaignId
+    );
     if (remaining && remaining.cnt > 0) return false;
-    const failures = await db.get(`SELECT COUNT(*) as cnt FROM dm_campaign_targets WHERE campaign_id = ? AND status IN ('failed', 'undeliverable', 'blocked')`, campaignId);
+
+    const failures = await db.get(
+        `SELECT COUNT(*) as cnt FROM dm_campaign_targets 
+         WHERE campaign_id = ? AND status IN ('failed', 'undeliverable', 'blocked')`,
+        campaignId
+    );
     const now = Date.now();
     const newStatus = (failures && failures.cnt > 0) ? 'completed_with_errors' : 'completed';
-    await db.run(`UPDATE dm_campaigns SET status = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')`, newStatus, now, now, campaignId);
-    void logRuntimeEvent('info', 'dm.campaign.completed', 'DM campaign completed', { campaignId, status: newStatus, hasErrors: failures && failures.cnt > 0 });
+
+    // ATOMIC COMPLETION: Only update if status is still 'queued' or 'running'
+    // result.changes will be 1 only for the *first* worker to finish the campaign
+    const result = await db.run(
+        `UPDATE dm_campaigns SET status = ?, finished_at = ?, updated_at = ? 
+         WHERE id = ? AND status IN ('queued', 'running')`,
+        newStatus, now, now, campaignId
+    );
+
+    if (result.changes > 0) {
+        void logRuntimeEvent('info', 'dm.campaign.completed', 'DM campaign completed', {
+            campaignId,
+            status: newStatus,
+            hasErrors: failures && failures.cnt > 0
+        });
+    }
     return true;
 }
 

@@ -217,12 +217,18 @@ async function createInviteTables() {
       }
     }
 
+    if (!(await tableHasColumn('dm_cancellations', 'campaign_id'))) {
+      console.log('[Migration] Adding column campaign_id to dm_cancellations...');
+      await db.run('ALTER TABLE dm_cancellations ADD COLUMN campaign_id INTEGER');
+    }
+
     await db.run(`
       CREATE TABLE IF NOT EXISTS dm_cancellations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         target_worker_id TEXT DEFAULT 'all',
         mode TEXT NOT NULL,
         phrase TEXT,
+        campaign_id INTEGER,
         created_at INTEGER NOT NULL
       )
     `);

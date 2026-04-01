@@ -87,6 +87,9 @@ async function resolveTargetMemberIds(guild, { targetMode, roleIds }) {
     try {
         membersCol = await guild.members.fetch();
     } catch (_err) {
+        void logRuntimeEvent('warn', 'dm.resolveMembers.cacheFallback', 'Failed to fetch guild members; falling back to local cache (may be stale).', {
+            guildId: guild.id
+        });
         membersCol = guild.members.cache;
     }
 
@@ -167,13 +170,13 @@ async function createCampaign({
     const now = Date.now();
     const threshold = now - lookbackMs;
 
-    // Use a high-performance subquery to find all user_ids who successfully received this message hash
+    // Use a high-performance subquery to find all user_ids who are already in the queue or have received this hash
     const alreadySentRows = await db.all(
         `SELECT DISTINCT user_id FROM dm_campaign_targets 
-         WHERE status = 'sent' 
+         WHERE status IN ('sent', 'pending', 'claimed', 'sending', 'retry_wait') 
          AND created_at > ?
-         AND campaign_id IN (SELECT id FROM dm_campaigns WHERE message_hash = ?)`,
-        threshold, messageHash
+         AND campaign_id IN (SELECT id FROM dm_campaigns WHERE message_hash = ? AND guild_id = ?)`,
+        threshold, messageHash, guild.id
     );
     const alreadySentSet = new Set(alreadySentRows.map(r => String(r.user_id)));
     const finalIds = uniqueIds.filter(id => !alreadySentSet.has(id));

@@ -35,6 +35,11 @@ module.exports = {
       option.setName('phrase')
         .setDescription('The exact phrase to delete (required if mode is phrase)')
         .setRequired(false)
+    )
+    .addIntegerOption(option =>
+      option.setName('campaign_id')
+        .setDescription('Surgical: Only delete messages from a specific campaign ID')
+        .setRequired(false)
     ),
 
   async execute(interaction) {
@@ -47,6 +52,7 @@ module.exports = {
     const mode = interaction.options.getString('mode', true);
     const target = interaction.options.getString('target') || 'all';
     const phrase = interaction.options.getString('phrase');
+    const campaignId = interaction.options.getInteger('campaign_id');
 
     if (mode === 'phrase' && !phrase) {
       return replyError(interaction, 'You must provide a `phrase` when using phrase mode.');
@@ -56,13 +62,13 @@ module.exports = {
 
     try {
       await db.run(
-        `INSERT INTO dm_cancellations (target_worker_id, mode, phrase, created_at) VALUES (?, ?, ?, ?)`,
-        target, mode, phrase || null, Date.now()
+        `INSERT INTO dm_cancellations (target_worker_id, mode, phrase, campaign_id, created_at) VALUES (?, ?, ?, ?, ?)`,
+        target, mode, phrase || null, campaignId || null, Date.now()
       );
 
       const targetText = target === 'all' ? 'All Bots' : (target === 'main' ? 'Main Bot Only' : target);
       return interaction.editReply({
-        content: `✅ Unsend request queued!\n**Target:** \`${targetText}\`\n**Mode:** \`${mode}\`${phrase ? `\n**Phrase:** \`${phrase}\`` : ''}\n\nThe fleet will automatically scan DMs from the past 24 hours and delete matches within the next 30 seconds.`
+        content: `✅ Unsend request queued!\n**Target:** \`${targetText}\`\n**Mode:** \`${mode}\`${phrase ? `\n**Phrase:** \`${phrase}\`` : ''}${campaignId ? `\n**Campaign ID:** \`${campaignId}\`` : ''}\n\nThe fleet will automatically scan DMs from the past 24 hours and delete matches within the next 30 seconds.`
       });
     } catch (err) {
       console.error('Error queuing unsend request:', err);
