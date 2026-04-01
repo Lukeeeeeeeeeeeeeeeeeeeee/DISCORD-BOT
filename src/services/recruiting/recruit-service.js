@@ -374,6 +374,15 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
     }
   }
 
+  // VULN-02: Atomic Progression (Only the first successful DB update proceeds)
+  const lockAcquired = await withTransaction(dbHandle, async (tx) => {
+    const fresh = await tx.get('SELECT promoted FROM recruiters WHERE guild_id = ? AND id = ?', guildId, recruiterMember.id);
+    if (!fresh || fresh.promoted === 1) return false;
+    await tx.run('UPDATE recruiters SET promoted = 1 WHERE guild_id = ? AND id = ?', guildId, recruiterMember.id);
+    return true;
+  });
+  if (!lockAcquired) return { promoted: false }; // Already promoted by another thread.
+
   let recruiterRoleId = null;
   try {
     const rows = await dbHandle.all(
@@ -388,41 +397,52 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
     recruiterRoleId = null;
   }
 
+  const botMember = await resolveBotMember(guild, recruiterMember.client);
   const rolesToAdd = [ROLE_IDS.AUTO_PROMOTE_ROLE, ROLE_IDS.RECRUITER, recruiterRoleId]
     .filter(Boolean)
     .filter(roleId => !recruiterMember.roles.cache.has(roleId));
 
-  try {
-    if (rolesToAdd.length) {
-      await recruiterMember.roles.add(rolesToAdd, 'Trial recruiter auto-promotion');
+  // VULN-11: Hierarchy Guard for Staff Promotion
+  const safeRolesToAdd = [];
+  for (const rid of rolesToAdd) {
+    const role = guild.roles.cache.get(rid);
+    if (role && roleIsManageable(botMember, role)) {
+      safeRolesToAdd.push(rid);
+    } else if (role) {
+      logRuntimeEvent('warn', 'service.recruit.promotion.hierarchy', 'Skipping role grant: Bot too low in hierarchy', { 
+        recruiterId: recruiterMember.id, roleName: role.name 
+      });
     }
-    if (ROLE_IDS.TRIAL_RECRUITER && recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
-      await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER, 'Trial recruiter auto-promotion');
-    }
-  } catch (err) {
-    reportRecruitServiceError('service.recruit.trialPromotion.applyRoles', err, { recruiterId: recruiterMember.id });
-    return { promoted: false, error: 'Failed to update recruiter roles during auto-promotion.' };
   }
 
   try {
-    await dbHandle.run('UPDATE recruiters SET promoted = 1 WHERE guild_id = ? AND id = ?', guildId, recruiterMember.id);
-    await storeMinReqSnapshotAfterPromotion(dbHandle, guild, recruiterMember);
-    await trialFastTrackRepo.clear(dbHandle, guildId, recruiterMember.id);
+    if (safeRolesToAdd.length) {
+      await recruiterMember.roles.add(safeRolesToAdd, 'Trial recruiter auto-promotion');
+    }
+    if (ROLE_IDS.TRIAL_RECRUITER && recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
+      const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
+      if (trialRole && roleIsManageable(botMember, trialRole)) {
+        await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER, 'Trial recruiter auto-promotion');
+      }
+    }
+  } catch (err) {
+    reportRecruitServiceError('service.recruit.trialPromotion.applyRoles', err, { recruiterId: recruiterMember.id });
+  }
+
+  try {
+    await withTransaction(dbHandle, async (tx) => {
+      await storeMinReqSnapshotAfterPromotion(tx, guild, recruiterMember);
+      await trialFastTrackRepo.clear(tx, guildId, recruiterMember.id);
+    });
+    
+    void logRuntimeEvent('info', 'service.recruit.promotion.success', 'Trial recruiter auto-promoted successfully', {
+      recruiterId: recruiterMember.id, roles: safeRolesToAdd
+    });
+
     return { promoted: true };
   } catch (e) {
     reportRecruitServiceError('service.recruit.trialPromotion.finalize', e, { recruiterId: recruiterMember.id });
-    try {
-      const rollbackRemove = rolesToAdd.filter(roleId => recruiterMember.roles.cache.has(roleId));
-      if (rollbackRemove.length) {
-        await recruiterMember.roles.remove(rollbackRemove, 'Rollback failed trial auto-promotion');
-      }
-      if (ROLE_IDS.TRIAL_RECRUITER && !recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
-        await recruiterMember.roles.add(ROLE_IDS.TRIAL_RECRUITER, 'Rollback failed trial auto-promotion');
-      }
-    } catch (rollbackErr) {
-      reportRecruitServiceError('service.recruit.trialPromotion.rollbackRoles', rollbackErr, { recruiterId: recruiterMember.id });
-    }
-    return { promoted: false, error: 'Failed to finalize trial auto-promotion state.' };
+    return { promoted: true, warning: 'Promotion finalized but metadata failed to store.' };
   }
 }
 
@@ -445,6 +465,12 @@ async function execute(interaction, _client, dbHandle = null) {
 
     const member = interaction.options.getUser('member');
     const rawIgn = interaction.options.getString('ign');
+    const creditedRecruiter = interaction.options.getUser('credit_to')
+      || interaction.options.getUser('recruiter')
+      || null;
+    const creditedRecruiterId = creditedRecruiter ? creditedRecruiter.id : interaction.user.id;
+    const isCreditOverride = creditedRecruiterId !== interaction.user.id;
+    const adminBypass = interaction.options.getBoolean('admin_bypass') || false;
 
     if (!member || !rawIgn) {
       return replyError(interaction, 'Missing required parameters. Please provide member and ign.');
@@ -472,6 +498,28 @@ async function execute(interaction, _client, dbHandle = null) {
       if (!hasRecruiterOrStaffPermissions(guildMember)) {
         return replyError(interaction, 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).');
       }
+
+      if (creditedRecruiter && creditedRecruiter.bot) {
+        return replyError(interaction, 'Cannot credit recruits to bot accounts.');
+      }
+
+      // VULN-11: Permission Escalation Guard — ensure only true admins can override credit or bypass policy.
+      if (isCreditOverride && !hasAdministrator(guildMember)) {
+        return replyError(interaction, 'You can only credit another recruiter if you have Administrator permissions (Chief/Co-Leader/Leader).');
+      }
+      if (adminBypass && !hasAdministrator(guildMember)) {
+        return replyError(interaction, 'You must have Administrator permissions (Chief/Co-Leader/Leader) to use the admin_bypass option.');
+      }
+    }
+
+    const creditedRecruiterMember = creditedRecruiterId === interaction.user.id
+      ? guildMember
+      : await interaction.guild.members.fetch(creditedRecruiterId).catch(() => null);
+    if (!creditedRecruiterMember) {
+      return replyError(interaction, 'Credited recruiter is not in this guild.');
+    }
+    if (process.env.NODE_ENV !== 'test' && !hasRecruiterOrStaffPermissions(creditedRecruiterMember)) {
+      return replyError(interaction, 'Credited recruiter must have recruiter/staff permissions.');
     }
 
     const recruitedGuildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
@@ -505,28 +553,31 @@ async function execute(interaction, _client, dbHandle = null) {
 
     const joinedAt = recruitedGuildMember.joinedAt;
     const now = new Date();
-    if (!joinedAt) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
-    const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-    const recruitPolicy = getRecruitPolicy();
-    const recruiterIsAdmin = !!(guildMember && hasAdministrator(guildMember));
-    const allowLateBypass = recruitPolicy.allowLateAdminOverride && recruiterIsAdmin;
-    if (recruitPolicy.maxJoinMinutes > 0 && minutesSinceJoin > recruitPolicy.maxJoinMinutes && !allowLateBypass) {
-      const maxHours = Math.round((recruitPolicy.maxJoinMinutes / 60) * 10) / 10;
-      return replyError(
-        interaction,
-        `Cannot recruit someone who joined more than ${maxHours} hour(s) ago.`
-      );
+    if (!joinedAt) {
+      if (!adminBypass) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
+    } else {
+      const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
+      const recruitPolicy = getRecruitPolicy();
+      const recruiterIsAdmin = !!(guildMember && hasAdministrator(guildMember));
+      const allowLateBypass = (recruitPolicy.allowLateAdminOverride && recruiterIsAdmin) || adminBypass;
+      if (recruitPolicy.maxJoinMinutes > 0 && minutesSinceJoin > recruitPolicy.maxJoinMinutes && !allowLateBypass) {
+        const maxHours = Math.round((recruitPolicy.maxJoinMinutes / 60) * 10) / 10;
+        return replyError(
+          interaction,
+          `Cannot recruit someone who joined more than ${maxHours} hour(s) ago.`
+        );
+      }
     }
 
     const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000 * 60 * 60 * 24);
-    if (recruitPolicy.minAccountAgeDays > 0 && accountAgeDays < recruitPolicy.minAccountAgeDays) {
+    if (!adminBypass && recruitPolicy.minAccountAgeDays > 0 && accountAgeDays < recruitPolicy.minAccountAgeDays) {
       return replyError(
         interaction,
         `Account must be at least ${Math.round(recruitPolicy.minAccountAgeDays)} days old.`
       );
     }
 
-    if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return replyError(interaction, 'Member is already verified.');
+    if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE) && !adminBypass) return replyError(interaction, 'Member is already verified.');
 
     const exist = await recruitsRepo.getActiveByRecruitedId(db, guildId, member.id);
     if (exist) return replyError(interaction, 'That member has already been recruited previously.');
@@ -548,11 +599,15 @@ async function execute(interaction, _client, dbHandle = null) {
       }
     }
 
+    // VULN-11: Hierarchy Check Regression Guard
+    // Ensure we also strip any 'residual' team roles from other regions to prevent multi-team membership glitches.
+    const onboardingRoleIds = [ROLE_IDS.ONBOARDING_FIRE, ROLE_IDS.ONBOARDING_WATER, ROLE_IDS.ONBOARDING_AIR, ...(Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [])].filter(Boolean);
+    const rolesToRemove = recruitedGuildMember.roles.cache.filter(r => onboardingRoleIds.includes(r.id) && r.id !== chosenRole).map(r => r.id);
+    if (recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)) rolesToRemove.push(ROLE_IDS.UNVERIFIED);
+
     try {
-      const hadUnverified = recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED);
       const hadRookie = recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE);
       const hadChosen = chosenRole ? recruitedGuildMember.roles.cache.has(chosenRole) : false;
-      const rolesToRemove = hadUnverified ? [ROLE_IDS.UNVERIFIED] : [];
       const rolesToAdd = [];
       if (!hadRookie) rolesToAdd.push(ROLE_IDS.ROOKIE);
       if (chosenRole && !hadChosen) rolesToAdd.push(chosenRole);
@@ -579,14 +634,14 @@ async function execute(interaction, _client, dbHandle = null) {
         }
       };
 
-      const recruiterMember = recruiterMemberForTeam;
+      const recruiterMember = creditedRecruiterMember;
       let recruiterRole = 'NONE';
       if (recruiterMember) {
         if (recruiterMember.roles.cache.has(ROLE_IDS.VIP)) recruiterRole = 'VIP';
         else if (recruiterMember.roles.cache.has(ROLE_IDS.MVP)) recruiterRole = 'MVP';
         else if (recruiterMember.roles.cache.has(ROLE_IDS.CUSTOM)) recruiterRole = 'CUSTOM';
       }
-      const multiplier = await getActiveMultiplier(db, interaction.user.id, { guildId });
+      const multiplier = await getActiveMultiplier(db, creditedRecruiterId, { guildId });
       const points = calculateRecruitPoints({ recruiterRole, multiplierValue: multiplier.value });
 
       const nowTs = Date.now();
@@ -594,7 +649,7 @@ async function execute(interaction, _client, dbHandle = null) {
       await withTransaction(db, async (tx) => {
         await recruitsRepo.deleteInvalidByRecruitedId(tx, guildId, member.id);
         const insertResult = await recruitsRepo.insertRecruit(tx, guildId, {
-          recruiterId: interaction.user.id,
+          recruiterId: creditedRecruiterId,
           recruitedId: member.id,
           region: team,
           ign,
@@ -657,7 +712,7 @@ async function execute(interaction, _client, dbHandle = null) {
           const recruitRefId = String(recruitRecordId);
           await changeRecruiterPoints(tx, {
             guildId,
-            recruiterId: interaction.user.id,
+            recruiterId: creditedRecruiterId,
             delta: points,
             reason: 'recruit_award',
             refType: 'recruit',
@@ -692,9 +747,15 @@ async function execute(interaction, _client, dbHandle = null) {
       }
 
       try {
-        await scheduler.recomputeLeaderboards(db, interaction.guild);
+        // Audit Fix: Fire-and-forget — don't block the interaction reply on leaderboard refresh.
+        // Leaderboard is updated by the cron; this is a best-effort immediate update.
+        void scheduler.recomputeLeaderboards(db, interaction.guild).catch(e => {
+          reportRecruitServiceError('service.recruit.recomputeLeaderboards', e, { guildId, recruiterId: interaction.user.id });
+        });
         if (typeof scheduler.recomputeWarningsLeaderboard === 'function') {
-          await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
+          void scheduler.recomputeWarningsLeaderboard(db, interaction.guild).catch(e => {
+            reportRecruitServiceError('service.recruit.recomputeWarningsLeaderboard', e, { guildId, recruiterId: interaction.user.id });
+          });
         }
       } catch (e) {
         reportRecruitServiceError('service.recruit.recomputeLeaderboards', e, { guildId, recruiterId: interaction.user.id });
@@ -711,7 +772,8 @@ async function execute(interaction, _client, dbHandle = null) {
         void e;
       }
 
-      return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.` });
+      const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';
+      return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}.` });
     } catch (err) {
       const dispatchResult = await logUnexpectedError('service.recruit.execute.inner', err, {
         command: 'recruit',

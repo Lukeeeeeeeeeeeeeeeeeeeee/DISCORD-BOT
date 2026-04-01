@@ -8,11 +8,17 @@ const { formatUtcDateOnly, formatUtcDate } = require('./lib/time');
 const { fetchMembersByIds } = require('./lib/member-fetch');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('./lib/leaderboard-utils');
 const { logUnexpectedError } = require('./lib/logger');
+const { 
+  upsertLeaderboardMessage, 
+  makeLeaderboardText, 
+  makeDemotionWatchText 
+} = require('./lib/messages');
 
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
 
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
 const { acquireJobLock } = require('./lib/job-locks');
+const { withTransaction } = require('./lib/transactions');
 
 const DEBUG_SCHEDULER = process.env.DEBUG_SCHEDULER === '1';
 const ALLOW_FULL_MEMBER_FETCH = (process.env.SCHEDULER_ALLOW_FULL_FETCH || process.env.ALLOW_FULL_MEMBER_FETCH || '').toLowerCase() === 'true';
@@ -44,36 +50,7 @@ function resolveStaffRoles() {
     ].filter(Boolean);
 }
 
-// P-01: Single-query batch replacement for per-recruiter isNewStaff() calls inside leaderboard loops.
-// isNewStaff() makes one DB query per recruiter — for 50 recruiters that's 50 serial round-trips.
-// This helper fetches the minimum recruit creation date for every recruiter in one query and returns
-// a Map<recruiterId, boolean> for O(1) lookup inside the hot path.
-async function batchIsNewStaff(db, recruiterIds, guildId, newStaffWindow = 14 * 24 * 60 * 60 * 1000) {
-  if (!recruiterIds || recruiterIds.length === 0) return new Map();
-  const cutoff = Date.now() - newStaffWindow;
-  try {
-    const placeholders = recruiterIds.map(() => '?').join(',');
-    const rows = await db.all(
-      `SELECT recruiter_id, MIN(created_at) AS first_recruit_at FROM recruits
-       WHERE guild_id = ? AND recruiter_id IN (${placeholders}) AND valid = 1
-       GROUP BY recruiter_id`,
-      guildId, ...recruiterIds
-    );
-    const result = new Map();
-    const rowMap = new Map((rows || []).map(r => [r.recruiter_id, r.first_recruit_at]));
-    for (const id of recruiterIds) {
-      const firstAt = rowMap.get(id);
-      // "new staff" = first recruit was within the window (or no recruits yet)
-      result.set(id, firstAt == null || Number(firstAt) >= cutoff);
-    }
-    return result;
-  } catch (e) {
-    // Fallback: treat everyone as not-new-staff on error to avoid blocking leaderboard refresh.
-    const fallback = new Map();
-    for (const id of recruiterIds) fallback.set(id, false);
-    return fallback;
-  }
-}
+const { batchCalculate7DayStats, batchIsNewStaff } = require('./lib/recruiter-stats');
 
 const SNAPSHOT_CONCURRENCY = Number.parseInt(process.env.SNAPSHOT_CONCURRENCY || '3', 10);
 
@@ -227,96 +204,116 @@ async function resolveAllRecruiterIds(guild, db) {
   return Array.from(ids);
 }
 
+let leaderboardsInFlight = null;
+let warningsInFlight = null;
+let quotaWarningsInFlight = null;
+let scheduledJobs = [];
+
 async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
   if (!db || !guild || !weekStart || !recruiters) return;
-  const guildId = guild.id || resolveGuildId();
-  for (const recruiter of recruiters) {
-    const recruiterId = recruiter.id;
-    const snapshots = await db.all(
-      'SELECT week_start, recruits7d, calculated_min_req, previous_min_req, absent FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 3',
-      guildId,
-      recruiterId
-    );
-
-    if (!snapshots || snapshots.length < 3) {
-      continue;
-    }
-
-    const eligible = snapshots.filter(row => !row.absent);
-    const misses = eligible.filter(row => {
-      const minReq = Number(
-        row && row.previous_min_req !== null && row.previous_min_req !== undefined
-          ? row.previous_min_req
-          : (row.calculated_min_req || 0)
+  if (quotaWarningsInFlight) return quotaWarningsInFlight;
+  
+  quotaWarningsInFlight = (async () => {
+    const guildId = guild.id || resolveGuildId();
+    for (const recruiter of recruiters) {
+      const recruiterId = recruiter.id;
+      const snapshots = await db.all(
+        'SELECT week_start, recruits7d, calculated_min_req, previous_min_req, absent FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? ORDER BY COALESCE(week_start, timestamp) DESC LIMIT 3',
+        guildId,
+        recruiterId
       );
-      const recruits7d = Number(row.recruits7d || 0);
-      return minReq > 0 && recruits7d < minReq;
-    });
 
-    if (misses.length < 2) {
-      continue;
-    }
+      if (!snapshots || snapshots.length < 3) {
+        continue;
+      }
 
-    const latest = eligible[0] || snapshots[0];
-    const recruits7d = Number(latest && latest.recruits7d ? latest.recruits7d : 0);
-    const minReq = Number(
-      latest && latest.previous_min_req !== null && latest.previous_min_req !== undefined
-        ? latest.previous_min_req
-        : (latest && latest.calculated_min_req ? latest.calculated_min_req : 0)
-    );
-    const effectiveWeekStart = latest && latest.week_start ? latest.week_start : weekStart;
-    const note = `Quota warning week_start=${effectiveWeekStart}`;
-
-    const existing = await db.get(
-      'SELECT id FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND note = ? LIMIT 1',
-      guildId,
-      recruiterId,
-      note
-    );
-    if (existing) continue;
-
-    await db.run(
-      'INSERT INTO warnings (guild_id, recruiter_id, created_at, note, expired_at, revoked) VALUES (?, ?, ?, ?, NULL, 0)',
-      guildId,
-      recruiterId,
-      Date.now(),
-      note
-    );
-    await db.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)', guildId, recruiterId);
-    await db.run('UPDATE recruiters SET warnings = warnings + 1 WHERE guild_id = ? AND id = ?', guildId, recruiterId);
-
-    const warningCountRow = await db.get(
-      'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-      guildId,
-      recruiterId,
-      Date.now()
-    );
-    const activeWarnings = warningCountRow ? warningCountRow.c : 0;
-    const demotionTag = activeWarnings >= 2 ? ' They are now on demotion watch.' : '';
-
-    const ch = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
-      ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL)
-      : null;
-    if (ch && typeof ch.send === 'function') {
-      await ch.send(`⚠️ <@${recruiterId}> missed quota in ${misses.length} of the last 3 weeks (${recruits7d}/${minReq}). Warning issued.${demotionTag}`).catch(err => {
-        console.error('Failed to post quota warning:', err);
+      const eligible = snapshots.filter(row => !row.absent);
+      const misses = eligible.filter(row => {
+        const minReq = Number(
+          row && row.previous_min_req !== null && row.previous_min_req !== undefined
+            ? row.previous_min_req
+            : (row.calculated_min_req || 0)
+        );
+        const recruits7d = Number(row.recruits7d || 0);
+        return minReq > 0 && recruits7d < minReq;
       });
-    }
 
-    try {
-      const member = await guild.members.fetch(recruiterId).catch(() => null);
-      if (member) {
-        const watchMsg = activeWarnings >= 2 ? ' You are now on demotion watch.' : '';
-        await member.send(
-          `⚠️ Recruiter warning: you missed your quota in ${misses.length} of the last 3 weeks. `
-          + `Last week: ${recruits7d}/${minReq}.${watchMsg} If you need help, DM a staffer.`
-        ).catch(err => {
-          console.error('Failed to DM recruiter warning:', err);
+      if (misses.length < 2) {
+        continue;
+      }
+
+      const latest = eligible[0] || snapshots[0];
+      const recruits7d = Number(latest && latest.recruits7d ? latest.recruits7d : 0);
+      const minReq = Number(
+        latest && latest.previous_min_req !== null && latest.previous_min_req !== undefined
+          ? latest.previous_min_req
+          : (latest && latest.calculated_min_req ? latest.calculated_min_req : 0)
+      );
+      const effectiveWeekStart = latest && latest.week_start ? latest.week_start : weekStart;
+      const note = `Quota warning week_start=${effectiveWeekStart}`;
+
+      await withTransaction(db, async (tx) => {
+        const existing = await tx.get(
+          'SELECT id FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND note = ? LIMIT 1',
+          guildId,
+          recruiterId,
+          note
+        );
+        if (existing) return;
+
+        await tx.run(
+          'INSERT INTO warnings (guild_id, recruiter_id, created_at, note, expired_at, revoked) VALUES (?, ?, ?, ?, NULL, 0)',
+          guildId,
+          recruiterId,
+          Date.now(),
+          note
+        );
+        await tx.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)', guildId, recruiterId);
+        await tx.run('UPDATE recruiters SET warnings = warnings + 1 WHERE guild_id = ? AND id = ?', guildId, recruiterId);
+      });
+
+      const warningCountRow = await db.get(
+        'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+        guildId,
+        recruiterId,
+        Date.now()
+      );
+      const activeWarnings = warningCountRow ? warningCountRow.c : 0;
+      const demotionTag = activeWarnings >= 2 ? ' They are now on demotion watch.' : '';
+
+      const ch = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
+        ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL)
+        : null;
+      if (ch && typeof ch.send === 'function') {
+        await ch.send(`⚠️ <@${recruiterId}> missed quota in ${misses.length} of the last 3 weeks (${recruits7d}/${minReq}). Warning issued.${demotionTag}`).catch(err => {
+          void logUnexpectedError('scheduler.enforceQuotaWarnings.post', err, { recruiterId });
         });
       }
-    } catch (e) {
-      console.error('Failed to DM auto-warning recruiter', { recruiterId, error: e });
+
+      try {
+        const member = (guild.members && guild.members.cache) 
+          ? guild.members.cache.get(recruiterId) 
+          : await guild.members.fetch(recruiterId).catch(() => null);
+          
+        if (member) {
+          const watchMsg = activeWarnings >= 2 ? ' You are now on demotion watch.' : '';
+          await member.send(
+            `⚠️ Recruiter warning: you missed your quota in ${misses.length} of the last 3 weeks. `
+            + `Last week: ${recruits7d}/${minReq}.${watchMsg} If you need help, DM a staffer.`
+          ).catch(err => {
+            void logUnexpectedError('scheduler.enforceQuotaWarnings.dm', err, { recruiterId });
+          });
+        }
+      } catch (e) {
+        void logUnexpectedError('scheduler.enforceQuotaWarnings.memberSend', e, { recruiterId });
+      }
     }
+  })();
+
+  try {
+    await quotaWarningsInFlight;
+  } finally {
+    quotaWarningsInFlight = null;
   }
 }
 
@@ -333,10 +330,6 @@ function formatLeaderboardMessage(rows, regionLabel) {
 
   return `# ${teamName} Leaderboard\n\n` + lines.join('\n');
 }
-
-let leaderboardsInFlight = null;
-let warningsInFlight = null;
-let scheduledJobs = [];
 
 function trackScheduledJob(job) {
   if (job && typeof job.stop === 'function') {
@@ -468,8 +461,9 @@ async function recomputeLeaderboardsInternal(db, guild) {
       const enriched = [];
       const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
 
-      // P-01: Batch isNewStaff lookup — replaces N sequential DB queries with a single GROUP BY query.
+      // P-01: Batch isNewStaff AND 7-day stats lookups — replaces N sequential DB queries with bulk queries.
       const isNewStaffMap = await batchIsNewStaff(db, Array.from(allRecruiterIds), guildId).catch(() => new Map());
+      const allStats7dMap = await batchCalculate7DayStats(db, Array.from(allRecruiterIds), guild, { ...statsWindow, guildId, region: rg.key }).catch(() => new Map());
 
       for (const r of (rowsBase || [])) {
         const absence = meta.absences.has(r.recruiter_id);
@@ -478,8 +472,9 @@ async function recomputeLeaderboardsInternal(db, guild) {
         const staffMember = (memberMap && memberMap.get(r.recruiter_id))
           || (guild && guild.members && guild.members.cache ? guild.members.cache.get(r.recruiter_id) : null);
         const roleBase = getBaseRequirement(staffMember);
-        // P-01: Look up from pre-fetched map instead of awaiting a per-recruiter DB query.
+        // P-01: Look up from pre-fetched maps instead of awaiting per-recruiter DB queries.
         const newStaffCheck = isNewStaffMap.get(r.recruiter_id) ?? false;
+        const stats7d = allStats7dMap.get(r.recruiter_id) || { recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 };
 
         const isTrialRecruiter = !!staffMember
           && staffMember.roles
@@ -494,7 +489,6 @@ async function recomputeLeaderboardsInternal(db, guild) {
           minReq = previousMinReq;
         }
         if (minReq == null) {
-          const stats7d = await calculate7DayStats(db, r.recruiter_id, guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
           minReq = calculateMinRecruitsFixed({
             roleBase,
             member: staffMember,
@@ -651,8 +645,9 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   const rows = [];
   const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
 
-  // P-01: Batch isNewStaff lookup for warnings leaderboard.
+  // P-01: Batch isNewStaff AND 7-day stats lookups — replaces N sequential DB queries with bulk queries.
   const isNewStaffMap2 = await batchIsNewStaff(db, recruiterIds, guildId).catch(() => new Map());
+  const allStats7dMap2 = await batchCalculate7DayStats(db, recruiterIds, guild, { ...statsWindow, guildId }).catch(() => new Map());
 
   for (const r of rowsBase || []) {
     const absence = meta.absences.has(r.recruiter_id);
@@ -663,6 +658,7 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
     const roleBase = getBaseRequirement(staffMember);
     // P-01: Look up from pre-fetched map instead of awaiting a per-recruiter DB query.
     const newStaffCheck = isNewStaffMap2.get(r.recruiter_id) ?? false;
+    const stats7d = allStats7dMap2.get(r.recruiter_id) || { recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 };
 
     const systemWarningRow = meta.systemWarnings.has(r.recruiter_id);
 
@@ -679,7 +675,6 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
       minReq = previousMinReq;
     }
     if (minReq == null) {
-      const stats7d = await calculate7DayStats(db, r.recruiter_id, guild, statsWindow).catch(() => ({ recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 }));
       minReq = calculateMinRecruitsFixed({
         roleBase,
         member: staffMember,
@@ -725,180 +720,49 @@ async function recomputeWarningsLeaderboard(db, guild) {
   }
 }
 
-// E-03: This stub intentionally does nothing.
-// TODO(dead-code): reconcileTrialRecruiters was migrated to another module.
-// Remove this function and its caller once confirmed no external references exist.
-async function reconcileTrialRecruiters(_db, _client) {
-  // Intentionally disabled/handled elsewhere.
-}
+// Trial recruiter auto-promotion is now handled in recruit-service.js.
+// No extra reconciliation needed here.
 
-async function runWeeklySnapshotAndReset(db, client, options = {}) {
-  const { announce = true } = options || {};
-  debugLog('Starting weekly MinReq and stats reset...');
+async function runWeeklyMondayReset(db, client) {
+  const guildId = resolveGuildId();
+  const weekStart = getWeekStartUtcTs();
+  const lockKey = `job_lock:weekly_monday_reset:${weekStart}`;
+  const locked = await acquireSchedulerLock(db, {
+    guildId,
+    key: lockKey,
+    ttlMs: 14 * ONE_DAY_MS,
+    scope: 'scheduler.weeklyReset.lock'
+  });
+  if (!locked) return;
+
+  const guild = await resolveGuild(client);
+  if (!guild) return;
+
   try {
-    const weekStart = getWeekStartUtcTs();
-    const weekStartIso = formatUtcDateOnly(weekStart);
-    const schedulerGuildId = resolveGuildId();
-    const lockKey = `job_lock:weekly_snapshot:${weekStart}`;
-    const snapshotLocked = await acquireSchedulerLock(db, {
-      guildId: schedulerGuildId,
-      key: lockKey,
-      ttlMs: 14 * ONE_DAY_MS,
-      scope: 'scheduler.weeklySnapshot.lock'
-    });
-    if (!snapshotLocked) return;
+    // 1. Unified Recalculation (Stats -> History -> Recalcs -> DMs -> Point Reset)
+    const results = await performWeeklyRecalculations(guild);
+    
+    // 2. Quota Warning Enforcement (Based on the newly persisted history)
+    const recruiterIds = results.map(r => r.staffMember.id);
+    const recruiters = recruiterIds.map(id => ({ id }));
+    await enforceQuotaWarnings(db, guild, weekStart, recruiters);
 
-    // One-time announcement per week in the overall invites channel (scheduled runs only)
-    if (announce) {
-      try {
-        const announceKey = `weekly_reset_announce_${weekStart}`;
-        const existing = await db.get('SELECT key FROM system_events WHERE guild_id = ? AND key = ?', schedulerGuildId, announceKey);
-        if (!existing) {
-          await db.run(
-            'INSERT OR REPLACE INTO system_events (guild_id, key, "timestamp") VALUES (?, ?, ?)',
-            schedulerGuildId,
-            announceKey,
-            Date.now()
-          );
-          const guild = await resolveGuild(client);
-          const ch = guild ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL) : null;
-          if (ch) {
-            await ch.send(`@everyone Weekly invite/recruit snapshot captured (week start ${weekStartIso} UTC).`).catch(err => {
-              console.error('Failed to post weekly snapshot announcement:', err);
-            });
-          }
-        }
-      } catch (e) {
-        console.error('Weekly reset announcement failed:', e);
-      }
-    }
+    // 3. Leaderboard Refresh
+    await recomputeLeaderboards(db, guild);
+    await recomputeWarningsLeaderboard(db, guild);
 
-    const guild = await resolveGuild(client);
-    const guildId = guild && guild.id ? guild.id : schedulerGuildId;
-    const cacheReady = guild ? await primeMemberCache(guild, 'weekly_snapshot') : false;
-    let recruiterIds = guild ? await resolveAllRecruiterIds(guild, db) : [];
-    if (!recruiterIds.length) {
-      const rows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
-      recruiterIds = (rows || []).map(r => r.id);
-    }
-    const recruiters = Array.from(new Set(recruiterIds)).map(id => ({ id }));
-    const lastWeekStart = weekStart - (7 * 24 * 60 * 60 * 1000);
-    const statsWindow = { sinceTs: lastWeekStart, untilTs: weekStart };
+    // 4. Persistence Marker (Catch-up prevention)
+    const snapKey = `weekly_snapshot_${weekStart}`;
+    await db.run(
+      'INSERT OR REPLACE INTO system_events (guild_id, key, timestamp) VALUES (?, ?, ?)',
+      guildId,
+      snapKey,
+      Date.now()
+    );
 
-    const calcResults = await runWithConcurrency(recruiters, SNAPSHOT_CONCURRENCY, async (recruiter) => {
-      await db.run(
-        'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
-        guildId,
-        recruiter.id
-      );
-      const currentStats = await calculate7DayStats(db, recruiter.id, guild || null, statsWindow);
-      const prevMinRow = await db.get(
-        'SELECT calculated_min_req FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
-        guildId,
-        recruiter.id,
-        weekStart
-      );
-      const previousMinReq = prevMinRow ? prevMinRow.calculated_min_req : null;
-
-      let newStaffCheck = false;
-      try {
-        newStaffCheck = await isNewStaff(db, recruiter.id);
-      } catch (e) {
-        newStaffCheck = false;
-      }
-
-      const warnings = await db.get(
-        'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-        guildId,
-        recruiter.id, Date.now()
-      );
-      const activeWarnings = warnings ? warnings.c : 0;
-
-      const absence = await db.get(
-        'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
-        guildId,
-        recruiter.id
-      );
-
-      const staffMember = guild && cacheReady && guild.members && guild.members.cache
-        ? guild.members.cache.get(recruiter.id)
-        : (guild && guild.members && typeof guild.members.fetch === 'function' ? await guild.members.fetch(recruiter.id).catch(() => null) : null);
-      const roleBase = getBaseRequirement(staffMember);
-
-      const isTrialRecruiter = !!staffMember && staffMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER) && !staffMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE);
-
-      const finalMinReq = isTrialRecruiter ? 3 : calculateMinRecruitsFixed({
-        roleBase,
-        member: staffMember,
-        recruits7d: currentStats.recruits7d,
-        activityRate: currentStats.activityRate,
-        verifyRate: currentStats.verifyRate,
-        retention: currentStats.retention,
-        warnings: activeWarnings,
-        previousMinReq,
-        absent: !!absence,
-        isNewStaff: newStaffCheck
-      });
-
-      await storeWeeklyCalculation(db, {
-        guildId,
-        recruiterId: recruiter.id,
-        weekStart,
-        recruits7d: currentStats.recruits7d,
-        activityRate: currentStats.activityRate,
-        verifyRate: currentStats.verifyRate,
-        retention: currentStats.retention,
-        warnings: activeWarnings,
-        absent: !!absence,
-        previousMinReq,
-        calculatedMinReq: finalMinReq,
-        roleBase
-      });
-
-      debugLog(`Stored weekly calculation for ${recruiter.id}: MinReq=${finalMinReq}, Recruits=${currentStats.recruits7d}`);
-      return { ok: true };
-    });
-
-    for (const entry of calcResults) {
-      if (entry && entry.ok === false && entry.error) {
-        console.error('Weekly snapshot calculation failed:', entry.error);
-      }
-    }
-
-    try {
-      if (guild) {
-        await enforceQuotaWarnings(db, guild, weekStart, recruiters);
-        await recomputeWarningsLeaderboard(db, guild).catch(err => {
-          console.error('Failed to recompute warnings leaderboard:', err);
-        });
-      }
-    } catch (e) {
-      console.error('Quota warning enforcement failed:', e);
-    }
-
-    // Mark weekly snapshot complete so we can catch up if the bot was down
-    try {
-      const snapKey = `weekly_snapshot_${weekStart}`;
-      await db.run(
-        'INSERT OR REPLACE INTO system_events (guild_id, key, timestamp) VALUES (?, ?, ?)',
-        guildId,
-        snapKey,
-        Date.now()
-      );
-    } catch (e) {
-      console.error('Failed to persist weekly snapshot marker:', e);
-    }
-
-    // Ensure leaderboards reflect the new week window immediately
-    try {
-      if (guild) await recomputeLeaderboards(db, guild);
-    } catch (e) {
-      console.error('Failed to recompute leaderboards after weekly snapshot:', e);
-    }
-
-    debugLog('Weekly MinReq and stats reset completed successfully');
+    debugLog('Unified Monday Reset completed successfully');
   } catch (error) {
-    logUnexpectedError('scheduler.weeklySnapshot', error);
+    logUnexpectedError('scheduler.runWeeklyMondayReset', error);
   }
 }
 
@@ -931,7 +795,7 @@ function start(client, db) {
 
       if (!existing && now >= weekStart && now < weekStart + sanityWindow) {
         debugLog(`Catch-up: Running missed weekly snapshot for ${formatUtcDate(weekStart)}`);
-        await runWeeklySnapshotAndReset(db, client, { announce: false });
+        await runWeeklyMondayReset(db, client);
       } else if (!existing && now >= weekStart + sanityWindow) {
         debugLog(`Catch-up skipped: Outside 24h sanity window for ${formatUtcDate(weekStart)}`);
       }
@@ -940,34 +804,9 @@ function start(client, db) {
     }
   })();
 
-  // Cron: Monday at 00:00 UTC - Weekly recruiter recalculation
+  // Cron: Monday at 00:00 UTC - Unified Weekly Reset
   trackScheduledJob(cron.schedule('0 0 * * 1', async () => {
-    const weekStart = getWeekStartUtcTs();
-    const lockKey = `job_lock:weekly_recalc:${weekStart}`;
-    const locked = await acquireSchedulerLock(db, {
-      guildId,
-      key: lockKey,
-      ttlMs: 14 * ONE_DAY_MS,
-      scope: 'scheduler.weeklyRecalc.lock'
-    });
-    if (!locked) return;
-
-    const guild = await resolveGuild(client);
-    if (!guild) return;
-    try {
-      await performWeeklyRecalculations(guild);
-      debugLog('Weekly recruiter recalculation completed successfully');
-    } catch (error) {
-      console.error('Weekly recruiter recalculation failed:', error);
-    }
-  }, {
-    scheduled: true,
-    timezone: 'UTC'
-  }));
-
-  // Cron: Monday at 00:05 UTC - Weekly MinReq and stats snapshot (5 minutes after recalculation)
-  trackScheduledJob(cron.schedule('5 0 * * 1', async () => {
-    await runWeeklySnapshotAndReset(db, client);
+    await runWeeklyMondayReset(db, client);
   }, {
     scheduled: true,
     timezone: 'UTC'
@@ -1037,17 +876,19 @@ function start(client, db) {
       await db.run('DELETE FROM multipliers WHERE guild_id = ? AND expires_at <= ?', schedulerGuildId, Date.now());
 
       // recompute warnings per recruiter (active = not revoked AND (expired_at IS NULL OR expired_at > now))
-      const rows = await db.all('SELECT DISTINCT recruiter_id FROM warnings WHERE guild_id = ?', schedulerGuildId);
-      for (const r of rows) {
-        const cntRow = await db.get(
-          'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-          schedulerGuildId,
-          r.recruiter_id,
-          Date.now()
-        );
-        const active = cntRow ? cntRow.c : 0;
-        await db.run('UPDATE recruiters SET warnings = ? WHERE guild_id = ? AND id = ?', active, schedulerGuildId, r.recruiter_id);
-      }
+      // Audit Fix: Replaced N+1 loop with a single set-based UPDATE query.
+      await db.run(`
+        UPDATE recruiters 
+        SET warnings = (
+          SELECT COUNT(*) 
+          FROM warnings w 
+          WHERE w.guild_id = recruiters.guild_id 
+          AND w.recruiter_id = recruiters.id 
+          AND w.revoked = 0 
+          AND (w.expired_at IS NULL OR w.expired_at > ?)
+        )
+        WHERE guild_id = ?
+      `, Date.now(), schedulerGuildId);
 
       // Recompute leaderboards to reflect any changes
       const guild = await resolveGuild(client);
@@ -1136,6 +977,5 @@ module.exports = {
   start,
   stop,
   recomputeLeaderboards,
-  formatLeaderboardMessage,
   recomputeWarningsLeaderboard
 };

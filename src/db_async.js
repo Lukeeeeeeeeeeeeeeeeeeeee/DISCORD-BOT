@@ -552,6 +552,23 @@ async function init() {
   } catch (e) {
     void e;
   }
+  
+  // Hardening: Added missing indices for batched performance (Phase 3)
+  try {
+    await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_weekly_calc_lookup ON weekly_calculations(guild_id, recruiter_id, week_start)');
+  } catch (e) { void e; }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_warnings_recruiter_active ON warnings(guild_id, recruiter_id, revoked, expired_at)');
+  } catch (e) { void e; }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_verifications_bulk ON verifications(guild_id, recruiter_id, recruited_id, verified_at)');
+  } catch (e) { void e; }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_absences_active_lookup ON absences(guild_id, recruiter_id, active, end_date)');
+  } catch (e) { void e; }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_role_changes_staff_lookup ON analytics_role_changes(guild_id, user_id, action, role_id, created_at)');
+  } catch (e) { void e; }
 
   const applyMigration = async (id, fn) => {
     try {
@@ -1244,7 +1261,7 @@ async function init() {
   // Z-02: This migration has an empty body — it exists purely as a schema version marker.
   // It signals that the "protect points reset" migration was applied, preventing older code
   // from running a destructive data reset on startup. Do not remove this entry.
-  await applyMigration('2026-03-03-protect-points-reset', async () => {});
+  await applyMigration('2026-03-03-protect-points-reset', async () => { });
 
   await runIntegrityChecks(db, 'startup');
 

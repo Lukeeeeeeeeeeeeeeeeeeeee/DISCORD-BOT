@@ -1,5 +1,6 @@
 const scheduler = require('../scheduler');
 const { resolveGuildId } = require('./guild');
+const { withTransaction } = require('./transactions');
 
 async function handleMemberLeave(db, guild, member) {
   const guildId = resolveGuildId(guild || (member && member.guild));
@@ -11,27 +12,24 @@ async function handleMemberLeave(db, guild, member) {
   );
   if (!recruits || recruits.length === 0) return;
 
-  await db.run('BEGIN TRANSACTION');
-  try {
+  // Use withTransaction so this respects the shared concurrency queue and
+  // cannot conflict with other in-flight transactions on the same DB handle.
+  await withTransaction(db, async (tx) => {
     for (const r of recruits) {
-      await db.run('UPDATE recruits SET valid = 0 WHERE id = ?', r.id);
+      await tx.run('UPDATE recruits SET valid = 0 WHERE id = ?', r.id);
     }
-    await db.run('COMMIT');
-  } catch (e) {
-    await db.run('ROLLBACK');
-    throw e;
-  }
+  });
 
-  // recompute leaderboards
-  try {
-    if (guild) {
-      await scheduler.recomputeLeaderboards(db, guild);
-      if (typeof scheduler.recomputeWarningsLeaderboard === 'function') {
-        await scheduler.recomputeWarningsLeaderboard(db, guild);
-      }
+  // recompute leaderboards (non-blocking — don't hold up the event handler)
+  if (guild) {
+    void scheduler.recomputeLeaderboards(db, guild).catch(e => {
+      console.error('Error recomputing leaderboards after member leave', e);
+    });
+    if (typeof scheduler.recomputeWarningsLeaderboard === 'function') {
+      void scheduler.recomputeWarningsLeaderboard(db, guild).catch(e => {
+        console.error('Error recomputing warnings leaderboard after member leave', e);
+      });
     }
-  } catch (e) {
-    console.error('Error running scheduler after member leave', e);
   }
 }
 

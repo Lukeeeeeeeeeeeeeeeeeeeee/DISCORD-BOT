@@ -1,5 +1,6 @@
 const db = require('../db_async');
 const { withTransaction } = require('./transactions');
+const { logUnexpectedError } = require('./logger');
 
 const FLUSH_INTERVAL_MS = Number.parseInt(process.env.ANALYTICS_FLUSH_MS || '10000', 10);
 const MAX_BUFFER_SIZE = Number.parseInt(process.env.ANALYTICS_BUFFER_MAX || '5000', 10);
@@ -432,6 +433,16 @@ async function flushAll() {
       if (capped && DROP_ON_REQUEUE_CAP) {
         droppedBufferedEntries += snapshotEntries;
         pendingWrites = Math.min(MAX_REQUEUE_SIZE, pendingWrites);
+        
+        // Audit Fix: Dispatch to AECS so data loss is visible in telemetry.
+        void logUnexpectedError('analytics.flush.dataloss', e, {
+          mergedPending,
+          cap: MAX_REQUEUE_SIZE,
+          snapshotEntries,
+          droppedTotal: droppedBufferedEntries,
+          sqliteBusy: isSqliteBusyError(e)
+        });
+
         console.warn('Analytics snapshot dropped after flush failure to prevent unbounded memory growth', {
           mergedPending,
           cap: MAX_REQUEUE_SIZE,
@@ -620,33 +631,43 @@ async function recordLeave({ guildId, userId, leftAt }) {
 async function recordInviteCreated({ guildId, timestamp = Date.now() }) {
   if (!guildId) return;
   const day = toDayKey(timestamp);
-  await db.run(
-    'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
-    day,
-    toDayTs(timestamp),
-    guildId
-  );
-  await db.run(
-    'UPDATE analytics_daily_guild SET invites_created = invites_created + 1 WHERE day = ? AND guild_id = ?',
-    day,
-    guildId
-  );
+  const dayTs = toDayTs(timestamp);
+
+  // Audit Fix: Wrap in withTransaction to ensure atomic update of invite counts.
+  await withTransaction(db, async (tx) => {
+    await tx.run(
+      'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
+      day,
+      dayTs,
+      guildId
+    );
+    await tx.run(
+      'UPDATE analytics_daily_guild SET invites_created = invites_created + 1 WHERE day = ? AND guild_id = ?',
+      day,
+      guildId
+    );
+  }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
 }
 
 async function recordInviteUsed({ guildId, timestamp = Date.now() }) {
   if (!guildId) return;
   const day = toDayKey(timestamp);
-  await db.run(
-    'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
-    day,
-    toDayTs(timestamp),
-    guildId
-  );
-  await db.run(
-    'UPDATE analytics_daily_guild SET invites_used = invites_used + 1 WHERE day = ? AND guild_id = ?',
-    day,
-    guildId
-  );
+  const dayTs = toDayTs(timestamp);
+
+  // Audit Fix: Wrap in withTransaction to ensure atomic update of invite counts.
+  await withTransaction(db, async (tx) => {
+    await tx.run(
+      'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
+      day,
+      dayTs,
+      guildId
+    );
+    await tx.run(
+      'UPDATE analytics_daily_guild SET invites_used = invites_used + 1 WHERE day = ? AND guild_id = ?',
+      day,
+      guildId
+    );
+  }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
 }
 
 async function recordVoiceMinutes({ guildId, userId, minutes, timestamp = Date.now() }) {

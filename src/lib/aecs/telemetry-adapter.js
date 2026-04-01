@@ -44,7 +44,9 @@ function toHexColor(severity) {
 class TelemetryAdapter {
   constructor(options = {}) {
     this.defaultWebhookUrl = options.defaultWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL || '';
+    this.secondaryWebhookUrl = options.secondaryWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL_SECONDARY || '';
     this.fatalWebhookUrl = options.fatalWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL_FATAL || '';
+    this.fatalWebhookUrlSecondary = options.fatalWebhookUrlSecondary || process.env.AECS_TELEMETRY_WEBHOOK_URL_FATAL_SECONDARY || '';
     this.highImpactWebhookUrl = options.highImpactWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL_HIGH || '';
     this.channelId = options.channelId || process.env.AECS_TELEMETRY_CHANNEL_ID || '';
     this.supportLookupTemplate = options.supportLookupTemplate || process.env.AECS_SUPPORT_LOOKUP_TEMPLATE || '';
@@ -58,7 +60,13 @@ class TelemetryAdapter {
   }
 
   hasAnyWebhook() {
-    return Boolean(this.defaultWebhookUrl || this.fatalWebhookUrl || this.highImpactWebhookUrl);
+    return Boolean(
+      this.defaultWebhookUrl || 
+      this.secondaryWebhookUrl || 
+      this.fatalWebhookUrl || 
+      this.fatalWebhookUrlSecondary || 
+      this.highImpactWebhookUrl
+    );
   }
 
   shouldSend(record) {
@@ -68,18 +76,33 @@ class TelemetryAdapter {
     return Number(record.impact || 0) >= this.impactThreshold;
   }
 
-  resolveWebhook(record) {
-    if (!record) return '';
+  resolveWebhooks(record) {
+    if (!record) return [];
     const severity = toSeverity(record.severity);
     const impact = Number(record.impact || 0);
 
-    if (severity === 'FATAL' && this.fatalWebhookUrl) {
-      return this.fatalWebhookUrl;
+    const targets = [];
+
+    // FATAL DISPATCH: Send to both primary and secondary if available
+    if (severity === 'FATAL') {
+      if (this.fatalWebhookUrl) targets.push(this.fatalWebhookUrl);
+      if (this.fatalWebhookUrlSecondary) targets.push(this.fatalWebhookUrlSecondary);
+      
+      // If no fatal webhooks exist, fallback to default/secondary
+      if (targets.length === 0) {
+        if (this.defaultWebhookUrl) targets.push(this.defaultWebhookUrl);
+        if (this.secondaryWebhookUrl) targets.push(this.secondaryWebhookUrl);
+      }
+      return targets;
     }
+
+    // HIGH IMPACT DISPATCH
     if (impact >= this.impactThreshold && this.highImpactWebhookUrl) {
-      return this.highImpactWebhookUrl;
+      return [this.highImpactWebhookUrl];
     }
-    return this.defaultWebhookUrl;
+
+    // DEFAULT DISPATCH + SECONDARY FALLBACK (handled in send() for non-fatal)
+    return [this.defaultWebhookUrl, this.secondaryWebhookUrl].filter(Boolean);
   }
 
   buildPayload(record) {
@@ -121,23 +144,9 @@ class TelemetryAdapter {
     };
   }
 
-  async send(record) {
-    if (!this.hasAnyWebhook()) {
-      return { sent: false, reason: 'disabled' };
-    }
-    if (!this.shouldSend(record)) {
-      return { sent: false, reason: 'policy' };
-    }
+  async sendToWebhook(url, payload) {
+    if (!url || typeof this.fetchImpl !== 'function') return false;
 
-    const webhookUrl = this.resolveWebhook(record);
-    if (!webhookUrl) {
-      return { sent: false, reason: 'no_route' };
-    }
-    if (typeof this.fetchImpl !== 'function') {
-      return { sent: false, reason: 'fetch_unavailable' };
-    }
-
-    const payload = this.buildPayload(record);
     const supportsAbort = typeof AbortController !== 'undefined';
     const controller = supportsAbort ? new AbortController() : null;
     const timer = controller
@@ -145,7 +154,7 @@ class TelemetryAdapter {
       : null;
 
     try {
-      const response = await this.fetchImpl(webhookUrl, {
+      const response = await this.fetchImpl(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
@@ -154,13 +163,55 @@ class TelemetryAdapter {
 
       if (!response || response.ok === false) {
         const status = response && response.status ? response.status : 0;
+        // 404/403/410 means the channel/webhook is gone or restricted. 
+        // We report false to trigger fallback.
+        if (status === 404 || status === 403 || status === 410) {
+          return false;
+        }
         throw new Error(`AECS telemetry webhook failed with status ${status}`);
       }
+      return true;
+    } catch (e) {
+      // If it's an abort or network error, we treat it as failure to trigger fallback
+      return false;
     } finally {
       if (timer) clearTimeout(timer);
     }
+  }
 
-    return { sent: true, reason: 'ok' };
+  async send(record) {
+    if (!this.hasAnyWebhook()) {
+      return { sent: false, reason: 'disabled' };
+    }
+    if (!this.shouldSend(record)) {
+      return { sent: false, reason: 'policy' };
+    }
+
+    const targets = this.resolveWebhooks(record);
+    if (targets.length === 0) {
+      return { sent: false, reason: 'no_route' };
+    }
+
+    const payload = this.buildPayload(record);
+    const severity = toSeverity(record.severity);
+
+    // FATAL/HIGH IMPACT DUAL DISPATCH (TRY ALL)
+    if (severity === 'FATAL') {
+      const results = await Promise.all(targets.map(url => this.sendToWebhook(url, payload)));
+      const anyOk = results.some(r => r === true);
+      return { sent: anyOk, reason: anyOk ? 'ok' : 'failed_all' };
+    }
+
+    // STANDARD DISPATCH WITH FALLBACK
+    for (const url of targets) {
+      const ok = await this.sendToWebhook(url, payload);
+      if (ok) {
+        return { sent: true, reason: 'ok' };
+      }
+      // If primary failed (404/403 etc), loop continues to secondary...
+    }
+
+    return { sent: false, reason: 'failed_all' };
   }
 }
 

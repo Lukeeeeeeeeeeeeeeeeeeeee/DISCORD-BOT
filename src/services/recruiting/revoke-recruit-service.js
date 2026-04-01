@@ -1,11 +1,25 @@
 const { EmbedBuilder, PermissionsBitField } = require('discord.js');
-const { ROLE_IDS, CHANNELS } = require('../../constants');
+const { ROLE_IDS, CHANNELS, RECRUIT_POLICY } = require('../../constants');
 const { replyError } = require('../../lib/embeds');
 const recruitsRepo = require('../../repos/recruits-repo');
 const { withTransaction } = require('../../lib/transactions');
 const { changeRecruiterPoints } = require('./ledger-service');
 const scheduler = require('../../scheduler');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
+
+function roleIsManageable(botMember, role) {
+  if (!role || !botMember || !botMember.roles || !botMember.roles.highest) return false;
+  return botMember.roles.highest.position > role.position;
+}
+
+function resolveBotMemberSync(guild, client) {
+  if (!guild) return null;
+  if (guild.members && guild.members.me) return guild.members.me;
+  if (client && client.user && guild.members && guild.members.cache) {
+    return guild.members.cache.get(client.user.id);
+  }
+  return null;
+}
 
 function reportRevokeRecruitServiceError(scope, error, meta = {}) {
   void logUnexpectedError(scope, error, {
@@ -15,11 +29,9 @@ function reportRevokeRecruitServiceError(scope, error, meta = {}) {
 }
 
 async function revokeRecruit({ interaction, db, guildId, member, reason }) {
-  // Validate member exists
+  // Validate member existence (Allow graceful cleanup if member has already left)
   const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-  if (!targetMember) {
-    return replyError(interaction, 'Member not found in this guild.');
-  }
+  const memberExists = !!targetMember;
 
   // Get the recruit record to find region and recruiter info
   const recruit = await recruitsRepo.getActiveByRecruitedId(db, guildId, member.id);
@@ -43,44 +55,55 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
     });
   });
 
-  // Remove roles from the member
-  try {
-    const onboarding = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
-    const roleIdsToRemove = Array.from(new Set([
-      ROLE_IDS.ROOKIE,
-      ROLE_IDS.UNVERIFIED,
-      ...onboarding
-    ].filter(Boolean)));
-    const removableRoleIds = roleIdsToRemove.filter(roleId => targetMember.roles.cache.has(roleId));
-    if (removableRoleIds.length) {
-      await targetMember.roles.remove(removableRoleIds, 'Recruit revoked');
-    }
+  // Remove roles from the member (only if they are still in the guild)
+  if (memberExists) {
+    try {
+      const onboarding = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
+      const roleIdsToRemove = Array.from(new Set([
+        ROLE_IDS.ROOKIE,
+        ROLE_IDS.UNVERIFIED,
+        ...onboarding
+      ].filter(Boolean)));
+      
+      const botMember = resolveBotMemberSync(interaction.guild, interaction.client);
+      const safeRemovableRoleIds = [];
+      for (const rid of roleIdsToRemove) {
+        if (targetMember.roles.cache.has(rid)) {
+          const role = interaction.guild.roles.cache.get(rid);
+          if (role && roleIsManageable(botMember, role)) {
+            safeRemovableRoleIds.push(rid);
+          } else if (role) {
+            logRuntimeEvent('warn', 'service.revokeRecruit.hierarchy', 'Skipping role removal: Bot too low in hierarchy', { 
+              recruitedId: member.id, roleName: role.name 
+            });
+          }
+        }
+      }
 
-    const botMember = interaction.guild && interaction.guild.members
-      ? (interaction.guild.members.me
-        || (typeof interaction.guild.members.fetch === 'function'
-          ? await interaction.guild.members.fetch(interaction.client.user.id).catch(() => null)
-          : null))
-      : null;
-    const canManageNicknames = !!(
-      botMember
-      && botMember.permissions
-      && typeof botMember.permissions.has === 'function'
-      && botMember.permissions.has(PermissionsBitField.Flags.ManageNicknames)
-    );
-    if (targetMember.manageable && canManageNicknames) {
-      await targetMember.setNickname(null).catch(err => {
-        reportRevokeRecruitServiceError('service.revokeRecruit.clearNickname', err, {
-          guildId,
-          recruitedId: member.id
+      if (safeRemovableRoleIds.length) {
+        await targetMember.roles.remove(safeRemovableRoleIds, 'Recruit status revoked');
+      }
+
+      const canManageNicknames = !!(
+        botMember &&
+        botMember.permissions &&
+        botMember.permissions.has(PermissionsBitField.Flags.ManageNicknames)
+      );
+
+      if (targetMember.manageable && canManageNicknames) {
+        await targetMember.setNickname(null).catch(err => {
+          reportRevokeRecruitServiceError('service.revokeRecruit.clearNickname', err, {
+            guildId,
+            recruitedId: member.id
+          });
         });
+      }
+    } catch (roleError) {
+      reportRevokeRecruitServiceError('service.revokeRecruit.removeRoles', roleError, {
+        guildId,
+        recruitedId: member.id
       });
     }
-  } catch (roleError) {
-    reportRevokeRecruitServiceError('service.revokeRecruit.removeRoles', roleError, {
-      guildId,
-      recruitedId: member.id
-    });
   }
 
   // Update leaderboards to reflect the change
@@ -129,7 +152,7 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
     guildId
   });
 
-  return null;
+  return { success: true, message: `Successfully revoked recruit status for ${member.tag}. ✅` };
 }
 
 module.exports = { revokeRecruit };

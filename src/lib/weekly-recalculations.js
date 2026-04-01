@@ -12,7 +12,11 @@ const {
   getRoleLevel
 } = require('../lib/recruiting-system');
 const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
+const { acquireJobLock } = require('../lib/job-locks');
 const { resolveGuildId } = require('./guild');
+const { withTransaction } = require('../lib/transactions');
+const { loadRecruiterMeta, loadPreviousMinReqs } = require('../lib/leaderboard-utils');
+const { logUnexpectedError, logRuntimeEvent } = require('../lib/logger');
 
 const WEEK_ROLLOVER_OFFSET_MS = 5 * 60 * 1000;
 const DM_CONCURRENCY = 5;
@@ -105,76 +109,90 @@ async function performWeeklyRecalculations(guild) {
 
     console.log(`Found ${allStaff.length} staff members to recalculate`);
 
+    const { batchCalculate7DayStats, batchIsNewStaff } = require('./recruiter-stats');
+    const allStats7dMap = await batchCalculate7DayStats(database, recruiterIds, guild, { ...statsWindow, guildId });
+    const isNewStaffMap = await batchIsNewStaff(database, recruiterIds, guildId);
+    
+    // Batch fetch absences and warnings 
+    const metaMap = await loadRecruiterMeta(database, recruiterIds, { guildId }).catch(() => ({ 
+      absences: new Map(), 
+      warnings: new Map(), 
+      systemWarnings: new Map() 
+    }));
+
     const calcResults = await runWithConcurrency(allStaff, CALC_CONCURRENCY, async (staffMember) => {
-      // Get 7-day stats
-      const stats7d = await calculate7DayStats(database, staffMember.id, guild, { ...statsWindow, guildId });
-
-      const previousMinReq = await getPreviousMinReq(database, staffMember.id, { guildId });
-
-      // Check for active absence
-      const absence = await database.get(
-        'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
-        guildId,
-        staffMember.id
-      );
-
-      // Get active warnings count
-      const warnings = await database.get(
-        'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-        guildId,
-        staffMember.id,
-        Date.now()
-      );
-      const activeWarnings = warnings ? warnings.c : 0;
-
-      // Get role base requirement
-      const roleBase = getBaseRequirement(staffMember);
-
-      // Check if new staff (first 2 recalcs)
-      const newStaffCheck = await isNewStaff(database, staffMember.id, { guildId });
-
-      // Calculate new min req
-      const newMinReq = calculateMinRecruitsFixed({
-        roleBase,
-        member: staffMember,
-        recruits7d: stats7d.recruits7d,
-        activityRate: stats7d.activityRate,
-        verifyRate: stats7d.verifyRate,
-        retention: stats7d.retention,
-        warnings: activeWarnings,
-        previousMinReq,
-        absent: !!absence,
-        isNewStaff: newStaffCheck
-      });
-
-      // Store calculation
-      await storeWeeklyCalculation(database, {
-        guildId,
-        recruiterId: staffMember.id,
-        weekStart,
-        recruits7d: stats7d.recruits7d,
-        activityRate: stats7d.activityRate,
-        verifyRate: stats7d.verifyRate,
-        retention: stats7d.retention,
-        warnings: activeWarnings,
-        absent: !!absence,
-        previousMinReq,
-        calculatedMinReq: newMinReq,
-        roleBase
-      });
-
-      const result = {
-        staffMember,
-        newMinReq,
-        stats7d,
-        activeWarnings,
-        absence,
-        previousMinReq,
-        roleBase
-      };
-
-      const roleLevel = getRoleLevel(staffMember);
-      return { ok: true, result, notify: roleLevel > 0 };
+      try {
+        // Get pre-fetched 7-day stats
+        const stats7d = allStats7dMap.get(staffMember.id) || { recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 };
+        
+        const previousMinReq = await getPreviousMinReq(database, staffMember.id, { guildId });
+  
+        // Look up absences and warnings from the batch map
+        const absence = metaMap.absences.has(staffMember.id);
+        const activeWarnings = metaMap.warnings.get(staffMember.id) || 0;
+  
+        // Get role base requirement
+        const roleBase = getBaseRequirement(staffMember);
+  
+        // Check if new staff (look up from pre-calculated map)
+        const newStaffCheck = isNewStaffMap.get(staffMember.id) ?? false;
+  
+        // Calculate and Store within a per-recruiter transaction block for atomic safety
+        const newMinReq = await withTransaction(database, async (tx) => {
+          const req = calculateMinRecruitsFixed({
+            roleBase,
+            member: staffMember,
+            recruits7d: stats7d.recruits7d,
+            activityRate: stats7d.activityRate,
+            verifyRate: stats7d.verifyRate,
+            retention: stats7d.retention,
+            warnings: activeWarnings,
+            previousMinReq,
+            absent: !!absence,
+            isNewStaff: newStaffCheck
+          });
+  
+          await storeWeeklyCalculation(tx, {
+            guildId,
+            recruiterId: staffMember.id,
+            weekStart,
+            recruits7d: stats7d.recruits7d,
+            activityRate: stats7d.activityRate,
+            verifyRate: stats7d.verifyRate,
+            retention: stats7d.retention,
+            warnings: activeWarnings,
+            absent: !!absence,
+            previousMinReq,
+            calculatedMinReq: req,
+            roleBase
+          });
+          
+          // P-04: Weekly Point Reset — Ensure points return to 0 for the new week window.
+          await tx.run('UPDATE recruiters SET points = 0 WHERE guild_id = ? AND id = ?', guildId, staffMember.id);
+  
+          return req;
+        });
+  
+        const result = {
+          staffMember,
+          newMinReq,
+          stats7d,
+          activeWarnings,
+          absence,
+          previousMinReq,
+          roleBase
+        };
+  
+        const roleLevel = getRoleLevel(staffMember);
+        return { ok: true, result, notify: roleLevel > 0 };
+      } catch (err) {
+        void logUnexpectedError('service.weeklyRecalculations.perMember', err, {
+          guildId,
+          recruiterId: staffMember.id,
+          weekStart
+        });
+        return { ok: false, error: err.message };
+      }
     });
 
     const results = [];
@@ -200,7 +218,12 @@ async function performWeeklyRecalculations(guild) {
     // Check for expired absences and post return messages
     await handleExpiredAbsences(guild);
 
-    console.log(`Weekly recalculation completed for ${results.length} staff members`);
+    void logRuntimeEvent('info', 'service.weeklyRecalculations.completed', 'Weekly recalculation completed successfully', {
+      guildId,
+      processedCount: results.length,
+      weekStart
+    });
+    
     return results;
 
   } catch (error) {

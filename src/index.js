@@ -71,7 +71,7 @@ const voiceSessions = new Map();
 const INVITE_SNAPSHOT_TTL_MS = Number.parseInt(process.env.INVITE_SNAPSHOT_TTL_MS || '900000', 10);
 const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
 const SHUTDOWN_STEP_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_STEP_TIMEOUT_MS || '4000', 10);
-const SHUTDOWN_ANALYTICS_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANALYTICS_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
+const SHUTDOWN_ANALYTICS_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANALYTICS_TIMEOUT_MS || '10000', 10);
 const SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
 const ENFORCED_MEMBER_ID = String(process.env.BOOT_ENFORCED_MEMBER_ID || '').trim();
 const ENFORCED_ROLE_ID = String(process.env.BOOT_ENFORCED_ROLE_ID || '').trim();
@@ -87,8 +87,10 @@ function isInteractionAckError(error) {
 const guildJoinQueues = new Map();
 async function withGuildJoinLock(guildId, fn) {
   const queue = guildJoinQueues.get(guildId) || Promise.resolve();
-  const nextQueue = queue.then(() => fn()).catch(() => fn()).finally(() => {
-    // Audit Hardening: Prune the Map if this was the last pending task for this guild
+  // Audit Fix: removed `.catch(() => fn())` which incorrectly re-ran fn() on
+  // any error in the previous entry, risking double invite attribution.
+  const nextQueue = queue.then(() => fn()).finally(() => {
+    // Prune the Map if this was the last pending task for this guild
     if (guildJoinQueues.get(guildId) === nextQueue) {
       guildJoinQueues.delete(guildId);
     }
@@ -311,7 +313,17 @@ async function onReady() {
     }
   }
 
-  scheduler.start(client, db);
+  // Sequential Initialization (ensuring all critical data paths are ready before scheduler heartbeat)
+  Promise.all([
+    antiNukeInitPromise,
+    inviteInitPromise,
+    reconcileRecruits(client, db)
+  ]).then(() => {
+    scheduler.start(client, db);
+    logRuntimeEvent('info', 'startup.heartbeat', 'Scheduler heartbeat started after sequential initialization.');
+  }).catch(err => {
+    logUnexpectedError('startup.heartbeat.failure', err);
+  });
 
   // Start DM campaign report scanner (main bot only)
   if (!IS_DM_WORKER) {
@@ -348,6 +360,32 @@ async function onReady() {
 
   await ensureBootRoleAssignment();
   startBootRoleEnforcementTimer();
+
+  // Anti-Nuke Hierarchy Safety Check
+  try {
+    if (guild) {
+      const botMember = guild.members.me || await guild.members.fetch(client.user.id).catch(() => null);
+      if (botMember) {
+        const highestRole = botMember.roles.highest;
+        const higherRoles = guild.roles.cache.filter(r => r.position > highestRole.position && !r.managed && r.name !== '@everyone');
+        if (higherRoles.size > 0) {
+          const roleNames = Array.from(higherRoles.values()).map(r => r.name).join(', ');
+          logRuntimeEvent('warn', 'startup.hierarchy', 'Bot role is NOT at the top of the hierarchy. Anti-nuke actions may fail.', { 
+            botRole: highestRole.name, 
+            botRoleId: highestRole.id,
+            higherRoles: roleNames
+          });
+          console.warn(`⚠️ [ANTI-NUKE] WARNING: The bot's highest role is NOT at the top of the hierarchy. Higher roles: ${roleNames}. Anti-nuke will be powerless against users with these roles.`);
+        } else {
+          logRuntimeEvent('info', 'startup.hierarchy.check', 'Bot role position verified as highest.', {
+            details: { highestRole: highestRole.name, position: highestRole.position }
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to perform hierarchy safety check:', e);
+  }
 }
 // Use clientReady to avoid v15 breaking changes (ready alias deprecation in v14).
 client.once('clientReady', onReady);
@@ -435,11 +473,23 @@ async function flushShutdown(signal) {
         client.destroy();
       }
       if (db && typeof db.close === 'function') {
-        await db.close();
+        // Audit Fix: Add 2s timeout to db.close() to prevent hang during WAL checkpoint.
+        const closeDone = new Promise(resolve => db.close().then(resolve).catch(resolve));
+        const timeout = new Promise(resolve => setTimeout(resolve, 2000, 'timeout'));
+        const result = await Promise.race([closeDone, timeout]);
+        if (result === 'timeout') {
+          console.error('Database close timed out (likely a slow WAL checkpoint). Forcing exit.');
+        }
       }
     } catch (e) {
       logUnexpectedError('shutdown.flush', e);
     } finally {
+      const shutdownGracePeriodMs = 15000;
+      setTimeout(() => {
+        console.error(`Shutdown grace period of ${shutdownGracePeriodMs}ms exceeded. Forcing exit.`);
+        process.exit(1);
+      }, shutdownGracePeriodMs).unref();
+
       if (signal) {
         const shouldFail = signal === 'uncaughtException' || signal === 'unhandledRejection';
         process.exit(shouldFail ? 1 : 0);
@@ -585,6 +635,7 @@ client.on('guildMemberUpdate', async (oldMember, newMember) => {
       });
     }
   } catch (e) {
+    logUnexpectedError('event.guildMemberUpdate.analytics', e, { guildId: newMember.guild.id, userId: newMember.id });
     console.error('Failed to record role change analytics:', e);
   }
 });
@@ -610,12 +661,14 @@ client.on('messageCreate', async message => {
         timestamp: message.createdTimestamp || Date.now()
       });
     } catch (e) {
+      logUnexpectedError('event.messageCreate.analytics', e, { guildId: message.guild.id, userId: message.author.id });
       console.error('Failed to record analytics message:', e);
     }
 
     try {
       await trackRookieChatMessage({ db, member, guild: message.guild, client });
     } catch (e) {
+      logUnexpectedError('event.messageCreate.rookieChat', e, { guildId: message.guild.id, userId: message.author.id });
       console.error('Failed to track rookie chat message:', e);
     }
 
@@ -623,6 +676,7 @@ client.on('messageCreate', async message => {
       try {
         await handleRookieWarLogMessage({ db, message, member, guild: message.guild, client });
       } catch (e) {
+        logUnexpectedError('event.messageCreate.rookieWar', e, { guildId: message.guild.id, userId: message.author.id });
         console.error('Failed to track rookie war log:', e);
       }
     }
@@ -652,6 +706,7 @@ client.on('guildMemberAdd', async (member) => {
   try {
     await analytics.recordJoin({ guildId: member.guild.id, userId: member.id, joinedAt: member.joinedAt ? member.joinedAt.getTime() : Date.now() });
   } catch (e) {
+    logUnexpectedError('event.guildMemberAdd.analytics', e, { guildId: member.guild.id, userId: member.id });
     console.error('Failed to record join analytics:', e);
   }
 
@@ -674,6 +729,8 @@ client.on('guildMemberAdd', async (member) => {
 });
 
 client.on('error', err => {
+  // Audit Fix: Dispatch websocket/client errors to AECS for visibility.
+  logUnexpectedError('client.websocket.error', err);
   console.error('Discord client error:', err);
 });
 
@@ -682,6 +739,7 @@ client.on('guildMemberRemove', async member => {
   try {
     await analytics.recordLeave({ guildId: member.guild.id, userId: member.id, leftAt: Date.now() });
   } catch (e) {
+    logUnexpectedError('event.guildMemberRemove.analytics', e, { guildId: member.guild.id, userId: member.id });
     console.error('Failed to record leave analytics:', e);
   }
 
@@ -694,6 +752,7 @@ client.on('guildMemberRemove', async member => {
   try {
     await handleMemberLeave(db, member.guild, member);
   } catch (err) {
+    logUnexpectedError('event.guildMemberRemove.handleMemberLeave', err, { guildId: member.guild.id, userId: member.id });
     console.error('Error handling member leave:', err);
   }
 });
@@ -739,18 +798,25 @@ async function persistInviteSnapshot(guildId, snapshot) {
   try {
     await withTransaction(db, async (tx) => {
       const now = Date.now();
-      for (const code of codes) {
-        const uses = Number(snapshot.get(code) || 0);
+      // Audit Fix: Use bulk INSERT/UPSERT to avoid N+1 transaction overhead.
+      // SQLite parameter limit is typically 999; 4 params per row = ~240 rows per chunk.
+      const batchSize = 200;
+      for (let i = 0; i < codes.length; i += batchSize) {
+        const chunk = codes.slice(i, i + batchSize);
+        const placeholders = chunk.map(() => '(?, ?, ?, ?)').join(', ');
+        const values = [];
+        chunk.forEach(code => {
+          values.push(guildId, code, Number(snapshot.get(code) || 0), now);
+        });
+        
         await tx.run(
           `INSERT INTO invite_snapshots (guild_id, invite_code, uses, updated_at)
-           VALUES (?, ?, ?, ?)
+           VALUES ${placeholders}
            ON CONFLICT(guild_id, invite_code) DO UPDATE SET uses = excluded.uses, updated_at = excluded.updated_at`,
-          guildId,
-          code,
-          uses,
-          now
+          ...values
         );
       }
+
       if (codes.length) {
         const placeholders = codes.map(() => '?').join(', ');
         await tx.run(

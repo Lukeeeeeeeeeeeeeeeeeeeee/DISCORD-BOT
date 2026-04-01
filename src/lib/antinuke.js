@@ -1633,6 +1633,23 @@ class AntiNuke {
       || config.strictActive
       || emergencyActive;
 
+    // VULN-11: Consolidated Hierarchy Guard — Verify bot position before ANY punishment.
+    const canAct = this.canActOnMember(guild, member);
+    if (!canAct.allowed) {
+      this.logAction(guild.id, {
+        type: 'protection_blocked_hierarchy',
+        userId: member.id,
+        traceId,
+        confidence: context.confidence,
+        whitelisted: context.whitelisted,
+        actionTaken: 'none',
+        result: `blocked_hierarchy:${canAct.reason}`,
+        severity: 'CRITICAL',
+        notes: `Bot is powerless against ${member.user.tag} (${canAct.reason}). Manual intervention required!`
+      });
+      return;
+    }
+
     if (shouldQuarantine) {
       try {
         await this.applyQuarantine(guild, member, {
@@ -1661,6 +1678,10 @@ class AntiNuke {
 
     if (shouldBan) {
       try {
+        // Defensive check: re-verify bannable flag immediately before call to avoid stale state races.
+        if (typeof member.bannable === 'boolean' && !member.bannable) {
+          throw new Error('Member is not bannable (stale state)');
+        }
         await member.ban({ reason: context.reason || 'Anti-nuke protection' });
         this.logAction(guild.id, {
           type: context.successType || 'protective_ban',
@@ -2142,6 +2163,7 @@ class AntiNuke {
   }
 
   async waitForAuditLog(guild, type, targetId, maxAgeMs = 5000) {
+    if (!this.processedAuditEntries) this.processedAuditEntries = new Set();
     const start = Date.now();
     const baseLimit = Math.max(6, Number(this.AUDIT_LOG_FETCH_LIMIT || 6));
     const maxLimit = Math.max(baseLimit, Number(this.AUDIT_LOG_MAX_FETCH_LIMIT || 60));
@@ -2158,6 +2180,7 @@ class AntiNuke {
 
       let auditLogs = null;
       try {
+        // Fetch logs with specific type filter to reduce junk.
         auditLogs = await guild.fetchAuditLogs({ limit: attempt.limit, type });
       } catch (error) {
         const retryDelay = this.getRateLimitDelayMs(error);
@@ -2174,7 +2197,11 @@ class AntiNuke {
         .sort((a, b) => Number(b.createdTimestamp || 0) - Number(a.createdTimestamp || 0));
 
       for (const entry of entries) {
-        if (!entry) continue;
+        if (!entry || !entry.id) continue;
+
+        // D-01: Audit Log Deduplication. 
+        // Prevents using the same entry for multiple event triggers (framing vuln).
+        if (this.processedAuditEntries.has(entry.id)) continue;
 
         if (wantedTargetId) {
           const entryTargetId = this.getAuditTargetId(entry);
@@ -2184,6 +2211,12 @@ class AntiNuke {
         const createdTs = Number(entry.createdTimestamp || 0);
         if (!createdTs) continue;
         if ((start - createdTs) > (maxAgeMs + attempt.delay + 1000)) continue;
+
+        // Mark as processed so it can't be used for another event.
+        this.processedAuditEntries.add(entry.id);
+        
+        // TTL for the cache (cleanup after 1 minute)
+        setTimeout(() => this.processedAuditEntries.delete(entry.id), 60000);
 
         return entry;
       }
@@ -2556,11 +2589,10 @@ class AntiNuke {
     this.applyAutoStrict(guildId, 'emergency_mode');
 
     try {
-      // Create backup before lockdown
-      const backup = await this.createBackup(guild, { type: 'full' });
-
-      // Remove all permissions except view channels
-      await this.removeDangerousPermissions(guild, true);
+      // Remove all permissions except
+      // LOCKDOWN ORDER: Permissions stripped FIRST (immediate), then backup (takes time).
+      await this.removeDangerousPermissions(guild, { reason: 'Anti-Nuke Emergency Mode (Attack detected)' });
+      await this.createBackup(guild, { reason: 'Anti-Nuke Emergency Mode (Attack detected)' });
 
       // Lock down @everyone
       const everyoneRole = guild.roles.everyone;

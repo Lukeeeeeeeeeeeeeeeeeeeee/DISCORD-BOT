@@ -76,7 +76,9 @@ class Dispatcher {
 
     this.telemetryOptions = {
       telemetryWebhookUrl: options.telemetryWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL || '',
+      telemetryWebhookUrlSecondary: options.telemetryWebhookUrlSecondary || process.env.AECS_TELEMETRY_WEBHOOK_URL_SECONDARY || '',
       telemetryFatalWebhookUrl: options.telemetryFatalWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL_FATAL || '',
+      telemetryFatalWebhookUrlSecondary: options.telemetryFatalWebhookUrlSecondary || process.env.AECS_TELEMETRY_WEBHOOK_URL_FATAL_SECONDARY || '',
       telemetryHighImpactWebhookUrl: options.telemetryHighImpactWebhookUrl || process.env.AECS_TELEMETRY_WEBHOOK_URL_HIGH || '',
       telemetryChannelId: options.telemetryChannelId || process.env.AECS_TELEMETRY_CHANNEL_ID || '',
       supportLookupTemplate: options.supportLookupTemplate || process.env.AECS_SUPPORT_LOOKUP_TEMPLATE || '',
@@ -94,7 +96,9 @@ class Dispatcher {
   createTelemetryAdapter(telemetryOptions = {}) {
     return new TelemetryAdapter({
       defaultWebhookUrl: telemetryOptions.telemetryWebhookUrl || '',
+      secondaryWebhookUrl: telemetryOptions.telemetryWebhookUrlSecondary || '',
       fatalWebhookUrl: telemetryOptions.telemetryFatalWebhookUrl || '',
+      fatalWebhookUrlSecondary: telemetryOptions.telemetryFatalWebhookUrlSecondary || '',
       highImpactWebhookUrl: telemetryOptions.telemetryHighImpactWebhookUrl || '',
       channelId: telemetryOptions.telemetryChannelId || '',
       supportLookupTemplate: telemetryOptions.supportLookupTemplate || '',

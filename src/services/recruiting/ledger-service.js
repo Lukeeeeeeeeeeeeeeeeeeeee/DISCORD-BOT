@@ -1,4 +1,7 @@
 const ensuredDbs = new WeakSet();
+const MAX_SAFE_DELTA = 25;
+const logUnexpectedError = require('../../lib/logger').logUnexpectedError;
+const logRuntimeEvent = require('../../lib/logger').logRuntimeEvent;
 
 function toFiniteNumber(value, fallback = 0) {
   const num = Number(value);
@@ -43,37 +46,31 @@ async function changeRecruiterPoints(tx, {
   const safeReason = reason ? String(reason) : 'unspecified';
   const now = Date.now();
   const floor = toFiniteNumber(minPoints, 0);
-  const ceiling = Number.isFinite(maxPoints) ? toFiniteNumber(maxPoints, null) : null;
+  const ceiling = Number.isFinite(maxPoints) ? maxPoints : null;
+
+  if (Math.abs(safeDelta) > MAX_SAFE_DELTA) {
+    void logRuntimeEvent('warn', 'ledger.high_delta', 'High-value point transaction detected', {
+      guildId, recruiterId, delta: safeDelta, reason: safeReason
+    });
+  }
 
   await ensureLedgerTable(tx);
-  await tx.run(
-    'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
-    guildId,
-    recruiterId
-  );
-  await tx.run(
-    'UPDATE recruiters SET points = COALESCE(CAST(points AS REAL), 0) WHERE guild_id = ? AND id = ?',
-    guildId,
-    recruiterId
-  );
 
+  // Atomic Update using UPSERT (SQLite 3.24+)
   if (Number.isFinite(ceiling)) {
-    await tx.run(
-      'UPDATE recruiters SET points = MIN(?, MAX(?, COALESCE(CAST(points AS REAL), 0) + ?)) WHERE guild_id = ? AND id = ?',
-      ceiling,
-      floor,
-      safeDelta,
-      guildId,
-      recruiterId
-    );
+    await tx.run(`
+      INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+      VALUES (?, ?, ?, 0, 0, 4)
+      ON CONFLICT(guild_id, id) DO UPDATE SET
+        points = MIN(?, MAX(?, COALESCE(points, 0) + ?))
+    `, guildId, recruiterId, Math.max(floor, Math.min(ceiling, safeDelta)), ceiling, floor, safeDelta);
   } else {
-    await tx.run(
-      'UPDATE recruiters SET points = MAX(?, COALESCE(CAST(points AS REAL), 0) + ?) WHERE guild_id = ? AND id = ?',
-      floor,
-      safeDelta,
-      guildId,
-      recruiterId
-    );
+    await tx.run(`
+      INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+      VALUES (?, ?, ?, 0, 0, 4)
+      ON CONFLICT(guild_id, id) DO UPDATE SET
+        points = MAX(?, COALESCE(points, 0) + ?)
+    `, guildId, recruiterId, Math.max(floor, safeDelta), floor, safeDelta);
   }
 
   const row = await tx.get(

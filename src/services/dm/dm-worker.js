@@ -316,7 +316,14 @@ class DMWorker {
                             await msg.delete();
                             deletedCount++;
                             if (cancellation.mode === 'recent') break; // only delete the most recent message
-                        } catch(e) {}
+                        } catch(e) {
+                            // Audit Fix: Detect 429 (Too Many Requests) and apply emergency backoff.
+                            if (e && (e.status === 429 || e.code === 429)) {
+                                const retryAfter = e.retryAfter || 5000;
+                                void logRuntimeEvent('warn', 'dm.cancellation.ratelimit', 'Hit 429 during cancellation', { user_id: record.user_id, retryAfter });
+                                await new Promise(r => setTimeout(r, retryAfter + 500));
+                            }
+                        }
                     }
                 }
                 await new Promise(r => setTimeout(r, 600)); // Ratelimit safety
@@ -438,7 +445,8 @@ async function getEligibleWorkers(staleMs = 60000) {
     const cutoff = now - staleMs;
     const workers = await db.all(`SELECT * FROM dm_workers WHERE enabled = 1 AND last_seen_at >= ?`, cutoff);
     eligibleWorkersCache.data = workers;
-    eligibleWorkersCache.expiresAt = now + 5000;
+    // Audit Fix: Reduced TTL from 5s to 2s to minimize race conditions with offline workers.
+    eligibleWorkersCache.expiresAt = now + 2000;
     return workers;
 }
 

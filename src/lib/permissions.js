@@ -101,6 +101,11 @@ function hasRecruiterOrStaffPermissions(member) {
  * @param {GuildMember} member - Discord guild member
  * @returns {boolean} - True if user has admin or staff permissions
  */
+/**
+ * Check if a user has admin or staff permissions (for admin commands)
+ * @param {GuildMember} member - Discord guild member
+ * @returns {boolean} - True if user has admin or staff permissions
+ */
 function hasAdminOrStaffPermissions(member) {
   if (!member) return false;
   if (hasElevatedGuildPermissions(member)) return true;
@@ -110,9 +115,33 @@ function hasAdminOrStaffPermissions(member) {
   return hasAnyRole(member, staffRoles);
 }
 
+/**
+ * Check if a user has true "Admin" power (Chief rank or above, or Discord Administrator)
+ * This is used for critical bypasses and overrides.
+ * @param {GuildMember} member - Discord guild member
+ * @returns {boolean} - True if user has administrative power
+ */
+function hasAdminPermissions(member) {
+  if (!member) return false;
+  if (hasAdministrator(member)) return true;
+  
+  // Only high-ranking staff: Chief, Co-Leader, Leader
+  const adminRoles = [
+    ROLE_IDS.CHIEF,
+    ROLE_IDS.CHIEF_OF_WAR,
+    ROLE_IDS.CHIEF_OF_COMMUNITY,
+    ROLE_IDS.CHIEF_OF_RECRUITMENT,
+    ROLE_IDS.CO_LEADER,
+    ROLE_IDS.LEADER
+  ].filter(Boolean);
+
+  return hasAnyRole(member, adminRoles);
+}
+
 module.exports = {
   hasRecruiterOrStaffPermissions,
   hasAdminOrStaffPermissions,
+  hasAdminPermissions,
   hasAdministrator,
   hasElevatedGuildPermissions,
   getMemberPermissions,
