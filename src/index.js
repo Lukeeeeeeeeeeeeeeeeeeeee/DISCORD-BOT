@@ -278,7 +278,7 @@ function startBootRoleEnforcementTimer() {
 async function onReady() {
   if (_readyCalled) return;
   _readyCalled = true;
-  logRuntimeEvent('info', 'startup.ready', 'Discord client ready', { userTag: client.user.tag });
+  logRuntimeEvent('info', 'startup.ready', 'Discord client ready [v2.1.0-STABILIZED-FINAL]', { userTag: client.user.tag });
   await preloadLocales().catch((err) => {
     logUnexpectedError('startup.i18n.preload', err);
   });
