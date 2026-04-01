@@ -779,9 +779,9 @@ async function reconcileRecruits(client, dbHandle) {
       }
 
       // Fetch all valid recruits and any invalid records needing potential healing for memory-efficient comparison.
-      // This avoids O(N) serial round-trips to the DB for guilds with hundreds of rookies.
+      // We order invalid records by creation (ASC) so the latest one overwrites in the Map (Set-based healing).
       const rowsValid = await db.all('SELECT recruited_id FROM recruits WHERE guild_id = ? AND valid = 1', guildId).catch(() => []);
-      const rowsInvalid = await db.all('SELECT id, recruited_id FROM recruits WHERE guild_id = ? AND valid = 0', guildId).catch(() => []);
+      const rowsInvalid = await db.all('SELECT id, recruited_id FROM recruits WHERE guild_id = ? AND valid = 0 ORDER BY created_at ASC', guildId).catch(() => []);
 
       const validRecruits = new Set(rowsValid.map(r => r.recruited_id));
       const invalidMap = new Map(rowsInvalid.map(r => [r.recruited_id, r.id]));

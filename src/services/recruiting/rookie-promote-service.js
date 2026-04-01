@@ -1,3 +1,4 @@
+const { MessageFlags } = require('discord.js');
 const defaultDb = require('../../db_async');
 const { ROLE_IDS } = require('../../constants');
 const { hasModPlusPermissions } = require('../../lib/recruiting-system');
@@ -15,7 +16,7 @@ async function execute(interaction, _client, dbHandle = null) {
   }
 
   if (typeof interaction.deferReply === 'function') {
-    await interaction.deferReply({ flags: 64 });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   }
 
   const targetUser = interaction.options.getUser('member');
@@ -46,7 +47,7 @@ async function execute(interaction, _client, dbHandle = null) {
     if (interaction.editReply) {
       return interaction.editReply({ content: message });
     }
-    return interaction.reply({ content: message, flags: 64 });
+    return interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
   }
 
   const teamLabel = result.teamEmoji ? `${result.teamEmoji} ${result.teamName}` : result.teamName;

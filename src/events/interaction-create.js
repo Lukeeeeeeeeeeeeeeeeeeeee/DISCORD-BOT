@@ -1,3 +1,5 @@
+const { MessageFlags } = require('discord.js');
+
 function createInteractionCreateHandler({
   isSystemsReady,
   client,
@@ -45,7 +47,7 @@ function createInteractionCreateHandler({
         if (interaction.deferred || interaction.replied) {
           await interaction.editReply({ embeds: [embed] });
         } else {
-          await interaction.reply({ embeds: [embed], flags: 64 });
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
         }
       } catch (err2) {
         if (isInteractionAckError(err2)) return;
