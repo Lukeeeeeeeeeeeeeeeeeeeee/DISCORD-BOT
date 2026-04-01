@@ -208,6 +208,8 @@ async function createInviteTables() {
       { name: 'claim_expires_at', type: 'INTEGER' },
       { name: 'last_worker_id', type: 'TEXT' },
       { name: 'worker_switches', type: 'INTEGER DEFAULT 0' },
+      { name: 'retries', type: 'INTEGER DEFAULT 0' },
+      { name: 'last_attempt_at', type: 'INTEGER' },
       { name: 'next_attempt_at', type: 'INTEGER' },
       { name: 'updated_at', type: 'INTEGER NOT NULL DEFAULT 0' }
     ];

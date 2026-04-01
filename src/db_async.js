@@ -1270,6 +1270,15 @@ async function init() {
   await ensureColumnWithRetry('dm_campaigns', 'last_notified_percentage INTEGER DEFAULT 0');
   await ensureColumnWithRetry('dm_campaigns', 'report_attempts INTEGER DEFAULT 0');
   await ensureColumnWithRetry('dm_cancellations', 'campaign_id INTEGER');
+  
+  // dm_campaign_targets (Atomic Claim Engine v4.5.2)
+  await ensureColumnWithRetry('dm_campaign_targets', 'claim_id TEXT');
+  await ensureColumnWithRetry('dm_campaign_targets', 'claim_expires_at INTEGER');
+  await ensureColumnWithRetry('dm_campaign_targets', 'retries INTEGER DEFAULT 0');
+  await ensureColumnWithRetry('dm_campaign_targets', 'last_attempt_at INTEGER');
+  await ensureColumnWithRetry('dm_campaign_targets', 'next_attempt_at INTEGER');
+  await ensureColumnWithRetry('dm_campaign_targets', 'last_worker_id TEXT');
+  await ensureColumnWithRetry('dm_campaign_targets', 'worker_switches INTEGER DEFAULT 0');
 
   try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { void e; }
   try { await db.exec('CREATE TABLE IF NOT EXISTS weekly_recruit_overrides (guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, week_start INTEGER NOT NULL, total INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, note TEXT, PRIMARY KEY (guild_id, recruiter_id, week_start))'); } catch (e) { void e; }

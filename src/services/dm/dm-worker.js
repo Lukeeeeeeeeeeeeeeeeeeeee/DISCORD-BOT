@@ -82,15 +82,14 @@ class DMWorker {
                      claim_expires_at = ?,
                      updated_at = ?
                  WHERE id IN (
-                     SELECT t.id
-                     FROM dm_campaign_targets t
-                     JOIN dm_campaigns c ON c.id = t.campaign_id
-                     WHERE (t.status = 'pending' OR (t.status = 'sending' AND t.claim_expires_at <= ?))
-                       AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= ?)
-                       AND c.status IN ('queued', 'running')
-                     ORDER BY t.batch_no ASC, t.id ASC
+                     SELECT id
+                     FROM dm_campaign_targets
+                     WHERE (status = 'pending' OR (status = 'sending' AND claim_expires_at <= ?))
+                       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                       AND campaign_id IN (SELECT id FROM dm_campaigns WHERE status IN ('queued', 'running'))
+                     ORDER BY batch_no ASC, id ASC
                      LIMIT ?
-                 ) AND (status = 'pending' OR status = 'sending')`,
+                 )`,
                 this.workerId, claimId, leaseExpiry, now, now, now, batchSize
             );
 
