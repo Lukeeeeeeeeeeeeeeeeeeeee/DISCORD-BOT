@@ -777,35 +777,55 @@ async function reconcileRecruits(client, dbHandle) {
         void logRuntimeEvent('error', 'recruit.reconciliation.config_missing', 'ROLE_IDS.ROOKIE is not configured. Skipping reconciliation.');
         continue;
       }
+
+      // Fetch all valid recruits and any invalid records needing potential healing for memory-efficient comparison.
+      // This avoids O(N) serial round-trips to the DB for guilds with hundreds of rookies.
+      const rowsValid = await db.all('SELECT recruited_id FROM recruits WHERE guild_id = ? AND valid = 1', guildId).catch(() => []);
+      const rowsInvalid = await db.all('SELECT id, recruited_id FROM recruits WHERE guild_id = ? AND valid = 0', guildId).catch(() => []);
+
+      const validRecruits = new Set(rowsValid.map(r => r.recruited_id));
+      const invalidMap = new Map(rowsInvalid.map(r => [r.recruited_id, r.id]));
+
       const members = await guild.members.fetch({ role: ROLE_IDS.ROOKIE }).catch(() => new Map());
-      const rookies = members; // members is now filtered to just Rookies
+      const rookies = members;
 
-      for (const [memberId, member] of rookies) {
-        const record = await recruitsRepo.getLatestByRecruitedId(db, guildId, memberId);
+      let healedCount = 0;
+      let orphanedCount = 0;
+      const orphanedSample = [];
 
-        // CASE: Member has role but no DB record, or record is invalid (VULN-03)
-        if (!record || record.valid === 0) {
-          const traceId = createTraceId();
-          try {
-            // Heal the state by marking valid if it was a partial transaction failure
-            if (record) {
-              await db.run('UPDATE recruits SET valid = 1 WHERE id = ?', record.id);
-              void logRuntimeEvent('info', 'recruit.reconciliation.healed', 'Healed zombie recruit state', {
-                guildId,
-                memberId,
-                recruitId: record.id
-              });
-            } else {
-              // Orphaned role - log for audit
-              void logRuntimeEvent('warn', 'recruit.reconciliation.orphaned', 'Member has Rookie role but no DB record', {
-                guildId,
-                memberId
-              });
-            }
-          } catch (err) {
-            reportRecruitServiceError('service.recruit.reconcile.member', err, { guildId, memberId, traceId });
+      for (const [memberId, _member] of rookies) {
+        // CASE: Already has a valid record in DB, skip.
+        if (validRecruits.has(memberId)) continue;
+
+        const recordId = invalidMap.get(memberId);
+        try {
+          if (recordId) {
+            // CASE: Has an invalid record, heal the state (VULN-03)
+            await db.run('UPDATE recruits SET valid = 1 WHERE id = ?', recordId);
+            healedCount++;
+            void logRuntimeEvent('info', 'recruit.reconciliation.healed', 'Healed zombie recruit state', {
+              guildId,
+              memberId,
+              recruitId: recordId
+            });
+          } else {
+            // CASE: Orphaned role - track for summary log
+            orphanedCount++;
+            if (orphanedSample.length < 5) orphanedSample.push(memberId);
           }
+        } catch (err) {
+          const traceId = createTraceId();
+          reportRecruitServiceError('service.recruit.reconcile.member', err, { guildId, memberId, traceId });
         }
+      }
+
+      if (healedCount > 0 || orphanedCount > 0) {
+        void logRuntimeEvent(orphanedCount > 0 ? 'warn' : 'info', 'recruit.reconciliation.summary', 'Recruit reconciliation complete', {
+          guildId,
+          healedCount,
+          orphanedCount,
+          sampleOrphans: orphanedSample
+        });
       }
     } catch (err) {
       reportRecruitServiceError('service.recruit.reconcile.guild', err, { guildId });
