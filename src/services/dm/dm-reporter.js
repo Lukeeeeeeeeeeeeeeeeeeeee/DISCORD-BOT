@@ -32,7 +32,10 @@ const STATUS_EMOJI = {
  * Build a Discord embed-compatible report object for a campaign.
  */
 function buildReportEmbed(reportData) {
-    const { campaign, statusCounts, workerBreakdown, blockedUsers, undeliverableUsers, failedUsers } = reportData;
+    const { 
+        campaign, statusCounts, workerBreakdown, 
+        blockedUsers, undeliverableUsers, failedUsers, sentUsers 
+    } = reportData;
 
     const totalTargets = campaign.total_targets || 0;
     const sent = statusCounts.sent || 0;
@@ -140,12 +143,23 @@ function buildReportEmbed(reportData) {
     // ── Failed Users ──
     if (failedUsers && failedUsers.length > 0) {
         const lines = failedUsers.slice(0, 10).map(u =>
-            `<@${u.user_id}> — worker \`${u.assigned_worker_id || '?'}\` (${u.last_error_code || '?'})`
+            `<@${u.user_id}> — via \`${u.worker_id || '?'}\` (${u.last_error_code || '?'})`
         );
         if (failedUsers.length > 10) lines.push(`*...and ${failedUsers.length - 10} more in attached CSV*`);
         embed.fields.push({
             name: `⚠️ Failed Users (${failedUsers.length})`,
             value: lines.join('\n'),
+            inline: false
+        });
+    }
+
+    // ── Sent Users Sample (v4.5 Polish) ──
+    if (sentUsers && sentUsers.length > 0) {
+        const lines = sentUsers.slice(0, 5).map(u => `<@${u.user_id}>`);
+        if (sentUsers.length > 5) lines.push(`*...and ${sentUsers.length - 5} others documented in attached CSV*`);
+        embed.fields.push({
+            name: `📬 Success Sample (${sentUsers.length})`,
+            value: lines.join(', '),
             inline: false
         });
     }
