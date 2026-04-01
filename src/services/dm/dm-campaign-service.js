@@ -15,8 +15,8 @@ const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const DEFAULT_INSERT_BATCH_SIZE = 25; // rows per INSERT batch
 const HARD_MAX_TARGETS = 50000;
 
-const VALID_MESSAGE_TYPES = new Set(['misc', 'war_early', 'war_late']);
-const VALID_TARGET_MODES = new Set(['everyone', 'any_roles', 'all_roles']);
+const VALID_MESSAGE_TYPES = new Set(['misc', 'war_early', 'war_late', 'system_welcome', 'system_quota']);
+const VALID_TARGET_MODES = new Set(['everyone', 'any_roles', 'all_roles', 'direct']);
 const VALID_CAMPAIGN_STATUSES = new Set(['queued', 'running', 'completed', 'completed_with_errors', 'cancelled', 'failed']);
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -79,7 +79,11 @@ async function computeInsertBatchSize(totalTargets) {
  * Resolve target member IDs from guild based on target mode and role IDs.
  * Returns an array of unique user-ID strings (no bots).
  */
-async function resolveTargetMemberIds(guild, { targetMode, roleIds }) {
+async function resolveTargetMemberIds(guild, { targetMode, roleIds, directUserIds = [] }) {
+    if (targetMode === 'direct') {
+        return Array.isArray(directUserIds) ? directUserIds.map(String) : [];
+    }
+
     let membersCol;
     try {
         membersCol = await guild.members.fetch();
@@ -117,11 +121,12 @@ async function resolveTargetMemberIds(guild, { targetMode, roleIds }) {
  *
  * @param {object} opts
  * @param {object} opts.guild           Discord guild object (must support members.fetch)
- * @param {string} opts.requestedBy     User ID of requester
- * @param {string} opts.messageType     'misc' | 'war_early' | 'war_late'
+ * @param {string} opts.requestedBy     User ID of requester (or "SYSTEM")
+ * @param {string} opts.messageType     'misc' | 'war_early' | 'war_late' | 'system_welcome' | 'system_quota'
  * @param {string} opts.messageBody     Message text (≤ 2000 chars)
- * @param {string} opts.targetMode      'everyone' | 'any_roles' | 'all_roles'
- * @param {string[]} opts.roleIds       Role IDs (ignored if targetMode='everyone')
+ * @param {string} opts.targetMode      'everyone' | 'any_roles' | 'all_roles' | 'direct'
+ * @param {string[]} opts.roleIds       Role IDs (ignored if targetMode='everyone' or 'direct')
+ * @param {string[]} opts.directUserIds User IDs (required if targetMode='direct')
  * @param {string} [opts.reportChannelId]
  * @param {string} [opts.requestedChannelId]
  * @param {boolean} [opts.preview=false]  If true, return stats without writing.
@@ -134,6 +139,7 @@ async function createCampaign({
     messageBody,
     targetMode,
     roleIds = [],
+    directUserIds = [],
     reportChannelId = null,
     requestedChannelId = null,
     preview = false
@@ -145,16 +151,19 @@ async function createCampaign({
         throw new Error(`Invalid message_type "${messageType}". Must be one of: ${[...VALID_MESSAGE_TYPES].join(', ')}`);
     }
     if (!messageBody || typeof messageBody !== 'string') throw new Error('messageBody is required');
-    if (messageBody.length > 2000) throw new Error('messageBody must be ≤ 2000 characters');
+    if (messageBody.length > 3000) throw new Error('messageBody must be ≤ 3000 characters'); // Increased for system templates
     if (!VALID_TARGET_MODES.has(targetMode)) {
         throw new Error(`Invalid target_mode "${targetMode}". Must be one of: ${[...VALID_TARGET_MODES].join(', ')}`);
     }
-    if (targetMode !== 'everyone' && (!Array.isArray(roleIds) || roleIds.length === 0)) {
-        throw new Error('At least one roleId required when target_mode is not "everyone".');
+    if (targetMode !== 'everyone' && targetMode !== 'direct' && (!Array.isArray(roleIds) || roleIds.length === 0)) {
+        throw new Error('At least one roleId required when target_mode is not "everyone" or "direct".');
+    }
+    if (targetMode === 'direct' && (!Array.isArray(directUserIds) || directUserIds.length === 0)) {
+        throw new Error('directUserIds required when target_mode is "direct".');
     }
 
     // ── resolve targets ──
-    const memberIds = await resolveTargetMemberIds(guild, { targetMode, roleIds });
+    const memberIds = await resolveTargetMemberIds(guild, { targetMode, roleIds, directUserIds });
     const uniqueIds = [...new Set(memberIds.map(String))];
 
     if (uniqueIds.length === 0) {

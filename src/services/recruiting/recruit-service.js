@@ -23,6 +23,7 @@ const rookiePointsRepo = require('../../repos/rookie-points-repo');
 const trialFastTrackRepo = require('../../repos/trial-fast-track-repo');
 const { changeRecruiterPoints } = require('./ledger-service');
 const scheduler = require('../../scheduler');
+const campaignService = require('../dm/dm-campaign-service');
 
 function createTraceId() {
   return `recruit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -762,14 +763,16 @@ async function execute(interaction, _client, dbHandle = null) {
       }
 
       try {
-        await recruitedGuildMember.send({
-          content: buildRecruitWelcomeMessage(teamName),
-          allowedMentions: { parse: [] }
-        }).catch((err) => {
-          reportRecruitServiceError('service.recruit.welcomeDm.send', err, { guildId, recruitedId: member.id });
+        await campaignService.createCampaign({
+          guild: interaction.guild,
+          requestedBy: interaction.user.id,
+          messageType: 'system_welcome',
+          messageBody: buildRecruitWelcomeMessage(teamName),
+          targetMode: 'direct',
+          directUserIds: [member.id]
         });
       } catch (e) {
-        void e;
+        reportRecruitServiceError('service.recruit.welcomeDm.queue', e, { guildId, recruitedId: member.id });
       }
 
       const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';

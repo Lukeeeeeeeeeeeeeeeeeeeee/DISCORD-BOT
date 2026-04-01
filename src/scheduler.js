@@ -19,6 +19,7 @@ const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
 const { acquireJobLock } = require('./lib/job-locks');
 const { withTransaction } = require('./lib/transactions');
+const campaignService = require('./services/dm/dm-campaign-service');
 
 const DEBUG_SCHEDULER = process.env.DEBUG_SCHEDULER === '1';
 const ALLOW_FULL_MEMBER_FETCH = (process.env.SCHEDULER_ALLOW_FULL_FETCH || process.env.ALLOW_FULL_MEMBER_FETCH || '').toLowerCase() === 'true';
@@ -297,11 +298,18 @@ async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
           
         if (member) {
           const watchMsg = activeWarnings >= 2 ? ' You are now on demotion watch.' : '';
-          await member.send(
-            `⚠️ Recruiter warning: you missed your quota in ${misses.length} of the last 3 weeks. `
-            + `Last week: ${recruits7d}/${minReq}.${watchMsg} If you need help, DM a staffer.`
-          ).catch(err => {
-            void logUnexpectedError('scheduler.enforceQuotaWarnings.dm', err, { recruiterId });
+          const quotaMsg = `⚠️ Recruiter warning: you missed your quota in ${misses.length} of the last 3 weeks. `
+            + `Last week: ${recruits7d}/${minReq}.${watchMsg} If you need help, DM a staffer.`;
+            
+          await campaignService.createCampaign({
+            guild,
+            requestedBy: 'SYSTEM',
+            messageType: 'system_quota',
+            messageBody: quotaMsg,
+            targetMode: 'direct',
+            directUserIds: [recruiterId]
+          }).catch(err => {
+            void logUnexpectedError('scheduler.enforceQuotaWarnings.queue', err, { recruiterId });
           });
         }
       } catch (e) {
