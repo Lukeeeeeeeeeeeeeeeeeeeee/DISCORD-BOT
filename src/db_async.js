@@ -1334,6 +1334,7 @@ module.exports = {
     dbInitError = null;
   },
   checkIntegrity: async (label) => runIntegrityChecks(await getDbOrThrow(), label || 'manual'),
+  getInternalHandle: async () => getDbOrThrow(),
   // prepare returns object with async helpers to ease migration
   prepare: (sql) => ({
     get: async (...params) => (await getDbOrThrow()).get(sql, ...params),

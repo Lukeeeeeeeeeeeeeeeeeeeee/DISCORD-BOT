@@ -9,6 +9,7 @@
 const db = require('../../db_async');
 const { pickWorker, classifyDmError, getRetryAfterMs } = require('./dm-worker-selector');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
+const { withTransaction } = require('../../lib/transactions');
 const { envInt } = require('../../lib/env-utils');
 
 // ── Tunables (env) ──────────────────────────────────────────────────────────
@@ -56,69 +57,69 @@ class DMWorker {
         const globalRecord = await db.get('SELECT backoff_until FROM dm_global_backoff WHERE id = 1');
         if (globalRecord && Date.now() < globalRecord.backoff_until) return [];
 
-
         const now = Date.now();
         const leaseExpiry = now + CLAIM_LEASE_MS;
         const claimId = `claim_${this.workerId}_${now}_${Math.random().toString(36).slice(2, 7)}`;
 
-        // ATOMIC CLAIM: Use a transaction to ensure stale cleanup and new claims are atomic
+        // ATOMIC CLAIM: Use withTransaction to ensure that concurrent workers
+        // do not interleave their database transactions on the singleton connection.
         try {
-            await db.run('BEGIN IMMEDIATE');
+            return await withTransaction(db, async (tx) => {
+                // 1. Expire stale claims
+                await tx.run(
+                    `UPDATE dm_campaign_targets
+                     SET status = 'pending', assigned_worker_id = NULL, claim_id = NULL, updated_at = ?
+                     WHERE status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?`,
+                    now, now
+                );
 
-            // 1. Expire stale claims
-            await db.run(
-                `UPDATE dm_campaign_targets
-                 SET status = 'pending', assigned_worker_id = NULL, claim_id = NULL, updated_at = ?
-                 WHERE status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?`,
-                now, now
-            );
+                // 2. Claim new targets
+                await tx.run(
+                    `UPDATE dm_campaign_targets
+                     SET status = 'claimed',
+                         assigned_worker_id = ?,
+                         claim_id = ?,
+                         claim_expires_at = ?,
+                         updated_at = ?
+                     WHERE id IN (
+                         SELECT id
+                         FROM dm_campaign_targets
+                         WHERE (status = 'pending' OR (status = 'sending' AND claim_expires_at <= ?))
+                           AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                           AND campaign_id IN (SELECT id FROM dm_campaigns WHERE status IN ('queued', 'running'))
+                         ORDER BY batch_no ASC, id ASC
+                         LIMIT ?
+                     )`,
+                    this.workerId, claimId, leaseExpiry, now, now, now, batchSize
+                );
 
-            // 2. Claim new targets
-            await db.run(
-                `UPDATE dm_campaign_targets
-                 SET status = 'claimed',
-                     assigned_worker_id = ?,
-                     claim_id = ?,
-                     claim_expires_at = ?,
-                     updated_at = ?
-                 WHERE id IN (
-                     SELECT id
-                     FROM dm_campaign_targets
-                     WHERE (status = 'pending' OR (status = 'sending' AND claim_expires_at <= ?))
-                       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                       AND campaign_id IN (SELECT id FROM dm_campaigns WHERE status IN ('queued', 'running'))
-                     ORDER BY batch_no ASC, id ASC
-                     LIMIT ?
-                 )`,
-                this.workerId, claimId, leaseExpiry, now, now, now, batchSize
-            );
+                const rows = await tx.all(
+                    `SELECT t.id, t.campaign_id, t.guild_id, t.user_id, t.batch_no, t.attempts, t.worker_switches,
+                            c.message_type, c.message_body, c.max_misc_streak, c.sticky_window_hours
+                     FROM dm_campaign_targets t
+                     JOIN dm_campaigns c ON c.id = t.campaign_id
+                     WHERE t.claim_id = ?`,
+                    claimId
+                );
 
-            await db.run('COMMIT');
+                if (rows.length === 0) return [];
+
+                const uniqueCampaigns = [...new Set(rows.map(r => r.campaign_id))];
+                for (const cid of uniqueCampaigns) {
+                    await tx.run(
+                        `UPDATE dm_campaigns SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
+                         WHERE id = ? AND status = 'queued'`,
+                        now, now, cid
+                    );
+                }
+
+                return rows;
+            }, { immediate: true });
         } catch (err) {
-            await db.run('ROLLBACK').catch(() => null);
+            // SQLITE_BUSY or other transient errors are handled via withTransaction retries.
+            // If it still fails, it's a real logic error.
             throw err;
         }
-
-        const rows = await db.all(
-            `SELECT t.id, t.campaign_id, t.guild_id, t.user_id, t.batch_no, t.attempts, t.worker_switches,
-                    c.message_type, c.message_body, c.max_misc_streak, c.sticky_window_hours
-             FROM dm_campaign_targets t
-             JOIN dm_campaigns c ON c.id = t.campaign_id
-             WHERE t.claim_id = ?`,
-            claimId
-        );
-
-        if (rows.length === 0) return [];
-
-        const uniqueCampaigns = [...new Set(rows.map(r => r.campaign_id))];
-        for (const cid of uniqueCampaigns) {
-            await db.run(
-                `UPDATE dm_campaigns SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
-                 WHERE id = ? AND status = 'queued'`,
-                now, now, cid
-            );
-        }
-
         return rows;
     }
 
@@ -422,22 +423,16 @@ class DMWorker {
 
         void logRuntimeEvent('info', 'dm.worker.start', 'DM worker started', { workerId: this.workerId, displayName: this.displayName });
 
-        void this.heartbeat();
-        this.heartbeatTimer = setInterval(() => {
-            void this.heartbeat().catch(err => {
-                void logUnexpectedError('dm.worker.heartbeat', err, { workerId: this.workerId });
-            });
-        }, HEARTBEAT_MS);
-
         const poll = async () => {
             if (!this.running) return;
             try {
                 await this.pollOnce();
             } catch (err) {
                 void logUnexpectedError('dm.worker.poll', err, { workerId: this.workerId });
-            }
-            if (this.running) {
-                this.pollTimer = setTimeout(poll, POLL_MS);
+            } finally {
+                if (this.running) {
+                    this.pollTimer = setTimeout(poll, POLL_MS);
+                }
             }
         };
         this.pollTimer = setTimeout(poll, POLL_MS);
@@ -448,12 +443,20 @@ class DMWorker {
                 await this.pollCancellations();
             } catch (err) {
                 void logUnexpectedError('dm.worker.cancelpoll', err, { workerId: this.workerId });
-            }
-            if (this.running) {
-                this.cancellationTimer = setTimeout(pollCancel, 10000);
+            } finally {
+                if (this.running) {
+                    this.cancellationTimer = setTimeout(pollCancel, 10000);
+                }
             }
         };
         this.cancellationTimer = setTimeout(pollCancel, 5000);
+
+        void this.heartbeat();
+        this.heartbeatTimer = setInterval(() => {
+            void this.heartbeat().catch(err => {
+                void logUnexpectedError('dm.worker.heartbeat', err, { workerId: this.workerId });
+            });
+        }, HEARTBEAT_MS);
     }
 
     async stop() {
