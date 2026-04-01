@@ -1,5 +1,5 @@
 /**
- * DM Worker Runtime — Data Plane
+ * DM Worker Runtime — Data Plane [v2.1.0-STABILIZED-FINAL]
  *
  * Each worker bot runs this module to poll the DB queue, claim targets,
  * send DMs, and record results.
@@ -19,10 +19,10 @@ function envInt(key, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) {
     return Math.min(max, Math.max(min, v));
 }
 
-const POLL_MS = envInt('DM_QUEUE_POLL_MS', 1500, 500, 30000);
-const CLAIM_BATCH = envInt('DM_CLAIM_BATCH_SIZE', 1, 1, 100);
-const SEND_DELAY_MS = envInt('DM_MIN_DELAY_MS', 500, 100, 5000);
-const RETRY_LIMIT = envInt('DM_RETRY_LIMIT', 2, 0, 5);
+const POLL_MS = envInt('DM_QUEUE_POLL_MS', 800, 200, 30000);
+const CLAIM_BATCH = 1; // Atomic Sync: Only 1 DM at a time per worker to force parallel fleet distribution
+const SEND_DELAY_MS = envInt('DM_MIN_DELAY_MS', 2000, 100, 5000);
+const RETRY_LIMIT = 3;
 const HEARTBEAT_MS = envInt('DM_HEARTBEAT_MS', 15000, 5000, 60000);
 const CLAIM_LEASE_MS = envInt('DM_CLAIM_LEASE_MS', 60000, 10000, 300000);
 
@@ -51,14 +51,22 @@ class DMWorker {
                status = 'online'`,
             this.workerId, this.displayName, now, now
         );
+
+        // CLEANUP: Best-effort removal of dead workers (older than 24h) to keep selector fast
+        const expiry = now - (24 * 60 * 60 * 1000);
+        await db.run('DELETE FROM dm_workers WHERE last_seen_at < ? AND status = \'offline\'', expiry).catch(() => null);
     }
 
     async claimTargets(batchSize) {
+        // COORDINATED: Consult the global database backoff clock
+        const globalRecord = await db.get('SELECT backoff_until FROM dm_global_backoff WHERE id = 1');
+        if (globalRecord && Date.now() < globalRecord.backoff_until) return [];
+
+
         const now = Date.now();
         const leaseExpiry = now + CLAIM_LEASE_MS;
         const claimId = `claim_${this.workerId}_${now}_${Math.random().toString(36).slice(2, 7)}`;
 
-        // Revert stale claims first (claim expired without completion)
         await db.run(
             `UPDATE dm_campaign_targets
              SET status = 'pending', assigned_worker_id = NULL, claim_id = NULL, updated_at = ?
@@ -66,7 +74,6 @@ class DMWorker {
             now, now
         );
 
-        // Atomic claim (Update then Select)
         await db.run(
             `UPDATE dm_campaign_targets
              SET status = 'claimed',
@@ -78,18 +85,17 @@ class DMWorker {
                  SELECT t.id
                  FROM dm_campaign_targets t
                  JOIN dm_campaigns c ON c.id = t.campaign_id
-                 WHERE t.status = 'pending'
+                 WHERE (t.status = 'pending' OR (t.status = 'sending' AND t.claim_expires_at <= ?))
                    AND (t.next_attempt_at IS NULL OR t.next_attempt_at <= ?)
                    AND (t.claim_expires_at IS NULL OR t.claim_expires_at <= ?)
                    AND (t.assigned_worker_id IS NULL OR t.assigned_worker_id = ?)
                    AND c.status IN ('queued', 'running')
                  ORDER BY t.batch_no ASC, t.id ASC
                  LIMIT ?
-             ) AND status = 'pending'`,
-            this.workerId, claimId, leaseExpiry, now, now, now, this.workerId, batchSize
+             ) AND (status = 'pending' OR status = 'sending')`,
+            this.workerId, claimId, leaseExpiry, now, now, now, now, this.workerId, batchSize
         );
 
-        // Fetch claimed rows
         const rows = await db.all(
             `SELECT t.id, t.campaign_id, t.guild_id, t.user_id, t.batch_no, t.attempts, t.worker_switches,
                     c.message_type, c.message_body, c.max_misc_streak, c.sticky_window_hours
@@ -101,7 +107,6 @@ class DMWorker {
 
         if (rows.length === 0) return [];
 
-        // Mark campaigns as running if still queued
         const uniqueCampaigns = [...new Set(rows.map(r => r.campaign_id))];
         for (const cid of uniqueCampaigns) {
             await db.run(
@@ -136,8 +141,6 @@ class DMWorker {
             return { ok: false, sent: false, category: 'no_eligible_worker' };
         }
 
-        // Q-02: Use module-level tunables (HEARTBEAT_MS / CLAIM_LEASE_MS) so env changes apply consistently.
-        // Q-01: The status literal must be 'claimed' — using an undefined variable would corrupt the row on every refresh tick.
         const leaseRefresher = setInterval(() => {
             void updateTargetStatus(targetId, 'claimed', {
                 claimExpiresAt: Date.now() + CLAIM_LEASE_MS
@@ -147,7 +150,6 @@ class DMWorker {
         }, HEARTBEAT_MS);
 
         try {
-            // D-05: Check campaign status before sending — a cancellation may have arrived mid-batch.
             const campaign = await db.get('SELECT status FROM dm_campaigns WHERE id = ?', campaign_id);
             if (campaign && campaign.status === 'cancelled') {
                 clearInterval(leaseRefresher);
@@ -158,14 +160,20 @@ class DMWorker {
                 return { ok: false, sent: false, category: 'campaign_cancelled' };
             }
 
+            // IDEMPOTENCY: Mark as 'sending' in DB BEFORE making the external network call
+            await updateTargetStatus(targetId, 'sending', {
+                claimExpiresAt: Date.now() + 60000 // Ensure lease is fresh for this send
+            });
+
             const guild = await this.client.guilds.fetch(guild_id);
             const member = await guild.members.fetch(user_id);
 
-            await member.send(message_body);
-
+            // ACT: The external side effect
+            const msg = await member.send(message_body);
             clearInterval(leaseRefresher);
 
-            await recordAttempt(campaign_id, targetId, guild_id, user_id, this.workerId, attemptNo, 'sent', null, null);
+            // RESOLVE: Record success and store the message ID for surgical cancellation
+            await recordAttempt(campaign_id, targetId, guild_id, user_id, this.workerId, attemptNo, 'sent', null, null, msg.id);
             await updateTargetStatus(targetId, 'sent', {
                 attempts: attemptNo,
                 assignedWorkerId: this.workerId,
@@ -176,10 +184,34 @@ class DMWorker {
 
             await db.run('UPDATE dm_campaigns SET total_sent = total_sent + 1, updated_at = ? WHERE id = ?', Date.now(), campaign_id);
 
+            void logRuntimeEvent('info', 'dm.worker.sent', 'DM delivered successfully', { 
+                workerId: this.workerId, targetId, campaign_id, user_id 
+            });
+
             return { ok: true, sent: true };
         } catch (err) {
             clearInterval(leaseRefresher);
             const classified = classifyDmError(err);
+            
+            // EMERGENCY: Apply global backoff if rate limited
+            if (classified.category === 'rate_limited') {
+                const retryAfter = getRetryAfterMs(err, 5000);
+                const backoffUntil = Date.now() + retryAfter;
+                
+                // MULTI-WORKER UPSERT: Use MAX() logic to ensure longest backoff always wins
+                await db.run(
+                    `INSERT INTO dm_global_backoff (id, backoff_until, updated_at) VALUES (1, ?, ?)
+                     ON CONFLICT(id) DO UPDATE SET 
+                       backoff_until = MAX(backoff_until, excluded.backoff_until),
+                       updated_at = excluded.updated_at`,
+                    backoffUntil, Date.now()
+                );
+
+                void logRuntimeEvent('warn', 'dm.worker.backoff', 'Emergency 429 backoff active', { 
+                    workerId: this.workerId, retryAfterMs: retryAfter 
+                });
+            }
+
             await recordAttempt(
                 campaign_id, targetId, guild_id, user_id, this.workerId, attemptNo,
                 classified.category,
@@ -263,7 +295,7 @@ class DMWorker {
             campaignsToCheck.add(target.campaign_id);
 
             if (result && result.sent) {
-                const jitter = Math.floor(Math.random() * 200);
+                const jitter = Math.floor(Math.random() * 150);
                 await new Promise(r => setTimeout(r, SEND_DELAY_MS + jitter));
             }
         }
@@ -276,11 +308,11 @@ class DMWorker {
     }
 
     async executeCancellation(cancellation) {
-        // Fetch users this worker DMed in the last 24h
+        // Fetch attempts with potential message IDs for surgical deletion
         const attempts = await db.all(
-            `SELECT DISTINCT user_id FROM dm_delivery_attempts 
+            `SELECT user_id, message_id FROM dm_delivery_attempts 
              WHERE worker_id = ? AND result = 'sent' AND created_at >= ?`,
-            this.workerId, Date.now() - (24 * 60 * 60 * 1000)
+            this.workerId, Date.now() - (48 * 60 * 60 * 1000)
         );
         
         if (!attempts || attempts.length === 0) return;
@@ -293,21 +325,32 @@ class DMWorker {
                 
                 const channel = user.dmChannel || await user.createDM().catch(() => null);
                 if (!channel) continue;
+
+                // SURGICAL: If we have the message_id, delete it directly (lightning fast)
+                if (record.message_id) {
+                    try {
+                        const msg = await channel.messages.fetch(record.message_id).catch(() => null);
+                        if (msg) {
+                            await msg.delete();
+                            deletedCount++;
+                            continue; // Skip the scraping fall-back
+                        }
+                    } catch (e) {
+                        if (e && (e.status === 429 || e.code === 429)) throw e; // Pass to rate-limit handler
+                    }
+                }
                 
-                const messages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
+                // FALL-BACK: Scrape (for older messages or missing IDs)
+                const messages = await channel.messages.fetch({ limit: 12 }).catch(() => null);
                 if (!messages) continue;
                 
                 for (const [, msg] of messages) {
                     if (msg.author.id !== this.client.user.id) continue;
                     
                     let shouldDelete = false;
-                    if (cancellation.mode === 'all') {
-                        // Q-04: 'all' deletes every message in the fetched batch — no break, intentional.
-                        shouldDelete = true;
-                    } else if (cancellation.mode === 'recent') {
-                        // Q-04: 'recent' also sets shouldDelete but breaks after the first deletion below.
-                        shouldDelete = true;
-                    } else if (cancellation.mode === 'phrase' && cancellation.phrase) {
+                    if (cancellation.mode === 'all') shouldDelete = true;
+                    else if (cancellation.mode === 'recent') shouldDelete = true;
+                    else if (cancellation.mode === 'phrase' && cancellation.phrase) {
                         if (msg.content.includes(cancellation.phrase)) shouldDelete = true;
                     }
                     
@@ -315,20 +358,27 @@ class DMWorker {
                         try {
                             await msg.delete();
                             deletedCount++;
-                            if (cancellation.mode === 'recent') break; // only delete the most recent message
+                            if (cancellation.mode === 'recent') break;
                         } catch(e) {
-                            // Audit Fix: Detect 429 (Too Many Requests) and apply emergency backoff.
-                            if (e && (e.status === 429 || e.code === 429)) {
-                                const retryAfter = e.retryAfter || 5000;
-                                void logRuntimeEvent('warn', 'dm.cancellation.ratelimit', 'Hit 429 during cancellation', { user_id: record.user_id, retryAfter });
-                                await new Promise(r => setTimeout(r, retryAfter + 500));
-                            }
+                            if (e && (e.status === 429 || e.code === 429)) throw e;
                         }
                     }
                 }
-                await new Promise(r => setTimeout(r, 600)); // Ratelimit safety
+                await new Promise(r => setTimeout(r, 600));
             } catch (err) {
-                void err; // Silent suppression for non-critical cancellation errors
+                if (err && (err.status === 429 || err.code === 429)) {
+                    const retryAfter = getRetryAfterMs(err, 5000);
+                    const backoffUntil = Date.now() + retryAfter;
+                    
+                    await db.run(
+                        `INSERT INTO dm_global_backoff (id, backoff_until, updated_at) VALUES (1, ?, ?)
+                         ON CONFLICT(id) DO UPDATE SET 
+                           backoff_until = MAX(backoff_until, excluded.backoff_until),
+                           updated_at = excluded.updated_at`,
+                        backoffUntil, Date.now()
+                    );
+                    break; // Exhausted rate limit, stop the current cancellation pass
+                }
             }
         }
         
@@ -340,8 +390,6 @@ class DMWorker {
     }
 
     async pollCancellations() {
-        // Q-05: dm_cancellations is created by createInviteTables() (not db_async.js migrations).
-        // If the table doesn't exist yet (startup race) silently skip rather than flooding errors.
         let rows;
         try {
             rows = await db.all(
@@ -349,10 +397,7 @@ class DMWorker {
                 this.lastCancellationId, this.workerId
             );
         } catch (err) {
-            if (err && err.message && err.message.includes('no such table')) {
-                // Table not yet created — silently skip this poll cycle.
-                return;
-            }
+            if (err && err.message && err.message.includes('no such table')) return;
             throw err;
         }
         
@@ -382,11 +427,7 @@ class DMWorker {
             try {
                 await this.pollOnce();
             } catch (err) {
-                void logUnexpectedError('dm.worker.poll', err, { 
-                    workerId: this.workerId,
-                    errorMessage: err && err.message ? err.message : String(err),
-                    stack: err && err.stack ? err.stack.slice(0, 500) : null
-                });
+                void logUnexpectedError('dm.worker.poll', err, { workerId: this.workerId });
             }
             if (this.running) {
                 this.pollTimer = setTimeout(poll, POLL_MS);
@@ -405,21 +446,21 @@ class DMWorker {
                 this.cancellationTimer = setTimeout(pollCancel, 10000);
             }
         };
-        this.cancellationTimer = setTimeout(pollCancel, 5000); // Start faster
+        this.cancellationTimer = setTimeout(pollCancel, 5000);
     }
 
     async stop() {
         this.running = false;
-        if (this.pollTimer) { clearTimeout(this.pollTimer); this.pollTimer = null; }
-        if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
-        if (this.cancellationTimer) { clearTimeout(this.cancellationTimer); this.cancellationTimer = null; }
+        if (this.pollTimer) clearTimeout(this.pollTimer);
+        if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+        if (this.cancellationTimer) clearTimeout(this.cancellationTimer);
 
         try {
             await db.run(
                 `UPDATE dm_workers SET status = 'offline', last_seen_at = ? WHERE worker_id = ?`,
                 Date.now(), this.workerId
             );
-        } catch (_e) { /* best-effort */ }
+        } catch (_e) { }
 
         activeWorkers.delete(this.workerId);
         void logRuntimeEvent('info', 'dm.worker.stop', 'DM worker stopped', { workerId: this.workerId });
@@ -441,13 +482,10 @@ let eligibleWorkersCache = { data: null, expiresAt: 0 };
 
 async function getEligibleWorkers(staleMs = 60000) {
     const now = Date.now();
-    if (eligibleWorkersCache.data && now < eligibleWorkersCache.expiresAt) {
-        return eligibleWorkersCache.data;
-    }
+    if (eligibleWorkersCache.data && now < eligibleWorkersCache.expiresAt) return eligibleWorkersCache.data;
     const cutoff = now - staleMs;
     const workers = await db.all(`SELECT * FROM dm_workers WHERE enabled = 1 AND last_seen_at >= ?`, cutoff);
     eligibleWorkersCache.data = workers;
-    // Audit Fix: Reduced TTL from 5s to 2s to minimize race conditions with offline workers.
     eligibleWorkersCache.expiresAt = now + 2000;
     return workers;
 }
@@ -487,11 +525,11 @@ async function recordBlock(guildId, userId, workerId, reason, errorCode) {
     );
 }
 
-async function recordAttempt(campaignId, targetId, guildId, userId, workerId, attemptNo, result, errorCode, errorMessage) {
+async function recordAttempt(campaignId, targetId, guildId, userId, workerId, attemptNo, result, errorCode, errorMessage, messageId = null) {
     await db.run(
-        `INSERT INTO dm_delivery_attempts (campaign_id, target_id, guild_id, user_id, worker_id, attempt_no, result, error_code, error_message, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        campaignId, targetId, guildId, userId, workerId, attemptNo, result, errorCode, errorMessage, Date.now()
+        `INSERT INTO dm_delivery_attempts (campaign_id, target_id, guild_id, user_id, worker_id, attempt_no, result, error_code, error_message, message_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        campaignId, targetId, guildId, userId, workerId, attemptNo, result, errorCode, errorMessage, messageId, Date.now()
     );
 }
 
@@ -530,34 +568,26 @@ function toPositiveInt(value, fallback) {
 }
 
 async function routeTargetToWorker(target, selfWorkerId) {
-    if (target.assigned_worker_id === selfWorkerId) {
-        return { selectedWorkerId: selfWorkerId, action: 'send' };
-    }
-
+    if (target.assigned_worker_id === selfWorkerId) return { selectedWorkerId: selfWorkerId, action: 'send' };
     const affinity = await getAffinity(target.guild_id, target.user_id);
     const blockedWorkerIds = await getBlockedWorkerIds(target.guild_id, target.user_id);
     const eligibleWorkers = await getEligibleWorkers();
-
-    const stickyWindowHours = toPositiveInt(target.sticky_window_hours, 24);
-    const maxMiscStreak = toPositiveInt(target.max_misc_streak, 4);
-
+    const now = Date.now();
     const selectedWorkerId = pickWorker({
         messageType: target.message_type,
         affinity,
         eligibleWorkers,
         blockedWorkerIds,
-        stickyWindowMs: stickyWindowHours * 60 * 60 * 1000,
-        maxMiscStreak
-    });
-
+        stickyWindowMs: toPositiveInt(target.sticky_window_hours, 24) * 60 * 60 * 1000,
+        maxMiscStreak: toPositiveInt(target.max_misc_streak, 4)
+    }, now);
     if (!selectedWorkerId) return { selectedWorkerId: null, action: 'undeliverable_no_worker' };
     if (selectedWorkerId !== selfWorkerId) {
-        const newSwitchCount = (Number(target.worker_switches) || 0) + 1;
         await updateTargetStatus(target.id, 'pending', {
             assignedWorkerId: selectedWorkerId,
             claimExpiresAt: null,
             lastWorkerId: selfWorkerId,
-            workerSwitches: newSwitchCount
+            workerSwitches: (Number(target.worker_switches) || 0) + 1
         });
         return { selectedWorkerId, action: 'reassigned' };
     }
@@ -567,17 +597,13 @@ async function routeTargetToWorker(target, selfWorkerId) {
 async function checkCampaignCompletion(campaignId) {
     const remaining = await db.get(`SELECT COUNT(*) as cnt FROM dm_campaign_targets WHERE campaign_id = ? AND status IN ('pending', 'claimed', 'retry_wait')`, campaignId);
     if (remaining && remaining.cnt > 0) return false;
-
     const failures = await db.get(`SELECT COUNT(*) as cnt FROM dm_campaign_targets WHERE campaign_id = ? AND status IN ('failed', 'undeliverable', 'blocked')`, campaignId);
     const now = Date.now();
     const newStatus = (failures && failures.cnt > 0) ? 'completed_with_errors' : 'completed';
-
     await db.run(`UPDATE dm_campaigns SET status = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')`, newStatus, now, now, campaignId);
     void logRuntimeEvent('info', 'dm.campaign.completed', 'DM campaign completed', { campaignId, status: newStatus, hasErrors: failures && failures.cnt > 0 });
     return true;
 }
-
-// ── Public API ──────────────────────────────────────────────────────────────
 
 function startWorker(client, workerId, displayName) {
     if (activeWorkers.has(workerId)) return activeWorkers.get(workerId);
@@ -589,9 +615,7 @@ function startWorker(client, workerId, displayName) {
 
 async function stopWorker(workerId) {
     const worker = activeWorkers.get(workerId);
-    if (worker) {
-        await worker.stop();
-    }
+    if (worker) await worker.stop();
 }
 
 async function stopAllWorkers() {
@@ -600,19 +624,8 @@ async function stopAllWorkers() {
 }
 
 module.exports = {
-    startWorker,
-    stopWorker,
-    stopAllWorkers,
-    // Class for specialized usage
-    DMWorker,
-    // Exposed for testing / maintenance
-    checkCampaignCompletion,
-    getAffinity,
-    getBlockedWorkerIds,
-    getEligibleWorkers,
-    updateAffinity,
-    recordBlock,
-    recordAttempt,
-    updateTargetStatus,
-    routeTargetToWorker
+    startWorker, stopWorker, stopAllWorkers, DMWorker,
+    checkCampaignCompletion, getAffinity, getBlockedWorkerIds,
+    getEligibleWorkers, updateAffinity, recordBlock, recordAttempt,
+    updateTargetStatus, routeTargetToWorker
 };

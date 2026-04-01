@@ -97,7 +97,24 @@ async function init() {
     }
   }
   try { await db.exec('PRAGMA synchronous = NORMAL'); } catch (e) { void e; }
-  try { await db.exec('PRAGMA busy_timeout = 5000'); } catch (e) { void e; }
+  try { await db.exec('PRAGMA busy_timeout = 10000'); } catch (e) { void e; }
+
+  // Hardening (v3.0): Coordinated Fleet Infrastructure
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS dm_global_backoff (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      backoff_until INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    
+    -- Initialize the global clock if missing
+    INSERT OR IGNORE INTO dm_global_backoff (id, backoff_until, updated_at) VALUES (1, 0, ?);
+  `, Date.now());
+
+  const attemptCols = await getTableInfo('dm_delivery_attempts');
+  if (!attemptCols.some(c => c.name === 'message_id')) {
+    await db.exec('ALTER TABLE dm_delivery_attempts ADD COLUMN message_id TEXT');
+  }
 
   // Create schema if not exists
   await db.exec(`

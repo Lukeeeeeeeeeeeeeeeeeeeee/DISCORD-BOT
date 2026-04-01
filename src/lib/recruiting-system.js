@@ -198,7 +198,8 @@ function calculateMinRecruitsFixed({
     smoothed = previousMinReq + delta;
   }
 
-  return Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, Math.ceil(smoothed)));
+  const finalMin = Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, Math.ceil(smoothed)));
+  return Number.isFinite(finalMin) ? finalMin : MIN_MIN_REQ;
 }
 
 function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, absent = false, attention = false } = {}) {
@@ -334,16 +335,19 @@ async function storeWeeklyCalculation(db, data) {
     const absent = data.absent ? 1 : 0;
     const nowTs = Date.now();
     const values = [
+      guildId,
+      data.recruiterId,
       nowTs,
+      weekStart,
       data.recruits7d,
       data.activityRate,
       data.verifyRate != null ? data.verifyRate : 0,
       data.retention,
       data.warnings,
       absent,
-      data.previousMinReq,
-      data.calculatedMinReq,
-      data.roleBase
+      data.previousMinReq ?? null,
+      Number.isFinite(data.calculatedMinReq) ? data.calculatedMinReq : 2,
+      data.roleBase ?? 2
     ];
 
     await db.run(

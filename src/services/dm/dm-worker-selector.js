@@ -11,21 +11,26 @@ const DEFAULT_STICKY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_MAX_MISC_STREAK = 4;
 
 /**
- * Pick the highest-weight worker from candidates.
- * If multiple workers share the highest weight, randomly pick to guarantee even load balancing.
+ * Perform proportional weighted random selection from a list of worker candidates.
+ * 
+ * @param {Array} candidates
+ * @returns {string|null}
  */
-function pickLeastRecentlyUsedWeighted(candidates) {
+function pickWorkerWeightedRandom(candidates) {
     if (!candidates || candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0].worker_id;
+
+    // Proportional Weighting: The "Cumulative Weight Wheel" Algorithm
+    const weights = candidates.map(c => Math.max(1, Number(c.weight) || 1));
+    const totalWeight = weights.reduce((sum, w) => sum + w, 0);
     
-    // Find the maximum weight
-    const maxWeight = Math.max(...candidates.map(c => c.weight || 1));
+    let random = Math.random() * totalWeight;
+    for (let i = 0; i < candidates.length; i++) {
+        random -= weights[i];
+        if (random < 0) return candidates[i].worker_id;
+    }
     
-    // Get all candidates with the max weight
-    const bestCandidates = candidates.filter(c => (c.weight || 1) === maxWeight);
-    
-    // Randomize to distribute load evenly instead of relying on heartbeat timestamps
-    const randomIndex = Math.floor(Math.random() * bestCandidates.length);
-    return bestCandidates[randomIndex].worker_id;
+    return candidates[0].worker_id;
 }
 
 /**
@@ -38,6 +43,7 @@ function pickLeastRecentlyUsedWeighted(candidates) {
  * @param {Set<string>} opts.blockedWorkerIds  Worker IDs that are blocked for this user
  * @param {number} [opts.stickyWindowMs]    Override for 24h sticky window
  * @param {number} [opts.maxMiscStreak]     Override for max consecutive misc sends
+ * @param {number} [now=Date.now()]         Current timestamp for affinity windows
  * @returns {string|null}                   Selected worker_id, or null if all blocked
  */
 function pickWorker({
@@ -47,7 +53,7 @@ function pickWorker({
     blockedWorkerIds,
     stickyWindowMs = DEFAULT_STICKY_WINDOW_MS,
     maxMiscStreak = DEFAULT_MAX_MISC_STREAK
-} = {}) {
+}, now = Date.now()) {
     if (!eligibleWorkers || eligibleWorkers.length === 0) return null;
 
     const blockedSet = blockedWorkerIds instanceof Set ? blockedWorkerIds : new Set(blockedWorkerIds || []);
@@ -61,12 +67,11 @@ function pickWorker({
         if (aff.war_worker_id && candidates.some(w => w.worker_id === aff.war_worker_id)) {
             return aff.war_worker_id;
         }
-        // War worker unavailable — fallback to LRU weighted
-        return pickLeastRecentlyUsedWeighted(candidates);
+        // War worker unavailable — fallback to Weighted Random
+        return pickWorkerWeightedRandom(candidates);
     }
 
     // ── Misc messages: affinity + rotation ──
-    const now = Date.now();
     const preferredDmAt = aff.preferred_worker_last_dm_at || 0;
     const within24h = preferredDmAt > 0 && (now - preferredDmAt) <= stickyWindowMs;
     const underStreakCap = (aff.consecutive_misc_count || 0) < maxMiscStreak;
@@ -78,13 +83,13 @@ function pickWorker({
     }
 
     // Rotate: pick from candidates excluding current preferred
-    const rotated = pickLeastRecentlyUsedWeighted(
+    const rotated = pickWorkerWeightedRandom(
         candidates.filter(w => w.worker_id !== aff.preferred_worker_id)
     );
     if (rotated) return rotated;
 
     // All candidates are the same as preferred (single worker), allow it
-    return pickLeastRecentlyUsedWeighted(candidates);
+    return pickWorkerWeightedRandom(candidates);
 }
 
 /**
@@ -100,12 +105,12 @@ function classifyDmError(err) {
     const status = err.status || err.httpStatus;
 
     // Cannot send to user — blocked or DMs closed
-    if (code === 50007) {
+    if (code === 50007 || code === 10013 || code === 10003) {
         return { category: 'blocked_or_closed_dm', shouldBlock: true, shouldRetry: false };
     }
 
-    // Missing access or permissions
-    if (code === 50001 || code === 50013) {
+    // Missing access, permissions, or forbidden
+    if (code === 50001 || code === 50013 || status === 403) {
         return { category: 'missing_access_or_perms', shouldBlock: true, shouldRetry: false };
     }
 
@@ -134,14 +139,15 @@ function getRetryAfterMs(error, fallbackMs = 2000) {
     );
     if (Number.isFinite(retryAfter)) {
         const value = Number(retryAfter);
-        return value < 1000 ? Math.ceil(value * 1000) : Math.ceil(value);
+        // Heuristic: If under 120s, it's likely raw seconds.
+        return value < 120 ? Math.ceil(value * 1000) : Math.ceil(value);
     }
     return fallbackMs;
 }
 
 module.exports = {
     pickWorker,
-    pickLeastRecentlyUsedWeighted,
+    pickWorkerWeightedRandom,
     classifyDmError,
     getRetryAfterMs,
     DEFAULT_STICKY_WINDOW_MS,
