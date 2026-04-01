@@ -108,6 +108,7 @@ async function performWeeklyRecalculations(guild) {
     }
 
     console.log(`Found ${allStaff.length} staff members to recalculate`);
+    const recruiterIds = allStaff.map(m => m.id);
 
     const { batchCalculate7DayStats, batchIsNewStaff } = require('./recruiter-stats');
     const allStats7dMap = await batchCalculate7DayStats(database, recruiterIds, guild, { ...statsWindow, guildId });

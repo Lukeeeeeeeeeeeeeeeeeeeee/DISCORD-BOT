@@ -327,7 +327,9 @@ class DMWorker {
                     }
                 }
                 await new Promise(r => setTimeout(r, 600)); // Ratelimit safety
-            } catch (err) {}
+            } catch (err) {
+                void err; // Silent suppression for non-critical cancellation errors
+            }
         }
         
         void logRuntimeEvent('info', 'dm.cancellation', 'Processed message cancellation', {

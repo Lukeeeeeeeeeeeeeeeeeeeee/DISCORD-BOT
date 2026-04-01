@@ -778,7 +778,8 @@ function start(client, db) {
   (async () => {
     const guild = await resolveGuild(client);
     if (!guild) return;
-    await reconcileTrialRecruiters(db, client).catch((e) => console.error('reconcileTrialRecruiters failed:', e));
+    const recruitmentService = require('./services/recruiting/recruit-service');
+    await recruitmentService.reconcileRecruits(client, db).catch((e) => console.error('reconcileRecruits failed:', e));
     await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
     await recomputeWarningsLeaderboard(db, guild).catch((e) => console.error('recomputeWarningsLeaderboard failed:', e));
 

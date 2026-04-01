@@ -551,13 +551,13 @@ async function execute(interaction, _client, dbHandle = null) {
 
     if (recruitedGuildMember.user.bot) return replyError(interaction, 'Cannot recruit bots.');
 
+    const recruitPolicy = getRecruitPolicy();
     const joinedAt = recruitedGuildMember.joinedAt;
     const now = new Date();
     if (!joinedAt) {
       if (!adminBypass) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
     } else {
       const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-      const recruitPolicy = getRecruitPolicy();
       const recruiterIsAdmin = !!(guildMember && hasAdministrator(guildMember));
       const allowLateBypass = (recruitPolicy.allowLateAdminOverride && recruiterIsAdmin) || adminBypass;
       if (recruitPolicy.maxJoinMinutes > 0 && minutesSinceJoin > recruitPolicy.maxJoinMinutes && !allowLateBypass) {

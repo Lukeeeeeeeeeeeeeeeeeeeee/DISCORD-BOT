@@ -2604,6 +2604,9 @@ class AntiNuke {
       // Disable all invites
       await this.disableAllInvites(guild);
 
+      // Create a full safety backup before lockdown
+      const backup = await this.createBackup(guild, { type: 'full' }).catch(() => null);
+
       this.emergencyMode.set(guildId, true);
       const lockdownUntil = Date.now() + this.EMERGENCY_LOCKDOWN_DURATION;
       this.emergencyLockdownUntil.set(guildId, lockdownUntil);
