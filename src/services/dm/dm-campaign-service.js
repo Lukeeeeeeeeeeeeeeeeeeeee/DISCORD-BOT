@@ -333,13 +333,21 @@ async function getReport(campaignId) {
         campaignId
     );
 
+    const sentUsers = await db.all(
+        `SELECT t.user_id, t.assigned_worker_id
+     FROM dm_campaign_targets t
+     WHERE t.campaign_id = ? AND t.status = 'sent'`,
+        campaignId
+    );
+
     return {
         campaign,
         statusCounts: statusCounts.reduce((acc, r) => { acc[r.status] = r.count; return acc; }, {}),
         workerBreakdown,
         blockedUsers,
         undeliverableUsers,
-        failedUsers
+        failedUsers,
+        sentUsers
     };
 }
 

@@ -46,7 +46,7 @@ function buildReportEmbed(reportData) {
     // ── Header ──
     const embed = {
         title: '📊 DM Campaign Report',
-        color: failed > 0 || undeliverable > 0 ? 0xFF6B6B : 0x2ECC71,
+        color: (failed > 0 || undeliverable > 0) ? 0xFF6B6B : (blocked > 0 ? 0xF1C40F : 0x2ECC71),
         fields: [],
         footer: { text: `Campaign #${campaign.id}` },
         timestamp: new Date(campaign.finished_at || campaign.updated_at).toISOString()
@@ -108,39 +108,39 @@ function buildReportEmbed(reportData) {
 
     // ── Blocked Users ──
     if (blockedUsers && blockedUsers.length > 0) {
-        const lines = blockedUsers.slice(0, 20).map(u =>
+        const lines = blockedUsers.slice(0, 10).map(u =>
             `<@${u.user_id}> — blocked by \`${u.blocked_by_worker_id || '?'}\` (${u.last_error_code || '?'})`
         );
-        if (blockedUsers.length > 20) lines.push(`...and ${blockedUsers.length - 20} more`);
+        if (blockedUsers.length > 10) lines.push(`*...and ${blockedUsers.length - 10} more in attached CSV*`);
         embed.fields.push({
             name: `🚫 Blocked Users (${blockedUsers.length})`,
-            value: lines.join('\n').slice(0, 1024),
+            value: lines.join('\n'),
             inline: false
         });
     }
 
     // ── Undeliverable Users ──
     if (undeliverableUsers && undeliverableUsers.length > 0) {
-        const lines = undeliverableUsers.slice(0, 20).map(u =>
+        const lines = undeliverableUsers.slice(0, 10).map(u =>
             `<@${u.user_id}> — all workers exhausted (${u.last_error_code || '?'})`
         );
-        if (undeliverableUsers.length > 20) lines.push(`...and ${undeliverableUsers.length - 20} more`);
+        if (undeliverableUsers.length > 10) lines.push(`*...and ${undeliverableUsers.length - 10} more in attached CSV*`);
         embed.fields.push({
             name: `❌ Undeliverable — Replace Applications (${undeliverableUsers.length})`,
-            value: lines.join('\n').slice(0, 1024),
+            value: lines.join('\n'),
             inline: false
         });
     }
 
     // ── Failed Users ──
     if (failedUsers && failedUsers.length > 0) {
-        const lines = failedUsers.slice(0, 15).map(u =>
+        const lines = failedUsers.slice(0, 10).map(u =>
             `<@${u.user_id}> — worker \`${u.assigned_worker_id || '?'}\` (${u.last_error_code || '?'})`
         );
-        if (failedUsers.length > 15) lines.push(`...and ${failedUsers.length - 15} more`);
+        if (failedUsers.length > 10) lines.push(`*...and ${failedUsers.length - 10} more in attached CSV*`);
         embed.fields.push({
             name: `⚠️ Failed Users (${failedUsers.length})`,
-            value: lines.join('\n').slice(0, 1024),
+            value: lines.join('\n'),
             inline: false
         });
     }
@@ -152,9 +152,12 @@ function buildReportEmbed(reportData) {
  * Build a CSV attachment string for detailed per-user breakdown.
  */
 function buildCsvReport(reportData) {
-    const { blockedUsers, undeliverableUsers, failedUsers } = reportData;
+    const { blockedUsers, undeliverableUsers, failedUsers, sentUsers } = reportData;
     const rows = [['user_id', 'final_status', 'assigned_worker', 'blocked_workers', 'last_error_code', 'last_error_message']];
 
+    for (const u of (sentUsers || [])) {
+        rows.push([u.user_id, 'sent', u.assigned_worker_id || '', '', '', '']);
+    }
     for (const u of (blockedUsers || [])) {
         rows.push([u.user_id, 'blocked', u.blocked_by_worker_id || '', '', u.last_error_code || '', u.last_error_message || '']);
     }
