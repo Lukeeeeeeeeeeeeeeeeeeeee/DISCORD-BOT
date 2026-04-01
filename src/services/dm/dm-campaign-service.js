@@ -313,33 +313,33 @@ async function getReport(campaignId) {
     );
 
     const blockedUsers = await db.all(
-        `SELECT t.user_id, t.blocked_by_worker_id, t.last_error_code, t.last_error_message
-     FROM dm_campaign_targets t
-     WHERE t.campaign_id = ? AND t.status = 'blocked'`,
+        `SELECT user_id, blocked_by_worker_id, NULL as assigned_worker_id, last_error_code, last_error_message
+     FROM dm_campaign_targets
+     WHERE campaign_id = ? AND status = 'blocked'`,
         campaignId
     );
 
     const undeliverableUsers = await db.all(
-        `SELECT t.user_id, t.last_error_code, t.last_error_message
-     FROM dm_campaign_targets t
-     WHERE t.campaign_id = ? AND t.status = 'undeliverable'`,
+        `SELECT user_id, NULL as assigned_worker_id, last_error_code, last_error_message
+     FROM dm_campaign_targets
+     WHERE campaign_id = ? AND status = 'undeliverable'`,
         campaignId
     );
 
     const failedUsers = await db.all(
-        `SELECT t.user_id, t.assigned_worker_id, t.last_error_code, t.last_error_message
-     FROM dm_campaign_targets t
-     WHERE t.campaign_id = ? AND t.status = 'failed'`,
+        `SELECT user_id, assigned_worker_id, last_error_code, last_error_message
+     FROM dm_campaign_targets
+     WHERE campaign_id = ? AND status = 'failed'`,
         campaignId
     );
-
+    
     const sentUsers = await db.all(
-        `SELECT t.user_id, t.assigned_worker_id
-     FROM dm_campaign_targets t
-     WHERE t.campaign_id = ? AND t.status = 'sent'`,
+        `SELECT user_id, assigned_worker_id, NULL as last_error_code, NULL as last_error_message
+     FROM dm_campaign_targets
+     WHERE campaign_id = ? AND status = 'sent'`,
         campaignId
     );
-
+    
     return {
         campaign,
         statusCounts: statusCounts.reduce((acc, r) => { acc[r.status] = r.count; return acc; }, {}),
