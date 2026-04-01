@@ -3,6 +3,7 @@ const { open } = require('sqlite');
 const fs = require('fs');
 const path = require('path');
 const { GUILD_ID } = require('./constants');
+const { withTransaction } = require('./lib/transactions');
 
 const DB_PATH = process.env.DATABASE_PATH || './data/recruiter.db';
 const DEFAULT_GUILD_ID = process.env.GUILD_ID || GUILD_ID || 'GLOBAL';
@@ -616,15 +617,11 @@ async function init() {
     try {
       const existing = await db.get('SELECT id FROM schema_migrations WHERE id = ?', id);
       if (existing) return;
-      await db.exec('BEGIN');
-      try {
-        await fn();
-        await db.run('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)', id, Date.now());
-        await db.exec('COMMIT');
-      } catch (err) {
-        await db.exec('ROLLBACK');
-        throw err;
-      }
+
+      await withTransaction(db, async (tx) => {
+        await fn(tx);
+        await tx.run('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)', id, Date.now());
+      }, { immediate: true });
     } catch (err) {
       console.error('Schema migration failed', { id, error: err });
       throw err;

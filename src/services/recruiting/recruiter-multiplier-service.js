@@ -11,6 +11,7 @@ const { replyError } = require('../../lib/embeds');
 const { formatDiscordTimestamp } = require('../../lib/time');
 const { hasAdministrator } = require('../../lib/permissions');
 const { logUnexpectedError } = require('../../lib/logger');
+const { withTransaction } = require('../../lib/transactions');
 
 function reportMultiplierServiceError(scope, error, meta = {}) {
   void logUnexpectedError(scope, error, {
@@ -250,26 +251,25 @@ async function handleMultiplierEvent({ interaction, db, guildId }) {
   });
 
   try {
-    await db.run('BEGIN TRANSACTION');
-    try {
+    await withTransaction(db, async (tx) => {
       if (cost > 0) {
-        await db.run(
+        await tx.run(
           'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
           resolvedGuildId,
           target.id
         );
-        await db.run(
+        await tx.run(
           'UPDATE recruiters SET points = points - ? WHERE guild_id = ? AND id = ? AND points >= ?',
           cost,
           resolvedGuildId,
           target.id,
           cost
         );
-        const updated = await db.get('SELECT changes() AS c');
+        const updated = await tx.get('SELECT changes() AS c');
         if (!updated || Number(updated.c || 0) === 0) {
           throw new Error('INSUFFICIENT_POINTS');
         }
-        await db.run(
+        await tx.run(
           'INSERT INTO purchases (guild_id, recruiter_id, item, cost, created_at) VALUES (?, ?, ?, ?, ?)',
           resolvedGuildId,
           target.id,
@@ -280,7 +280,7 @@ async function handleMultiplierEvent({ interaction, db, guildId }) {
       }
 
       await applyCustomMultiplier(
-        db,
+        tx,
         target.id,
         {
           value,
@@ -290,11 +290,7 @@ async function handleMultiplierEvent({ interaction, db, guildId }) {
         },
         { guildId: resolvedGuildId }
       );
-      await db.run('COMMIT');
-    } catch (e) {
-      await db.run('ROLLBACK');
-      throw e;
-    }
+    }, { immediate: true });
   } catch (e) {
     if (String((e && e.message) || '') === 'INSUFFICIENT_POINTS') {
       return replyError(interaction, `Target user does not have enough points for cost ${formatPointsValue(cost)}.`);

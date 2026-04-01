@@ -25,6 +25,7 @@ const ECONOMY_CONFIG = {
 
 const { logUnexpectedError } = require('./logger');
 const { resolveGuildId } = require('./guild');
+const { withTransaction } = require('./transactions');
 
 const RETENTION_CACHE_TTL_MS = Number.parseInt(process.env.RETENTION_CACHE_TTL_MS || '30000', 10);
 const RETENTION_CACHE_MAX = Number.parseInt(process.env.RETENTION_CACHE_MAX || '500', 10);
@@ -232,17 +233,17 @@ async function applyCustomMultiplier(db, recruiterId, customConfig = {}, opts = 
 async function resetMultipliers(db, recruiterId, opts = {}) {
   if (!db) return;
   const guildId = resolveGuildId(opts.guild || opts.guildId);
-  await db.run('BEGIN TRANSACTION');
+  
   try {
-    try {
-      await db.run('DELETE FROM multipliers WHERE guild_id = ? AND recruiter_id = ?', guildId, recruiterId);
-    } catch (e) {
-      if (!isMissingGuildColumn(e)) throw e;
-      await db.run('DELETE FROM multipliers WHERE recruiter_id = ?', recruiterId);
-    }
-    await db.run('COMMIT');
+    await withTransaction(db, async (tx) => {
+      try {
+        await tx.run('DELETE FROM multipliers WHERE guild_id = ? AND recruiter_id = ?', guildId, recruiterId);
+      } catch (e) {
+        if (!isMissingGuildColumn(e)) throw e;
+        await tx.run('DELETE FROM multipliers WHERE recruiter_id = ?', recruiterId);
+      }
+    }, { immediate: true });
   } catch (e) {
-    await db.run('ROLLBACK');
     logUnexpectedError('economy.resetMultipliers', e, { recruiterId });
     throw e;
   }
