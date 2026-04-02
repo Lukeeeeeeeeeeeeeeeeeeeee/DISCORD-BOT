@@ -239,6 +239,34 @@ describe('dm-worker-selector', () => {
         });
     });
 
+    describe('pickWorker — system messages', () => {
+        test('prefers the main worker for system welcome messages when available', () => {
+            const workers = [makeWorker('worker_node_1'), makeWorker('main'), makeWorker('worker_node_2')];
+
+            const result = pickWorker({
+                messageType: 'system_welcome',
+                affinity: null,
+                eligibleWorkers: workers,
+                blockedWorkerIds: new Set()
+            });
+
+            expect(result).toBe('main');
+        });
+
+        test('falls back when the main worker is blocked for a system message', () => {
+            const workers = [makeWorker('main'), makeWorker('worker_node_1')];
+
+            const result = pickWorker({
+                messageType: 'system_quota',
+                affinity: null,
+                eligibleWorkers: workers,
+                blockedWorkerIds: new Set(['main'])
+            });
+
+            expect(result).toBe('worker_node_1');
+        });
+    });
+
     describe('classifyDmError', () => {
         test('classifies code 50007 as blocked', () => {
             const err = new Error('Cannot send messages to this user');
@@ -261,6 +289,16 @@ describe('dm-worker-selector', () => {
             const err = new Error('Missing Permissions');
             err.code = 50013;
             expect(classifyDmError(err).category).toBe('missing_access_or_perms');
+        });
+
+        test('classifies code 50278 as no mutual guild', () => {
+            const err = new Error('Cannot send messages to this user due to having no mutual guilds');
+            err.code = 50278;
+            err.status = 403;
+            const result = classifyDmError(err);
+            expect(result.category).toBe('no_mutual_guild');
+            expect(result.shouldBlock).toBe(true);
+            expect(result.shouldRetry).toBe(false);
         });
 
         test('classifies status 429 as rate limited', () => {

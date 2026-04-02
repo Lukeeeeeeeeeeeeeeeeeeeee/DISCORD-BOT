@@ -3,7 +3,7 @@ const { ShardClientUtil } = require('discord.js');
 const { GUILD_ID, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
 const { getRegionInfo, getTeamLabel } = require('./lib/regions');
 const { formatPointsValue } = require('./lib/economy');
-const { getWeekStartUtcTs } = require('./lib/week');
+const { getWeekStartUtcTs, getRolling7DayStartTs } = require('./lib/week');
 const { formatUtcDate } = require('./lib/time');
 const { fetchMembersByIds } = require('./lib/member-fetch');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('./lib/leaderboard-utils');
@@ -274,6 +274,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
     { key: 'AS', channel: CHANNELS.INVITES_AS }
   ];
   const weekStart = getWeekStartUtcTs();
+  const rolling7dStart = getRolling7DayStartTs();
   const guildId = guild && guild.id ? guild.id : resolveGuildId();
   const { upsertLeaderboardMessage, makeLeaderboardText } = require('./lib/messages');
   let memberMap = new Map();
@@ -351,7 +352,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
         'SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
         guildId,
         rg.key,
-        weekStart
+        rolling7dStart
       );
       (ids || []).forEach(r => allRecruiterIds.add(r.recruiter_id));
     }
@@ -371,12 +372,12 @@ async function recomputeLeaderboardsInternal(db, guild) {
     let rows = [];
     if (!leaderboardText) {
       const meta = await loadRecruiterMeta(db, recruiterMembers);
-      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: weekStart });
+      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: rolling7dStart });
       const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
       const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
 
       const enriched = [];
-      const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
+      const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now(), overrideWeekStart: weekStart };
 
       // P-01: Batch isNewStaff AND 7-day stats lookups — replaces N sequential DB queries with bulk queries.
       const isNewStaffMap = await batchIsNewStaff(db, Array.from(allRecruiterIds), guildId).catch(() => new Map());
@@ -473,6 +474,7 @@ async function recomputeLeaderboards(db, guild) {
 async function recomputeWarningsLeaderboardInternal(db, guild) {
   if (!db || !guild) return;
   const guildId = guild.id || resolveGuildId();
+  const rolling7dStart = getRolling7DayStartTs();
   const { upsertLeaderboardMessage, makeDemotionWatchText } = require('./lib/messages');
   const channel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
     ? guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS)
@@ -554,13 +556,13 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
 
   const weekStart = getWeekStartUtcTs();
   const meta = await loadRecruiterMeta(db, recruiterIds, { guildId });
-  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { guildId, weekStart, sinceTs: weekStart });
+  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { guildId, weekStart, sinceTs: rolling7dStart });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
   const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
   const memberMap = await fetchMembersByIds(guild, recruiterIds);
 
   const rows = [];
-  const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+  const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now(), overrideWeekStart: weekStart };
 
   // P-01: Batch isNewStaff AND 7-day stats lookups — replaces N sequential DB queries with bulk queries.
   const isNewStaffMap2 = await batchIsNewStaff(db, recruiterIds, guildId).catch(() => new Map());

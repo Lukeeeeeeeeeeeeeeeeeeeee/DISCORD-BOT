@@ -1,6 +1,6 @@
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../../constants');
 const { getRegionInfo } = require('../../lib/regions');
-const { getWeekStartUtcTs } = require('../../lib/week');
+const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const recruitersRepo = require('../../repos/recruiters-repo');
@@ -68,12 +68,17 @@ async function buildRows({ db, guild, guildId, recruiterMembers, region, weekSta
     return { rows: [], meta };
   }
 
-  const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region, weekStart, sinceTs: weekStart, guildId });
+  const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, {
+    region,
+    weekStart,
+    sinceTs: getRolling7DayStartTs(),
+    guildId
+  });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
   const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
   const rows = [];
-  const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
+  const statsWindow = { sinceTs: getRolling7DayStartTs(), untilTs: Date.now(), overrideWeekStart: weekStart };
   const safeConcurrency = Number.isFinite(LEADERBOARD_ROW_CONCURRENCY) && LEADERBOARD_ROW_CONCURRENCY > 0
     ? LEADERBOARD_ROW_CONCURRENCY
     : 4;

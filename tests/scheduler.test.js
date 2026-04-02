@@ -55,6 +55,9 @@ describe('scheduler recompute & persistence', () => {
     `);
   });
   afterEach(async () => {
+    if (Date.now && typeof Date.now.mockRestore === 'function') {
+      Date.now.mockRestore();
+    }
     try { await db.close(); } catch (e) { void e; }
     try { fs.unlinkSync(dbPath); } catch (e) { void e; }
   });
@@ -90,6 +93,36 @@ describe('scheduler recompute & persistence', () => {
     expect(row2).toBeDefined();
     expect(row2.id).toBe(row.id);
     expect(row2.updated_at).toBeGreaterThanOrEqual(row.updated_at);
+  });
+
+  test('recomputeLeaderboards includes recruits from the rolling 7-day window even before the current week start', async () => {
+    const fixedNow = new Date('2026-04-03T12:00:00.000Z').getTime();
+    jest.spyOn(Date, 'now').mockReturnValue(fixedNow);
+
+    const scheduler = require('../src/scheduler');
+    const { getWeekStartUtcTs } = require('../src/lib/week');
+    const weekStart = getWeekStartUtcTs(new Date(fixedNow));
+    const recruitTs = weekStart - (2 * 24 * 60 * 60 * 1000);
+
+    await db.run(
+      'INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, ?, 1)',
+      'GLOBAL',
+      'A',
+      'u_preweek',
+      'EU',
+      'x',
+      recruitTs
+    );
+
+    const guild = makeGuildMock(db);
+    const consts = require('../src/constants');
+    consts.CHANNELS.INVITES_EU = 'EU_CH';
+    consts.CHANNELS.CENTRAL_LEADERBOARD = 'CENTRAL';
+
+    await scheduler.recomputeLeaderboards(db, guild);
+
+    const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', 'EU_CH', 'EU');
+    expect(row).toBeDefined();
   });
 
   test('formatLeaderboardMessage lists recruiters and counts', () => {

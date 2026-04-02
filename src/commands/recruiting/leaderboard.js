@@ -2,7 +2,7 @@ const db = require('../../db_async');
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../../constants');
 const { getRegionInfo } = require('../../lib/regions');
 const { ensureCommandAccess } = require('../../lib/command-auth');
-const { getWeekStartUtcTs } = require('../../lib/week');
+const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
@@ -62,6 +62,7 @@ module.exports = {
     if (sub === 'show') {
       const region = interaction.options.getString('region');
       const weekStart = getWeekStartUtcTs();
+      const rolling7dStart = getRolling7DayStartTs();
       if (region) {
         if (!REGIONS.includes(region) && region !== 'GLOBAL') return replyError(interaction, 'Invalid region.');
         await interaction.deferReply();
@@ -138,14 +139,14 @@ module.exports = {
         }
 
         // Get recruit data for all recruiters
-        const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { guildId, region, weekStart, sinceTs: weekStart });
+        const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { guildId, region, weekStart, sinceTs: rolling7dStart });
         const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
         const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
         // Get 7-day stats and minReq for each recruiter
         const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../../lib/recruiting-system');
         const rows = [];
-        const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
+        const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now(), overrideWeekStart: weekStart };
 
         for (const r of rowsBase) {
           const absence = meta.absences.has(r.recruiter_id);
@@ -276,14 +277,14 @@ module.exports = {
       }
 
       // Get global recruit data
-      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { guildId, weekStart, sinceTs: weekStart });
+      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { guildId, weekStart, sinceTs: rolling7dStart });
       const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
       const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
       // Get 7-day stats and minReq for global
       const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../../lib/recruiting-system');
       const rows = [];
-      const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
+      const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now(), overrideWeekStart: weekStart };
 
       for (const r of rowsBase) {
         const absence = meta.absences.has(r.recruiter_id);
@@ -373,7 +374,7 @@ module.exports = {
           summary.push('Duplicate details (first 5):');
           summary.push(...sample);
         }
-        return interaction.editReply({ content: summary.join('\n'), allowedMentions: { parse: [] } });
+        return await interaction.editReply({ content: summary.join('\n'), allowedMentions: { parse: [] } });
       } catch (e) {
         if (isInteractionAckError(e)) return null;
         reportLeaderboardCommandError('command.leaderboard.init', e, { guildId });

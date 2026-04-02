@@ -246,6 +246,9 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
   const windowStart = Number.isFinite(opts.sinceTs)
     ? opts.sinceTs
     : (windowEnd - (7 * 24 * 60 * 60 * 1000));
+  const overrideWeekStart = Number.isFinite(opts.overrideWeekStart)
+    ? opts.overrideWeekStart
+    : (Number.isFinite(opts.weekStart) ? opts.weekStart : windowStart);
   const retentionEnd = Number.isFinite(opts.retentionEndTs) ? opts.retentionEndTs : windowStart;
   const retentionStart = Number.isFinite(opts.retentionStartTs)
     ? opts.retentionStartTs
@@ -262,12 +265,12 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
     );
 
     let recruits7d = recruitsRow ? Number(recruitsRow.c || 0) : 0;
-    if (Number.isFinite(windowStart)) {
+    if (Number.isFinite(overrideWeekStart)) {
       const overrideRow = await db.get(
         'SELECT total FROM weekly_recruit_overrides WHERE guild_id = ? AND recruiter_id = ? AND week_start = ?',
         guildId,
         recruiterId,
-        windowStart
+        overrideWeekStart
       ).catch(() => null);
       if (overrideRow && Number.isFinite(Number(overrideRow.total))) {
         recruits7d = Math.max(0, Number(overrideRow.total));

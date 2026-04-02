@@ -13,6 +13,9 @@ async function batchCalculate7DayStats(database, recruiterIds, guild, opts = {})
   const windowStart = Number.isFinite(opts.sinceTs)
     ? opts.sinceTs
     : (windowEnd - (7 * 24 * 60 * 60 * 1000));
+  const overrideWeekStart = Number.isFinite(opts.overrideWeekStart)
+    ? opts.overrideWeekStart
+    : (Number.isFinite(opts.weekStart) ? opts.weekStart : windowStart);
   
   const retentionEnd = Number.isFinite(opts.retentionEndTs) ? opts.retentionEndTs : (windowStart || (Date.now() - (7 * 24 * 60 * 60 * 1000)));
   const retentionStart = Number.isFinite(opts.retentionStartTs)
@@ -55,7 +58,7 @@ async function batchCalculate7DayStats(database, recruiterIds, guild, opts = {})
       `SELECT recruiter_id, total 
        FROM weekly_recruit_overrides 
        WHERE guild_id = ? AND recruiter_id IN (${placeholders}) AND week_start = ?`,
-      guildId, ...recruiterIds, windowStart
+      guildId, ...recruiterIds, overrideWeekStart
     ).catch(() => []);
     
     for (const row of overrideRows) {

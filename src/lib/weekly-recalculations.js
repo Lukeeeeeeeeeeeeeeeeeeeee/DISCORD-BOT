@@ -67,7 +67,7 @@ async function performWeeklyRecalculations(guild) {
 
   const weekStart = getWeekStartUtcTs(new Date(Date.now() + WEEK_ROLLOVER_OFFSET_MS));
   const weekWindowStart = weekStart - (7 * 24 * 60 * 60 * 1000);
-  const statsWindow = { sinceTs: weekWindowStart, untilTs: weekStart };
+  const statsWindow = { sinceTs: weekWindowStart, untilTs: weekStart, overrideWeekStart: weekStart };
 
   try {
     // Get all recruiters (staff roles + recruiter roles)

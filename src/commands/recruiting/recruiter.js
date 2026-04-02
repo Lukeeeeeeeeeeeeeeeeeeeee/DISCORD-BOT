@@ -28,7 +28,7 @@ const {
   isNewStaff,
   getRecruiterStatus
 } = require('../../lib/recruiting-system');
-const { getWeekStartUtcTs } = require('../../lib/week');
+const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
 
 function toUnixSeconds(ms) {
   return Math.floor(ms / 1000);
@@ -196,7 +196,7 @@ module.exports = {
 
             // Get 7-day stats using current week window
             const weekStart = getWeekStartUtcTs();
-            const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+      const statsWindow = { sinceTs: getRolling7DayStartTs(), untilTs: Date.now(), overrideWeekStart: weekStart };
             const stats7d = await calculate7DayStats(db, member.id, interaction.guild, { ...statsWindow, guildId });
             const avgRecruitsWeek = await getAverageWeeklyRecruits(db, member.id, guildId);
             const avgRecruitsDisplay = Number.isFinite(avgRecruitsWeek)

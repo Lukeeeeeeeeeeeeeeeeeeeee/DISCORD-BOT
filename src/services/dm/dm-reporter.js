@@ -48,7 +48,9 @@ function buildReportEmbed(reportData) {
     const messageTypeLabels = {
         misc: '📨 Misc',
         war_early: '⚔️ War Early Notice',
-        war_late: '🔥 War Late Notice'
+        war_late: '🔥 War Late Notice',
+        system_welcome: '👋 System Welcome',
+        system_quota: '📏 System Quota Warning'
     };
 
     // ── Header ──
@@ -101,6 +103,8 @@ function buildReportEmbed(reportData) {
             const parts = [];
             if (results.sent) parts.push(`✅ ${results.sent}`);
             if (results.blocked_or_closed_dm) parts.push(`🚫 ${results.blocked_or_closed_dm}`);
+            if (results.no_mutual_guild) parts.push(`🔗 ${results.no_mutual_guild}`);
+            if (results.missing_access_or_perms) parts.push(`🔒 ${results.missing_access_or_perms}`);
             if (results.rate_limited) parts.push(`⏱️ ${results.rate_limited}`);
             if (results.transient_network) parts.push(`🌐 ${results.transient_network}`);
             if (results.unknown_failure) parts.push(`❓ ${results.unknown_failure}`);
@@ -134,7 +138,7 @@ function buildReportEmbed(reportData) {
         );
         if (undeliverableUsers.length > 10) lines.push(`*...and ${undeliverableUsers.length - 10} more in attached CSV*`);
         embed.fields.push({
-            name: `❌ Undeliverable — Replace Applications (${undeliverableUsers.length})`,
+            name: `❌ Undeliverable Users (${undeliverableUsers.length})`,
             value: lines.join('\n'),
             inline: false
         });
@@ -143,7 +147,7 @@ function buildReportEmbed(reportData) {
     // ── Failed Users ──
     if (failedUsers && failedUsers.length > 0) {
         const lines = failedUsers.slice(0, 10).map(u =>
-            `<@${u.user_id}> — via \`${u.worker_id || '?'}\` (${u.last_error_code || '?'})`
+            `<@${u.user_id}> — via \`${u.assigned_worker_id || '?'}\` (${u.last_error_code || '?'})`
         );
         if (failedUsers.length > 10) lines.push(`*...and ${failedUsers.length - 10} more in attached CSV*`);
         embed.fields.push({

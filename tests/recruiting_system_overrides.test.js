@@ -42,4 +42,29 @@ describe('calculate7DayStats weekly overrides', () => {
     expect(stats.activityRate).toBe(4);
     expect(stats.verifyRate).toBeCloseTo(0.25, 5);
   });
+
+  test('supports rolling windows while still reading the current week override key', async () => {
+    const get = jest.fn()
+      .mockResolvedValueOnce({ c: 4 })
+      .mockResolvedValueOnce({ total: 6 })
+      .mockResolvedValueOnce({ c: 3 });
+    const db = { get, all: jest.fn() };
+
+    const stats = await calculate7DayStats(db, 'recruiter-1', null, {
+      guildId: 'guild-1',
+      sinceTs: 1700000000000,
+      untilTs: 1700600000000,
+      overrideWeekStart: 1700438400000
+    });
+
+    expect(stats.recruits7d).toBe(6);
+    expect(stats.activityRate).toBe(6);
+    expect(stats.verifyRate).toBeCloseTo(0.5, 5);
+    expect(get).toHaveBeenCalledWith(
+      expect.stringContaining('weekly_recruit_overrides'),
+      'guild-1',
+      'recruiter-1',
+      1700438400000
+    );
+  });
 });

@@ -14,6 +14,7 @@ const { envInt } = require('../../lib/env-utils');
 const WEIGHTED_STALE_MS = envInt('DM_SELECTOR_STALE_MS', 60000);
 const DEFAULT_STICKY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEFAULT_MAX_MISC_STREAK = 4;
+const MAIN_WORKER_ID = 'main';
 
 /**
  * Perform proportional weighted random selection from a list of worker candidates.
@@ -122,6 +123,11 @@ function pickWorker({
 
     const aff = affinity || {};
 
+    if (messageType === 'system_welcome' || messageType === 'system_quota') {
+        const mainWorker = candidates.find((worker) => worker.worker_id === MAIN_WORKER_ID);
+        if (mainWorker) return MAIN_WORKER_ID;
+    }
+
     // ── War messages: sticky to war_worker_id ──
     if (messageType === 'war_early' || messageType === 'war_late') {
         if (aff.war_worker_id && candidates.some(w => w.worker_id === aff.war_worker_id)) {
@@ -167,6 +173,10 @@ function classifyDmError(err) {
     // Cannot send to user — blocked or DMs closed
     if (code === 50007 || code === 10013 || code === 10003) {
         return { category: 'blocked_or_closed_dm', shouldBlock: true, shouldRetry: false };
+    }
+
+    if (code === 50278) {
+        return { category: 'no_mutual_guild', shouldBlock: true, shouldRetry: false };
     }
 
     // Missing access, permissions, or forbidden
