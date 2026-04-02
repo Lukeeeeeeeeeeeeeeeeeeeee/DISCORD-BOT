@@ -73,6 +73,15 @@ function getInactiveRolePool(teamToInactiveRole) {
   return Array.from(pool);
 }
 
+function getOnboardingRoleIds() {
+  return toIdSet([
+    ROLE_IDS && ROLE_IDS.ONBOARDING_FIRE,
+    ROLE_IDS && ROLE_IDS.ONBOARDING_WATER,
+    ROLE_IDS && ROLE_IDS.ONBOARDING_AIR,
+    ...(Array.isArray(ROLE_IDS && ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [])
+  ]);
+}
+
 function hasAnyRole(member, roleIds) {
   if (!member || !member.roles || !member.roles.cache || !roleIds || roleIds.size === 0) return false;
   for (const roleId of roleIds) {
@@ -107,13 +116,55 @@ function inferTeamFromMember(member) {
   return null;
 }
 
-function pickInactiveRole(member, teamToInactiveRole, inactiveRolePool) {
+function buildInactiveRoleUsage(members, inactiveRolePool) {
+  const counts = new Map(inactiveRolePool.map((roleId) => [roleId, 0]));
+  if (!members || typeof members.values !== 'function') return counts;
+
+  for (const member of members.values()) {
+    if (!member || !member.roles || !member.roles.cache) continue;
+    for (const roleId of inactiveRolePool) {
+      if (!member.roles.cache.has(roleId)) continue;
+      counts.set(roleId, (counts.get(roleId) || 0) + 1);
+    }
+  }
+
+  return counts;
+}
+
+function pickLeastUsedInactiveRole(inactiveRolePool, inactiveRoleUsage) {
+  if (!inactiveRolePool.length) return null;
+
+  let minCount = Infinity;
+  let candidates = [];
+  for (const roleId of inactiveRolePool) {
+    const count = inactiveRoleUsage && inactiveRoleUsage.has(roleId)
+      ? inactiveRoleUsage.get(roleId)
+      : 0;
+    if (count < minCount) {
+      minCount = count;
+      candidates = [roleId];
+      continue;
+    }
+    if (count === minCount) candidates.push(roleId);
+  }
+
+  if (!candidates.length) return null;
+  const roleId = candidates[Math.floor(Math.random() * candidates.length)];
+  if (inactiveRoleUsage) {
+    inactiveRoleUsage.set(roleId, (inactiveRoleUsage.get(roleId) || 0) + 1);
+  }
+  return roleId;
+}
+
+function pickInactiveRole(member, teamToInactiveRole, inactiveRolePool, inactiveRoleUsage) {
   const team = inferTeamFromMember(member);
-  const teamRole = team && teamToInactiveRole[team] ? teamToInactiveRole[team] : null;
+  const teamRole = team && teamToInactiveRole[team] && inactiveRolePool.includes(teamToInactiveRole[team])
+    ? teamToInactiveRole[team]
+    : null;
   if (teamRole) return { team, roleId: teamRole, source: 'team' };
   if (!inactiveRolePool.length) return { team, roleId: null, source: 'none' };
-  const randomIdx = Math.floor(Math.random() * inactiveRolePool.length);
-  return { team, roleId: inactiveRolePool[randomIdx], source: 'random' };
+  const roleId = pickLeastUsedInactiveRole(inactiveRolePool, inactiveRoleUsage);
+  return { team, roleId, source: roleId ? 'balanced' : 'none' };
 }
 
 async function getReactedUserIds(message) {
@@ -167,13 +218,7 @@ function buildPreserveRoleSet() {
   }
 
   if (!ACTIVITY_CHECK || ACTIVITY_CHECK.PRESERVE_ONBOARDING_ROLES !== false) {
-    const onboardingIds = [
-      ROLE_IDS && ROLE_IDS.ONBOARDING_FIRE,
-      ROLE_IDS && ROLE_IDS.ONBOARDING_WATER,
-      ROLE_IDS && ROLE_IDS.ONBOARDING_AIR,
-      ...(Array.isArray(ROLE_IDS && ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [])
-    ];
-    for (const roleId of onboardingIds) {
+    for (const roleId of getOnboardingRoleIds()) {
       if (roleId) preserve.add(roleId);
     }
   }
@@ -361,6 +406,7 @@ module.exports = {
     const targetRoleIds = toIdSet(ACTIVITY_CHECK && ACTIVITY_CHECK.TARGET_ROLE_IDS);
     const exemptRoleIds = toIdSet(ACTIVITY_CHECK && ACTIVITY_CHECK.EXEMPT_ROLE_IDS);
     const preserveRoles = buildPreserveRoleSet();
+    const onboardingRoleIds = getOnboardingRoleIds();
 
     const candidates = [];
     for (const member of allMembers.values()) {
@@ -377,15 +423,16 @@ module.exports = {
     let failed = 0;
     let removedRoleCount = 0;
     let addedRoleCount = 0;
+    const inactiveRoleUsage = buildInactiveRoleUsage(allMembers, validInactivePool);
     const assignmentCounts = new Map();
     const assignmentSourceCounts = {
       team: 0,
-      random: 0,
+      balanced: 0,
       none: 0
     };
 
     for (const member of cappedCandidates) {
-      const picked = pickInactiveRole(member, teamToInactiveRole, validInactivePool);
+      const picked = pickInactiveRole(member, teamToInactiveRole, validInactivePool, inactiveRoleUsage);
       const targetRoleId = picked.roleId;
       if (picked && picked.source && Object.prototype.hasOwnProperty.call(assignmentSourceCounts, picked.source)) {
         assignmentSourceCounts[picked.source] += 1;
@@ -403,7 +450,11 @@ module.exports = {
 
       const removableRoleIds = member.roles.cache
         .filter((role) => role.id !== interaction.guild.id)
-        .filter((role) => !keepIds.has(role.id))
+        .filter((role) => {
+          if (role.id === targetRoleId) return false;
+          if (onboardingRoleIds.has(role.id)) return true;
+          return !keepIds.has(role.id);
+        })
         .filter((role) => roleIsRemovable(role))
         .map((role) => role.id);
 
@@ -460,7 +511,7 @@ module.exports = {
       usedMemberCacheFallback ? 'Member source: **cache (gateway rate-limit fallback)**' : 'Member source: **live fetch**',
       usedMemberCacheFallback ? 'Note: fallback mode may miss uncached members. Retry after rate-limit window for full accuracy.' : null,
       assignmentSummary ? `Inactive role distribution: ${assignmentSummary}` : null,
-      `Assignment source: team **${assignmentSourceCounts.team}**, random **${assignmentSourceCounts.random}**, none **${assignmentSourceCounts.none}**`
+      `Assignment source: team **${assignmentSourceCounts.team}**, balanced **${assignmentSourceCounts.balanced}**, none **${assignmentSourceCounts.none}**`
     ].filter(Boolean).join('\n');
 
     return interaction.editReply({ content: summary });

@@ -159,6 +159,92 @@ function makeInteraction({ userId = 'owner-1', preview = false } = {}) {
   return { interaction, targetMember };
 }
 
+function makeInteractionWithMembers(memberDefs, { userId = 'owner-1', preview = false, reactedUserIds = [] } = {}) {
+  const roleMap = new Collection([
+    ['guild-1', makeRole('guild-1')],
+    ['member-role', makeRole('member-role')],
+    ['team-eu', makeRole('team-eu')],
+    ['team-na', makeRole('team-na')],
+    ['team-as', makeRole('team-as')],
+    ['region-eu', makeRole('region-eu')],
+    ['region-na', makeRole('region-na')],
+    ['region-as', makeRole('region-as')],
+    ['react-fire', makeRole('react-fire')],
+    ['react-water', makeRole('react-water')],
+    ['react-air', makeRole('react-air')],
+    ['vip-role', makeRole('vip-role')],
+    ['inactive-eu', makeRole('inactive-eu')],
+    ['inactive-na', makeRole('inactive-na')],
+    ['inactive-as', makeRole('inactive-as')]
+  ]);
+
+  const members = new Collection();
+  for (const memberDef of memberDefs) {
+    const member = makeMember(memberDef.id, memberDef.roleIds, roleMap);
+    members.set(member.id, member);
+  }
+
+  const reactedUsers = new Collection(
+    reactedUserIds.map((id) => [id, { id, bot: false }])
+  );
+
+  const message = {
+    id: 'message-1',
+    reactions: {
+      cache: new Collection([
+        ['emoji', { users: { fetch: jest.fn(async () => reactedUsers) } }]
+      ])
+    }
+  };
+
+  const channel = {
+    id: 'channel-1',
+    guildId: 'guild-1',
+    isTextBased: () => true,
+    messages: {
+      fetch: jest.fn(async () => message)
+    }
+  };
+
+  const guild = {
+    id: 'guild-1',
+    channels: {
+      cache: new Collection([
+        [channel.id, channel]
+      ]),
+      fetch: jest.fn(async (id) => {
+        if (id === channel.id) return channel;
+        return null;
+      })
+    },
+    roles: {
+      cache: roleMap,
+      fetch: jest.fn(async () => roleMap)
+    },
+    members: {
+      cache: members,
+      fetch: jest.fn(async () => members)
+    }
+  };
+
+  const interaction = {
+    user: { id: userId },
+    guild,
+    channel,
+    options: {
+      getSubcommand: jest.fn(() => 'role'),
+      getString: jest.fn(() => 'message-1'),
+      getChannel: jest.fn(() => channel),
+      getBoolean: jest.fn(() => preview),
+      getInteger: jest.fn(() => null)
+    },
+    deferReply: jest.fn(async () => null),
+    editReply: jest.fn(async () => null)
+  };
+
+  return { interaction, members };
+}
+
 describe('activitycheck command', () => {
   beforeEach(() => {
     mockReplyError.mockClear();
@@ -172,7 +258,7 @@ describe('activitycheck command', () => {
     expect(interaction.deferReply).not.toHaveBeenCalled();
   });
 
-  test('assigns team-matched inactive role and removes non-preserved roles for non-reactors', async () => {
+  test('assigns team-matched inactive role and strips onboarding from non-reactors', async () => {
     const { interaction, targetMember } = makeInteraction({ userId: 'owner-1', preview: false });
 
     await cmd.execute(interaction);
@@ -184,11 +270,11 @@ describe('activitycheck command', () => {
     );
     expect(targetMember.roles.remove).toHaveBeenCalledTimes(1);
     const removed = targetMember.roles.remove.mock.calls[0][0];
-    expect(removed).toEqual(expect.arrayContaining(['member-role', 'team-eu', 'vip-role']));
+    expect(removed).toEqual(expect.arrayContaining(['member-role', 'team-eu', 'vip-role', 'react-fire']));
 
     expect(targetMember.roles.cache.has('inactive-eu')).toBe(true);
     expect(targetMember.roles.cache.has('region-eu')).toBe(true);
-    expect(targetMember.roles.cache.has('react-fire')).toBe(true);
+    expect(targetMember.roles.cache.has('react-fire')).toBe(false);
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining('Inactive role distribution: <@&inactive-eu>: **1**')
@@ -196,9 +282,42 @@ describe('activitycheck command', () => {
     );
     expect(interaction.editReply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: expect.stringContaining('Assignment source: team **1**, random **0**, none **0**')
+        content: expect.stringContaining('Assignment source: team **1**, balanced **0**, none **0**')
       })
     );
+  });
+
+  test('balances fallback inactive assignments for teamless non-reactors', async () => {
+    const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      const { interaction, members } = makeInteractionWithMembers([
+        { id: 'target-1', roleIds: ['member-role'] },
+        { id: 'target-2', roleIds: ['member-role'] },
+        { id: 'target-3', roleIds: ['member-role'] }
+      ], { userId: 'owner-1', preview: false });
+
+      await cmd.execute(interaction);
+
+      expect(members.get('target-1').roles.add).toHaveBeenCalledWith(
+        'inactive-eu',
+        expect.stringContaining('Activity check')
+      );
+      expect(members.get('target-2').roles.add).toHaveBeenCalledWith(
+        'inactive-na',
+        expect.stringContaining('Activity check')
+      );
+      expect(members.get('target-3').roles.add).toHaveBeenCalledWith(
+        'inactive-as',
+        expect.stringContaining('Activity check')
+      );
+      expect(interaction.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.stringContaining('Assignment source: team **0**, balanced **3**, none **0**')
+        })
+      );
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 
   test('accepts Discord message URL for messageid and resolves channel automatically', async () => {

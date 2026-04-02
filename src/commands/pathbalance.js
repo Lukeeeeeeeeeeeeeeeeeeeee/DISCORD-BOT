@@ -4,6 +4,14 @@ const { replyError } = require('../lib/embeds');
 const DEFAULT_SOURCE_ROLE_ID = '1463200689252597770';
 const PATH_KEYS = ['FIRE', 'WATER', 'AIR'];
 
+function hasRole(member, roleId) {
+  return Boolean(member && member.roles && member.roles.cache && roleId && member.roles.cache.has(roleId));
+}
+
+function hasAnyBucketRole(member, roles) {
+  return Object.values(roles || {}).some((roleId) => hasRole(member, roleId));
+}
+
 const BASE_ROLES = {
   ROOKIE: '1412808625529028767',
   MEMBER: '1412808625747132501',
@@ -66,8 +74,24 @@ const PATH_BUCKETS = [
     )
   },
   {
-    tier: 'MEMBER',
+    tier: 'INACTIVE',
     priority: 5,
+    key: 'inactive',
+    roles: {
+      AIR: '1473726648712036496',
+      FIRE: '1473726655565529259',
+      WATER: '1473726663329316946'
+    },
+    // Existing inactive path roles must win over leftover onboarding/member path roles during cleanup.
+    isEligible: (member, sourceRoleId) => hasRole(member, sourceRoleId) || hasAnyBucketRole(member, {
+      AIR: '1473726648712036496',
+      FIRE: '1473726655565529259',
+      WATER: '1473726663329316946'
+    })
+  },
+  {
+    tier: 'MEMBER',
+    priority: 6,
     key: 'member',
     roles: {
       AIR: '1473726626733756438',
@@ -78,7 +102,7 @@ const PATH_BUCKETS = [
   },
   {
     tier: 'ROOKIE',
-    priority: 6,
+    priority: 7,
     key: 'onboarding',
     roles: {
       AIR: '1473726598300700796',
@@ -86,25 +110,10 @@ const PATH_BUCKETS = [
       WATER: '1473726616025694419'
     },
     isEligible: (member) => hasRole(member, BASE_ROLES.ROOKIE)
-  },
-  {
-    tier: 'INACTIVE',
-    priority: 7,
-    key: 'inactive',
-    roles: {
-      AIR: '1473726648712036496',
-      FIRE: '1473726655565529259',
-      WATER: '1473726663329316946'
-    },
-    isEligible: (member, sourceRoleId) => hasRole(member, sourceRoleId)
   }
 ];
 
 const PATH_BUCKET_BY_KEY = Object.fromEntries(PATH_BUCKETS.map((bucket) => [bucket.key, bucket]));
-
-function hasRole(member, roleId) {
-  return Boolean(member && member.roles && member.roles.cache && roleId && member.roles.cache.has(roleId));
-}
 
 function getOwnerIdSet() {
   const ids = new Set();

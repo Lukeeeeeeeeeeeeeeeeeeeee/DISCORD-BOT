@@ -277,4 +277,47 @@ describe('pathbalance command', () => {
       })
     );
   });
+
+  test('all_members cleanup keeps inactive bucket and strips leftover onboarding path roles', async () => {
+    const ctx = makeInteraction({
+      members: [makeMember(
+        'inactive1',
+        [
+          '1473726655565529259', // inactive FIRE
+          '1473726606634909829' // leftover rookie FIRE path
+        ],
+        new Collection()
+      )],
+      preview: false,
+      allMembers: true,
+      confirm: 'CONFIRM',
+      removeSourceRole: false,
+      deleteSourceRole: false
+    });
+    const member = makeMember(
+      'inactive1',
+      [
+        '1473726655565529259',
+        '1473726606634909829'
+      ],
+      ctx.roleMap
+    );
+    const allMembers = new Collection([[member.id, member]]);
+    ctx.interaction.guild.members.cache = allMembers;
+    ctx.interaction.guild.members.fetch = jest.fn(async () => allMembers);
+    ctx.sourceRole.members.clear();
+
+    await command.execute(ctx.interaction);
+
+    expect(member.roles.add).not.toHaveBeenCalled();
+    expect(member.roles.remove).toHaveBeenCalledWith(
+      expect.arrayContaining(['1473726606634909829']),
+      expect.stringContaining('One-time path balance')
+    );
+    expect(ctx.interaction.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('INACTIVE: **1** (F:1 W:0 A:0)')
+      })
+    );
+  });
 });

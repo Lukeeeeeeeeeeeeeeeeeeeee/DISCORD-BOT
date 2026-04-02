@@ -32,7 +32,7 @@
     "preserveRoleIds": ["REACTION_ROLE_ID_1", "REACTION_ROLE_ID_2"],
     "exemptRoleIds": [],
     "preserveRegionRoles": true,
-    "preserveOnboardingRoles": true,
+    "preserveOnboardingRoles": false,
     "preserveStaffRoles": true
   },
   "limits": {
