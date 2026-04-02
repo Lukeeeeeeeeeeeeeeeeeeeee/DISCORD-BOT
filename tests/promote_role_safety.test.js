@@ -20,6 +20,7 @@ jest.mock('../src/scheduler', () => ({
 }));
 
 const { promoteMember } = require('../src/lib/promote');
+const scheduler = require('../src/scheduler');
 
 function createRoleCache(ids) {
   return {
@@ -29,6 +30,10 @@ function createRoleCache(ids) {
 }
 
 describe('promote role safety', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   test('uses granular add/remove and avoids destructive roles.set when supported', async () => {
     const member = {
       id: 'member-1',
@@ -96,5 +101,47 @@ describe('promote role safety', () => {
     const finalRoleIds = member.roles.set.mock.calls[0][0];
     expect(finalRoleIds).toEqual(expect.arrayContaining(['role_custom_b', 'role_solace', 'role_team_eu']));
     expect(finalRoleIds).not.toEqual(expect.arrayContaining(['role_rookie', 'role_onboarding_fire']));
+  });
+
+  test('records verification and survives missing team inference', async () => {
+    const member = {
+      id: 'member-3',
+      nickname: 'Player 2/10',
+      user: { username: 'Player' },
+      guild: { id: 'guild-role-id' },
+      setNickname: jest.fn().mockResolvedValue(undefined),
+      roles: {
+        cache: createRoleCache([
+          'role_rookie',
+          'role_custom_c'
+        ]),
+        remove: jest.fn().mockResolvedValue(undefined),
+        add: jest.fn().mockResolvedValue(undefined)
+      }
+    };
+
+    const db = {
+      get: jest.fn().mockResolvedValue(null),
+      run: jest.fn().mockResolvedValue(undefined)
+    };
+    const guild = { id: 'guild-3' };
+
+    const result = await promoteMember({ member, db, guild, verifierId: 'verifier-3' });
+
+    expect(result).toEqual(expect.objectContaining({
+      team: null,
+      teamName: 'Unknown',
+      teamEmoji: ''
+    }));
+    expect(member.roles.add).toHaveBeenCalledWith(['role_solace'], 'Rookie promotion');
+    expect(db.run).toHaveBeenCalledWith(
+      'INSERT OR REPLACE INTO verifications (guild_id, recruited_id, recruiter_id, verified_at, verified_by) VALUES (?, ?, ?, ?, ?)',
+      'guild-3',
+      'member-3',
+      null,
+      expect.any(Number),
+      'verifier-3'
+    );
+    expect(scheduler.recomputeLeaderboards).toHaveBeenCalledWith(db, guild);
   });
 });

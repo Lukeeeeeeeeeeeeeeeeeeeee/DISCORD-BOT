@@ -26,6 +26,7 @@ const ECONOMY_CONFIG = {
 const { logUnexpectedError } = require('./logger');
 const { resolveGuildId } = require('./guild');
 const { withTransaction } = require('./transactions');
+const { ensureRecruiter } = require('../repos/recruiters-repo');
 
 const RETENTION_CACHE_TTL_MS = Number.parseInt(process.env.RETENTION_CACHE_TTL_MS || '30000', 10);
 const RETENTION_CACHE_MAX = Number.parseInt(process.env.RETENTION_CACHE_MAX || '500', 10);
@@ -147,6 +148,7 @@ async function applyMultiplier(db, recruiterId, multiplierKey, opts = {}) {
   const expiresAt = Date.now() + cfg.days * 24 * 60 * 60 * 1000;
   try {
     const guildId = resolveGuildId(opts.guild || opts.guildId);
+    await ensureRecruiter(db, guildId, recruiterId);
     try {
       await db.run(
         'INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -197,6 +199,7 @@ async function applyCustomMultiplier(db, recruiterId, customConfig = {}, opts = 
   }
 
   const guildId = resolveGuildId(opts.guild || opts.guildId);
+  await ensureRecruiter(db, guildId, recruiterId);
   try {
     await db.run(
       'INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',

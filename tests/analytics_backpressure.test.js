@@ -61,17 +61,14 @@ describe('analytics backpressure safeguards', () => {
     process.env.ANALYTICS_REQUEUE_MAX = '1';
     process.env.ANALYTICS_DROP_ON_REQUEUE_CAP = 'true';
 
-    const exec = jest.fn(async (sql) => {
-      if (sql === 'BEGIN') {
-        throw new Error('SQLITE_BUSY: database is locked');
-      }
-      return undefined;
-    });
     const run = jest.fn(async () => undefined);
+    const withTransaction = jest.fn(async () => {
+      throw new Error('SQLITE_BUSY: database is locked');
+    });
 
-    jest.doMock('../src/db_async', () => ({ exec, run }));
+    jest.doMock('../src/db_async', () => ({ run }));
     jest.doMock('../src/lib/transactions', () => ({
-      withTransaction: jest.fn(async () => undefined)
+      withTransaction
     }));
 
     const analytics = require('../src/lib/analytics');

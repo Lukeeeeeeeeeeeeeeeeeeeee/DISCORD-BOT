@@ -13,7 +13,7 @@ async function testShutdownCorruption() {
     // If SIGKILL arrives mid-write, the file is destroyed.
 
     // Phase 1: Simulate the write
-    let writePromise = fs.promises.writeFile(testFile, JSON.stringify(hugeState));
+    void fs.promises.writeFile(testFile, JSON.stringify(hugeState));
 
     // Phase 2: Simulate SIGKILL 5 milliseconds into the write
     setTimeout(() => {

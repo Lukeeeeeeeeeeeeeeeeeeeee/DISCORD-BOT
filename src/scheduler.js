@@ -4,19 +4,14 @@ const { GUILD_ID, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constant
 const { getRegionInfo, getTeamLabel } = require('./lib/regions');
 const { formatPointsValue } = require('./lib/economy');
 const { getWeekStartUtcTs } = require('./lib/week');
-const { formatUtcDateOnly, formatUtcDate } = require('./lib/time');
+const { formatUtcDate } = require('./lib/time');
 const { fetchMembersByIds } = require('./lib/member-fetch');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('./lib/leaderboard-utils');
 const { logUnexpectedError } = require('./lib/logger');
-const { 
-  upsertLeaderboardMessage, 
-  makeLeaderboardText, 
-  makeDemotionWatchText 
-} = require('./lib/messages');
 
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
 
-const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('./lib/recruiting-system');
+const { calculateMinRecruitsFixed, getBaseRequirement } = require('./lib/recruiting-system');
 const { acquireJobLock } = require('./lib/job-locks');
 const { withTransaction } = require('./lib/transactions');
 const campaignService = require('./services/dm/dm-campaign-service');
@@ -32,30 +27,7 @@ function debugLog(...args) {
   if (DEBUG_SCHEDULER) console.log(...args);
 }
 
-// M-02: Extract the repeated staff-role fallback into a single utility rather than
-// duplicating the Array.isArray / filter(Boolean) pattern across 4+ files.
-function resolveStaffRoles() {
-  return Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
-    ? ROLE_IDS.STAFF.filter(Boolean)
-    : [
-      ROLE_IDS.HELPER,
-      ROLE_IDS.HELPER_PLUS,
-      ROLE_IDS.MOD,
-      ROLE_IDS.CHIEF,
-      ROLE_IDS.CHIEF_OF_WAR,
-      ROLE_IDS.CHIEF_OF_COMMUNITY,
-      ROLE_IDS.CHIEF_OF_RECRUITMENT,
-      ROLE_IDS.CO_LEADER,
-      ROLE_IDS.LEADER,
-      ROLE_IDS.HIGH_STAFF
-    ].filter(Boolean);
-}
-
 const { batchCalculate7DayStats, batchIsNewStaff } = require('./lib/recruiter-stats');
-
-const SNAPSHOT_CONCURRENCY = Number.parseInt(process.env.SNAPSHOT_CONCURRENCY || '3', 10);
-
-const { runWithConcurrency } = require('./lib/concurrency');
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
@@ -140,69 +112,6 @@ async function resolveGuild(client) {
     return client.guilds.fetch(guildId).catch(() => null);
   }
   return null;
-}
-
-async function resolveAllRecruiterIds(guild, db) {
-  if (!guild) return [];
-  const guildId = guild.id || resolveGuildId();
-  const staffRoleIds = resolveStaffRoles();
-
-  const recruiterRoleIds = [
-    ROLE_IDS.RECRUITER,
-    ROLE_IDS.TRIAL_RECRUITER,
-    ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
-  ].filter(Boolean);
-
-  const ids = new Set();
-  const allRoleIds = [...staffRoleIds, ...recruiterRoleIds];
-  let roleMemberCount = 0;
-  let dbRecruiterRows = [];
-  if (db) {
-    try {
-      dbRecruiterRows = await db.all('SELECT id FROM recruiters WHERE guild_id = ?', guildId);
-    } catch (e) {
-      console.error('Failed to load recruiter IDs from DB', e);
-    }
-  }
-  const hasDbRecruiters = dbRecruiterRows.length > 0;
-
-  const collectRoleMembers = () => {
-    for (const roleId of allRoleIds) {
-      const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(roleId) : null;
-      if (role && role.members) {
-        roleMemberCount += role.members.size;
-        role.members.forEach(m => ids.add(m.id));
-      }
-    }
-  };
-
-  collectRoleMembers();
-  if (roleMemberCount === 0 && allRoleIds.length) {
-    const warmed = await primeMemberCache(guild, 'resolveAllRecruiterIds', {
-      force: FORCE_FULL_FETCH_ON_EMPTY && !hasDbRecruiters
-    });
-    if (warmed) {
-      roleMemberCount = 0;
-      ids.clear();
-      collectRoleMembers();
-    }
-  }
-
-  (dbRecruiterRows || []).forEach(r => {
-    if (r && r.id) ids.add(r.id);
-  });
-  if (ids.size === 0 && db) {
-    try {
-      const recRows = await db.all('SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ?', guildId);
-      (recRows || []).forEach(r => {
-        if (r && r.recruiter_id) ids.add(r.recruiter_id);
-      });
-    } catch (e) {
-      console.error('Failed to load recruiter IDs from recruits', e);
-    }
-  }
-
-  return Array.from(ids);
 }
 
 let leaderboardsInFlight = null;
@@ -786,8 +695,6 @@ function start(client, db) {
   (async () => {
     const guild = await resolveGuild(client);
     if (!guild) return;
-    const recruitmentService = require('./services/recruiting/recruit-service');
-    await recruitmentService.reconcileRecruits(client, db).catch((e) => console.error('reconcileRecruits failed:', e));
     await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
     await recomputeWarningsLeaderboard(db, guild).catch((e) => console.error('recomputeWarningsLeaderboard failed:', e));
 
@@ -985,6 +892,7 @@ module.exports = {
   getWeekStartUtcTs,
   start,
   stop,
+  formatLeaderboardMessage,
   recomputeLeaderboards,
   recomputeWarningsLeaderboard
 };

@@ -19,6 +19,7 @@ const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
 const { startHealthServer } = require('./lib/health-server');
 const { loadCommandsIntoCollection } = require('./lib/command-loader');
 const { createInviteTables } = require('./lib/create-invite-tables');
+const { buildRuntimeConfig } = require('./lib/runtime-config');
 const inviteCommand = require('./commands/recruiting/invite');
 const dmReporter = require('./services/dm/dm-reporter');
 const dmWorker = require('./services/dm/dm-worker');
@@ -28,7 +29,8 @@ const { handleMemberLeave } = require('./lib/memberLeave');
 const { buildErrorEmbed } = require('./lib/embeds');
 
 // DM worker system
-const BOT_RUNTIME_MODE = (process.env.BOT_RUNTIME_MODE || 'main').toLowerCase();
+const runtimeConfig = buildRuntimeConfig(process.env, { guildId: GUILD_ID });
+const BOT_RUNTIME_MODE = runtimeConfig.botRuntimeMode;
 const IS_DM_WORKER = BOT_RUNTIME_MODE === 'dm_worker';
 let dmReportScanTimer = null;
 
@@ -44,7 +46,7 @@ try {
   process.exit(1);
 }
 
-const enableMessageContent = (process.env.ENABLE_MESSAGE_CONTENT || '').toLowerCase() === 'true';
+const enableMessageContent = runtimeConfig.enableMessageContent;
 const intents = [
   GatewayIntentBits.Guilds,
   GatewayIntentBits.GuildMembers,
@@ -68,15 +70,15 @@ const inviteSnapshots = new Map();
 const inviteTrackLocks = new Map();
 const invitePendingAttributions = new Map();
 const voiceSessions = new Map();
-const INVITE_SNAPSHOT_TTL_MS = Number.parseInt(process.env.INVITE_SNAPSHOT_TTL_MS || '900000', 10);
+const INVITE_SNAPSHOT_TTL_MS = runtimeConfig.inviteSnapshotTtlMs;
 const INTERACTION_ACK_ERROR_CODES = new Set([10062, 40060]);
-const SHUTDOWN_STEP_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_STEP_TIMEOUT_MS || '4000', 10);
-const SHUTDOWN_ANALYTICS_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANALYTICS_TIMEOUT_MS || '10000', 10);
-const SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS = Number.parseInt(process.env.SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS || `${SHUTDOWN_STEP_TIMEOUT_MS}`, 10);
-const ENFORCED_MEMBER_ID = String(process.env.BOOT_ENFORCED_MEMBER_ID || '').trim();
-const ENFORCED_ROLE_ID = String(process.env.BOOT_ENFORCED_ROLE_ID || '').trim();
-const ENFORCED_GUILD_ID = String(process.env.BOOT_ENFORCED_GUILD_ID || GUILD_ID || '').trim();
-const ENFORCED_CHECK_INTERVAL_MS = Number.parseInt(process.env.BOOT_ENFORCED_CHECK_INTERVAL_MS || '300000', 10);
+const SHUTDOWN_STEP_TIMEOUT_MS = runtimeConfig.shutdownStepTimeoutMs;
+const SHUTDOWN_ANALYTICS_TIMEOUT_MS = runtimeConfig.shutdownAnalyticsTimeoutMs;
+const SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS = runtimeConfig.shutdownAntinukeSaveTimeoutMs;
+const ENFORCED_MEMBER_ID = runtimeConfig.enforcedMemberId;
+const ENFORCED_ROLE_ID = runtimeConfig.enforcedRoleId;
+const ENFORCED_GUILD_ID = runtimeConfig.enforcedGuildId;
+const ENFORCED_CHECK_INTERVAL_MS = runtimeConfig.enforcedCheckIntervalMs;
 let enforcedRoleTimer = null;
 
 function isInteractionAckError(error) {
@@ -161,8 +163,8 @@ function getAecsFallbackChannelId(antiNuke, guildId = null) {
   return known.length ? String(known[0]) : null;
 }
 
-async function configureAecsTelemetry(client, source = 'startup') {
-  const telemetryProvision = await provisionTelemetryWebhooks(client).catch((err) => {
+async function configureAecsTelemetry(client, source = 'startup', options = {}) {
+  const telemetryProvision = await provisionTelemetryWebhooks(client, options).catch((err) => {
     logUnexpectedError(`${source}.aecs.telemetry.provision`, err);
     return null;
   });
@@ -292,17 +294,20 @@ async function onReady() {
     logUnexpectedError('service.recruit.reconcile.startup', err);
   });
 
-  const configuredAecsChannelId = String(process.env.AECS_TELEMETRY_CHANNEL_ID || '').trim();
+  const configuredAecsChannelId = runtimeConfig.aecsTelemetryChannelId
+    || (telemetryProvision && telemetryProvision.config ? String(telemetryProvision.config.telemetryChannelId || '').trim() : '')
+    || String(process.env.AECS_TELEMETRY_CHANNEL_ID || '').trim();
   if (!configuredAecsChannelId) {
     const antiNuke = runtime.getAntiNuke();
     const fallbackChannelId = getAecsFallbackChannelId(antiNuke, GUILD_ID || null);
     if (fallbackChannelId) {
-      process.env.AECS_TELEMETRY_CHANNEL_ID = fallbackChannelId;
       console.log(`[AECS] No AECS telemetry channel configured; inherited anti-nuke log channel ${fallbackChannelId}.`);
       logRuntimeEvent('info', 'startup.aecs.telemetry', 'AECS telemetry channel inherited from anti-nuke log channel', {
         details: { channelId: fallbackChannelId }
       });
-      telemetryProvision = await configureAecsTelemetry(client, 'startup.inherited');
+      telemetryProvision = await configureAecsTelemetry(client, 'startup.inherited', {
+        defaultChannelId: fallbackChannelId
+      });
     } else if (!telemetryProvision || !telemetryProvision.config || !telemetryProvision.config.telemetryWebhookUrl) {
       console.warn('[AECS] Telemetry is not configured. Set AECS_TELEMETRY_CHANNEL_ID or AECS_TELEMETRY_WEBHOOK_URL.');
       logRuntimeEvent('warn', 'startup.aecs.telemetry', 'AECS telemetry is not configured', {
@@ -313,12 +318,8 @@ async function onReady() {
     }
   }
 
-  // Sequential Initialization (ensuring all critical data paths are ready before scheduler heartbeat)
-  Promise.all([
-    antiNukeInitPromise,
-    inviteInitPromise,
-    reconcileRecruits(client, db)
-  ]).then(() => {
+  // Start the scheduler only after the one-time startup reconciliation and invite init are done.
+  inviteInitPromise.then(() => {
     scheduler.start(client, db);
     logRuntimeEvent('info', 'startup.heartbeat', 'Scheduler heartbeat started after sequential initialization.');
   }).catch(err => {
@@ -338,9 +339,16 @@ async function onReady() {
     }, DM_REPORT_SCAN_MS);
   }
 
-  const healthPort = Number.parseInt(process.env.HEALTHCHECK_PORT || '', 10);
+  const healthPort = runtimeConfig.healthcheckPort;
   if (Number.isFinite(healthPort) && healthPort > 0 && !healthServer) {
-    healthServer = startHealthServer({ db, port: healthPort });
+    healthServer = startHealthServer({
+      db,
+      port: healthPort,
+      runtimeConfig,
+      metricsProviders: [
+        () => analytics.getMetrics()
+      ]
+    });
   }
 
   await inviteInitPromise;
@@ -1001,14 +1009,14 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
 
     if (IS_DM_WORKER) {
       // DM Worker mode — lightweight: login + start worker, skip commands/events
-      const workerId = process.env.DM_WORKER_ID;
+      const workerId = runtimeConfig.dmWorkerId;
       if (!workerId) {
         console.error('FATAL: DM_WORKER_ID is required when BOT_RUNTIME_MODE=dm_worker');
         process.exit(1);
       }
       await client.login(token);
       logRuntimeEvent('info', 'startup.dmWorker', 'Starting in DM worker mode', { workerId });
-      dmWorker.startWorker(client, workerId, process.env.DM_WORKER_DISPLAY_NAME || workerId);
+      dmWorker.startWorker(client, workerId, runtimeConfig.dmWorkerDisplayName || workerId);
       return;
     }
 
@@ -1018,13 +1026,12 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     await client.login(token);
 
     // ── DM Worker Spawning ──────────────────────────────────────────────────
-    const dmWorkerTokens = (process.env.DM_WORKER_TOKENS || '')
-      .split(',')
+    const dmWorkerTokens = runtimeConfig.dmWorkerTokens
       .map(t => sanitizeEnvToken(t))
       .filter(Boolean);
 
     // 1. Optional: Start worker on the main bot account
-    if (process.env.ENABLE_INTERNAL_WORKER === 'true') {
+    if (runtimeConfig.enableInternalWorker) {
       logRuntimeEvent('info', 'startup.internalWorker.main', 'Starting DM worker on main bot account');
       dmWorker.startWorker(client, 'main', client.user.username || 'Main Bot');
     }

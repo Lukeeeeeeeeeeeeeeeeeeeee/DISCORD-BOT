@@ -1,6 +1,5 @@
 const ensuredDbs = new WeakSet();
 const MAX_SAFE_DELTA = 25;
-const logUnexpectedError = require('../../lib/logger').logUnexpectedError;
 const logRuntimeEvent = require('../../lib/logger').logRuntimeEvent;
 
 function toFiniteNumber(value, fallback = 0) {

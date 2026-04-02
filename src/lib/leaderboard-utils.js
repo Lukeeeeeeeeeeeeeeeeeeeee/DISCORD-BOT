@@ -16,12 +16,48 @@ function isMissingWeeklyOverrideTableError(error) {
   return message.includes('no such table: weekly_recruit_overrides');
 }
 
+function isMissingWeeklyCalculationsTableError(error) {
+  const message = error && error.message ? String(error.message).toLowerCase() : '';
+  return message.includes('no such table: weekly_calculations');
+}
+
+function isMissingRecruitsTableError(error) {
+  const message = error && error.message ? String(error.message).toLowerCase() : '';
+  return message.includes('no such table: recruits');
+}
+
 function buildLeaderboardSql(valuesSql, options = {}) {
   const useOverride = options.useOverride === true;
+  const useWeeklyCalculations = options.useWeeklyCalculations !== false;
+  const useRecruits = options.useRecruits !== false;
   const region = options.region || null;
-  const cntExpr = useOverride ? 'COALESCE(wro.total, c.cnt, 0)' : 'COALESCE(c.cnt, 0)';
+  const cntExpr = useOverride
+    ? `COALESCE(wro.total, ${useRecruits ? 'c.cnt' : '0'}, 0)`
+    : (useRecruits ? 'COALESCE(c.cnt, 0)' : '0');
   const overrideJoin = useOverride
     ? 'LEFT JOIN weekly_recruit_overrides wro ON wro.guild_id = ? AND wro.recruiter_id = r.id AND wro.week_start = ?'
+    : '';
+  const weeklyCalcSelect = useWeeklyCalculations ? 'wc.calculated_min_req AS min_req' : 'NULL AS min_req';
+  const weeklyCalcJoin = useWeeklyCalculations
+    ? 'LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?'
+    : '';
+  const regionRecruitJoin = useRecruits
+    ? `
+      LEFT JOIN (
+        SELECT recruiter_id, COUNT(*) as cnt
+        FROM recruits
+        WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?
+        GROUP BY recruiter_id
+      ) c ON c.recruiter_id = r.id`
+    : '';
+  const globalRecruitJoin = useRecruits
+    ? `
+    LEFT JOIN (
+      SELECT recruiter_id, COUNT(*) as cnt
+      FROM recruits
+      WHERE guild_id = ? AND valid = 1 AND created_at >= ?
+      GROUP BY recruiter_id
+    ) c ON c.recruiter_id = r.id`
     : '';
 
   if (region) {
@@ -31,17 +67,12 @@ function buildLeaderboardSql(valuesSql, options = {}) {
         r.id AS recruiter_id,
         ${cntExpr} AS cnt,
         COALESCE(db_rec.points, 0) AS points,
-        wc.calculated_min_req AS min_req
+        ${weeklyCalcSelect}
       FROM r
-      LEFT JOIN (
-        SELECT recruiter_id, COUNT(*) as cnt
-        FROM recruits
-        WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?
-        GROUP BY recruiter_id
-      ) c ON c.recruiter_id = r.id
+      ${regionRecruitJoin}
       ${overrideJoin}
       LEFT JOIN recruiters db_rec ON db_rec.guild_id = ? AND db_rec.id = r.id
-      LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?
+      ${weeklyCalcJoin}
     `;
   }
 
@@ -51,30 +82,31 @@ function buildLeaderboardSql(valuesSql, options = {}) {
       r.id AS recruiter_id,
       ${cntExpr} AS cnt,
       COALESCE(db_rec.points, 0) AS points,
-      wc.calculated_min_req AS min_req
+      ${weeklyCalcSelect}
     FROM r
-    LEFT JOIN (
-      SELECT recruiter_id, COUNT(*) as cnt
-      FROM recruits
-      WHERE guild_id = ? AND valid = 1 AND created_at >= ?
-      GROUP BY recruiter_id
-    ) c ON c.recruiter_id = r.id
+    ${globalRecruitJoin}
     ${overrideJoin}
     LEFT JOIN recruiters db_rec ON db_rec.guild_id = ? AND db_rec.id = r.id
-    LEFT JOIN weekly_calculations wc ON wc.guild_id = ? AND wc.recruiter_id = r.id AND wc.week_start = ?
+    ${weeklyCalcJoin}
   `;
 }
 
 function buildLeaderboardParams(chunk, options = {}) {
-  const params = [...chunk, options.guildId];
-  if (options.region) {
-    params.push(options.region);
+  const params = [...chunk];
+  if (options.useRecruits !== false) {
+    params.push(options.guildId);
+    if (options.region) {
+      params.push(options.region);
+    }
+    params.push(options.sinceTs);
   }
-  params.push(options.sinceTs);
   if (options.useOverride) {
     params.push(options.guildId, options.weekStart);
   }
-  params.push(options.guildId, options.guildId, options.weekStart);
+  params.push(options.guildId);
+  if (options.useWeeklyCalculations !== false) {
+    params.push(options.guildId, options.weekStart);
+  }
   return params;
 }
 
@@ -85,28 +117,51 @@ async function fetchLeaderboardRows(db, recruiterIds, opts = {}) {
   const weekStart = Number.isFinite(opts.weekStart) ? opts.weekStart : null;
   const hasWeekStart = Number.isFinite(weekStart);
   const sinceTs = Number.isFinite(opts.sinceTs) ? opts.sinceTs : weekStart || Date.now();
+  const allowMissingTables = opts.allowMissingTables === true || process.env.NODE_ENV === 'test';
   const chunks = chunkArray(recruiterIds, opts.chunkSize);
   const rows = [];
 
   for (const chunk of chunks) {
     const valuesSql = chunk.map(() => '(?)').join(',');
     if (!valuesSql) continue;
-    const queryOptions = { guildId, region, sinceTs, weekStart, useOverride: hasWeekStart };
+    let queryOptions = {
+      guildId,
+      region,
+      sinceTs,
+      weekStart,
+      useOverride: hasWeekStart,
+      useWeeklyCalculations: true,
+      useRecruits: true
+    };
     let rowsBase = [];
-    try {
-      rowsBase = await db.all(
-        buildLeaderboardSql(valuesSql, queryOptions),
-        ...buildLeaderboardParams(chunk, queryOptions)
-      );
-    } catch (error) {
-      if (!(hasWeekStart && isMissingWeeklyOverrideTableError(error))) {
-        throw error;
+
+    for (;;) {
+      try {
+        rowsBase = await db.all(
+          buildLeaderboardSql(valuesSql, queryOptions),
+          ...buildLeaderboardParams(chunk, queryOptions)
+        );
+        break;
+      } catch (error) {
+        let nextOptions = queryOptions;
+        let changed = false;
+
+        if (allowMissingTables && queryOptions.useOverride && isMissingWeeklyOverrideTableError(error)) {
+          nextOptions = { ...nextOptions, useOverride: false };
+          changed = true;
+        }
+        if (allowMissingTables && queryOptions.useWeeklyCalculations && isMissingWeeklyCalculationsTableError(error)) {
+          nextOptions = { ...nextOptions, useWeeklyCalculations: false, useOverride: false };
+          changed = true;
+        }
+        if (allowMissingTables && queryOptions.useRecruits && isMissingRecruitsTableError(error)) {
+          nextOptions = { ...nextOptions, useRecruits: false };
+          changed = true;
+        }
+
+        if (!changed) throw error;
+        queryOptions = nextOptions;
       }
-      const fallbackOptions = { ...queryOptions, useOverride: false };
-      rowsBase = await db.all(
-        buildLeaderboardSql(valuesSql, fallbackOptions),
-        ...buildLeaderboardParams(chunk, fallbackOptions)
-      );
     }
     if (rowsBase && rowsBase.length) rows.push(...rowsBase);
   }

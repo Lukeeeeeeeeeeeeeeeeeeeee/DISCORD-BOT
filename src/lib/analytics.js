@@ -230,6 +230,10 @@ function scheduleRoleChangeFlush() {
 }
 
 async function flushRoleChanges(opts = {}) {
+  if (roleChangeTimer) {
+    clearTimeout(roleChangeTimer);
+    roleChangeTimer = null;
+  }
   if (roleChangeFlushInFlight) return roleChangeFlushInFlight;
   roleChangeFlushInFlight = (async () => {
     const forceAll = opts && opts.forceAll === true;
@@ -272,6 +276,10 @@ async function flushRoleChanges(opts = {}) {
 }
 
 async function flushAll() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
   if (flushInFlight) return flushInFlight;
   flushInFlight = (async () => {
     await flushRoleChanges({ forceAll: true });
@@ -699,6 +707,21 @@ async function recordVoiceMinutes({ guildId, userId, minutes, timestamp = Date.n
   bumpPending();
 }
 
+function getMetrics() {
+  return {
+    analytics: {
+      pendingWrites,
+      flushScheduled: Boolean(flushTimer),
+      flushInFlight: Boolean(flushInFlight),
+      roleChangeQueued: roleChangeQueue.length,
+      roleChangeFlushScheduled: Boolean(roleChangeTimer),
+      roleChangeFlushInFlight: Boolean(roleChangeFlushInFlight),
+      droppedBufferedEntries,
+      droppedRoleChangeEntries
+    }
+  };
+}
+
 module.exports = {
   toDayKey,
   toDayTs,
@@ -711,5 +734,6 @@ module.exports = {
   recordVoiceMinutes,
   recordRoleChange,
   flushAll,
-  flushRoleChanges
+  flushRoleChanges,
+  getMetrics
 };

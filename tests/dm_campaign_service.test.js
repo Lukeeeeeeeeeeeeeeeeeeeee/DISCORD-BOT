@@ -5,9 +5,6 @@
 
 // Mock db_async before requiring the service
 jest.mock('../src/db_async', () => {
-    const campaigns = [];
-    const targets = [];
-    const workers = [];
     let lastId = 0;
     let mockWorkerCount = 1;
 
@@ -34,6 +31,9 @@ jest.mock('../src/db_async', () => {
         get: jest.fn(async (sql, ...params) => {
             if (sql.includes('COUNT(*) AS worker_count FROM dm_workers')) {
                 return { worker_count: mockWorkerCount };
+            }
+            if (sql.includes("status IN ('queued', 'running')") || sql.includes('message_hash')) {
+                return null;
             }
             if (sql.includes('FROM dm_campaigns')) {
                 return {
@@ -187,6 +187,23 @@ describe('dm-campaign-service', () => {
             expect(result.preview).toBe(false);
         });
 
+        test('wraps campaign writes in a transaction', async () => {
+            const guild = makeGuild([makeMember('u1', ['role-a'])]);
+
+            await campaignService.createCampaign({
+                guild,
+                requestedBy: 'admin1',
+                messageType: 'misc',
+                messageBody: 'Atomic write test',
+                targetMode: 'any_roles',
+                roleIds: ['role-a']
+            });
+
+            const sqls = db.run.mock.calls.map((call) => call[0]);
+            expect(sqls).toContain('BEGIN IMMEDIATE');
+            expect(sqls).toContain('COMMIT');
+        });
+
         test('preview does not write to DB', async () => {
             const members = [makeMember('u1', ['r1']), makeMember('u2', ['r1'])];
             const guild = makeGuild(members);
@@ -273,9 +290,9 @@ describe('dm-campaign-service', () => {
                 guild,
                 requestedBy: 'a',
                 messageType: 'misc',
-                messageBody: 'x'.repeat(2001),
+                messageBody: 'x'.repeat(3001),
                 targetMode: 'everyone'
-            })).rejects.toThrow('2000 characters');
+            })).rejects.toThrow('3000 characters');
         });
 
         test('requires roleIds when not everyone mode', async () => {
@@ -333,6 +350,9 @@ describe('dm-campaign-service', () => {
                 expect.any(Number),
                 1
             );
+            expect(db.run.mock.calls[0][0]).toContain("'retry_wait'");
+            expect(db.run.mock.calls[0][0]).toContain('claim_id = NULL');
+            expect(db.run.mock.calls[0][0]).toContain('next_attempt_at = NULL');
         });
     });
 

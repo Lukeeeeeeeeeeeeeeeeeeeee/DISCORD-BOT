@@ -1,5 +1,5 @@
 const db = require('../../db_async');
-const { ROLE_IDS, ACTIVITY_CHECK } = require('../../constants');
+const { ROLE_IDS } = require('../../constants');
 const { PermissionsBitField } = require('discord.js');
 const { getRoleLevel } = require('../../lib/recruiting-system');
 const { hasAdministrator } = require('../../lib/permissions');

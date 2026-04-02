@@ -156,8 +156,9 @@ async function ensureWebhookForRoute({
   return { routeKey, status, reason: null, url, channelId: channel.id, webhookId: webhook.id };
 }
 
-function buildRouteSpecFromEnv() {
-  const defaultChannelId = normalizeId(process.env.AECS_TELEMETRY_CHANNEL_ID)
+function buildRouteSpecFromEnv(options = {}) {
+  const defaultChannelId = normalizeId(options.defaultChannelId)
+    || normalizeId(process.env.AECS_TELEMETRY_CHANNEL_ID)
     || normalizeId(process.env.TELEMETRY_CHANNEL_ID)
     || normalizeId(process.env.LOG_CHANNEL_ID)
     || normalizeId(process.env.ANTINUKE_LOG_CHANNEL_ID)
@@ -209,7 +210,7 @@ async function provisionTelemetryWebhooks(client, options = {}) {
     return { changed: false, skipped: true, reason: 'missing_client', routes: [], config: null };
   }
 
-  const routeSpec = buildRouteSpecFromEnv();
+  const routeSpec = buildRouteSpecFromEnv(options);
   const routeSpecByKey = new Map(routeSpec.map((entry) => [entry.key, entry]));
   const cacheByChannel = new Map();
   const results = [];
@@ -247,7 +248,10 @@ async function provisionTelemetryWebhooks(client, options = {}) {
     ? highRoute.url
     : (process.env.AECS_TELEMETRY_WEBHOOK_URL_HIGH || telemetryWebhookUrl);
 
-  const primaryChannelId = (defaultRoute && defaultRoute.channelId) || normalizeId(process.env.AECS_TELEMETRY_CHANNEL_ID) || '';
+  const primaryChannelId = (defaultRoute && defaultRoute.channelId)
+    || normalizeId(options.defaultChannelId)
+    || normalizeId(process.env.AECS_TELEMETRY_CHANNEL_ID)
+    || '';
 
   const config = {
     telemetryWebhookUrl,

@@ -1,104 +1,23 @@
 const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
-const fs = require('fs');
-const path = require('path');
 const { GUILD_ID } = require('./constants');
 const { withTransaction } = require('./lib/transactions');
+const {
+  ensureDatabaseFile,
+  applyConnectionPragmas,
+  runIntegrityChecks
+} = require('./lib/db-bootstrap');
 
 const DB_PATH = process.env.DATABASE_PATH || './data/recruiter.db';
 const DEFAULT_GUILD_ID = process.env.GUILD_ID || GUILD_ID || 'GLOBAL';
 
-function readPragmaValues(rows) {
-  if (!rows || !rows.length) return [];
-  const values = [];
-  for (const row of rows) {
-    if (!row || typeof row !== 'object') continue;
-    const val = Object.values(row)[0];
-    values.push(val);
-  }
-  return values;
-}
-
-async function runIntegrityChecks(db, label = 'startup') {
-  if (!db || typeof db.all !== 'function') return { ok: true, skipped: true };
-  const enabled = (process.env.DB_INTEGRITY_CHECK || 'true').toLowerCase() === 'true';
-  if (!enabled) return { ok: true, skipped: true };
-  const mode = (process.env.DB_INTEGRITY_MODE || 'quick').toLowerCase();
-  if (mode === 'off' || mode === 'none' || mode === 'skip') {
-    return { ok: true, skipped: true };
-  }
-
-  let integrityValues = [];
-  try {
-    if (mode === 'full') {
-      integrityValues = readPragmaValues(await db.all('PRAGMA integrity_check'));
-    } else {
-      integrityValues = readPragmaValues(await db.all('PRAGMA quick_check'));
-    }
-  } catch (e) {
-    console.error('DB integrity check failed to run', { label, mode, error: e });
-    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') throw e;
-    return { ok: false, error: e };
-  }
-
-  const integrityOk = integrityValues.length === 0
-    ? true
-    : integrityValues.every(val => String(val).toLowerCase() === 'ok');
-
-  let fkRows = [];
-  try {
-    fkRows = await db.all('PRAGMA foreign_key_check');
-  } catch (e) {
-    console.error('DB foreign_key_check failed to run', { label, error: e });
-    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') throw e;
-    return { ok: false, error: e };
-  }
-
-  const fkOk = !fkRows || fkRows.length === 0;
-  const ok = integrityOk && fkOk;
-
-  if (!ok) {
-    console.error('DB integrity check failed', {
-      label,
-      mode,
-      integrity: integrityValues,
-      foreignKeyViolations: fkRows
-    });
-    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') {
-      throw new Error('Database integrity check failed');
-    }
-  } else if ((process.env.DB_INTEGRITY_LOG_OK || '').toLowerCase() === 'true') {
-    console.log('DB integrity check OK', { label, mode });
-  }
-
-  return { ok, integrityOk, fkOk, integrityValues, fkRows };
-}
-
 // Synchronously ensure DB path exists and touch file (compatibility for tests)
-const dir = path.dirname(DB_PATH);
-if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-try {
-  fs.closeSync(fs.openSync(DB_PATH, 'a'));
-} catch (e) {
-  // ignore
-}
+ensureDatabaseFile(DB_PATH);
 
 async function init() {
   const db = await open({ filename: DB_PATH, driver: sqlite3.Database });
   // Reduce "database is locked" errors under concurrent access.
-  try { await db.exec('PRAGMA foreign_keys = ON'); } catch (e) { void e; }
-  const disableWal = (process.env.SQLITE_DISABLE_WAL || '').toLowerCase() === 'true';
-  const journalModeRaw = (process.env.SQLITE_JOURNAL_MODE || 'WAL').toUpperCase();
-  const allowedModes = new Set(['WAL', 'DELETE', 'TRUNCATE', 'PERSIST', 'MEMORY', 'OFF']);
-  if (!disableWal) {
-    if (allowedModes.has(journalModeRaw)) {
-      try { await db.exec(`PRAGMA journal_mode = ${journalModeRaw}`); } catch (e) { void e; }
-    } else {
-      console.warn(`Invalid SQLITE_JOURNAL_MODE "${journalModeRaw}" - skipping journal_mode PRAGMA.`);
-    }
-  }
-  try { await db.exec('PRAGMA synchronous = NORMAL'); } catch (e) { void e; }
-  try { await db.exec('PRAGMA busy_timeout = 10000'); } catch (e) { void e; }
+  await applyConnectionPragmas(db, process.env);
 
   // Hardening (v3.0): Coordinated Fleet Infrastructure
   await db.exec(`
@@ -133,11 +52,6 @@ async function init() {
       .map(row => row.name);
     return columns.length === pkCols.length && columns.every((col, idx) => pkCols[idx] === col);
   };
-
-  const attemptCols = await getTableInfo('dm_delivery_attempts');
-  if (!attemptCols.some(c => c.name === 'message_id')) {
-    await db.exec('ALTER TABLE dm_delivery_attempts ADD COLUMN message_id TEXT');
-  }
 
   // Create schema if not exists
   await db.exec(`
@@ -528,6 +442,15 @@ async function init() {
     PRIMARY KEY (guild_id, user_id, worker_id)
   );
 
+  CREATE TABLE IF NOT EXISTS dm_cancellations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_worker_id TEXT DEFAULT 'all',
+    mode TEXT NOT NULL,
+    phrase TEXT,
+    campaign_id INTEGER,
+    created_at INTEGER NOT NULL
+  );
+
   `);
 
   try {
@@ -594,6 +517,15 @@ async function init() {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user_worker ON dm_worker_user_blocks(guild_id, user_id, worker_id)');
   } catch (e) {
     void e;
+  }
+
+  const attemptCols = await getTableInfo('dm_delivery_attempts');
+  if (!attemptCols.some(c => c.name === 'message_id')) {
+    try {
+      await db.exec('ALTER TABLE dm_delivery_attempts ADD COLUMN message_id TEXT');
+    } catch (e) {
+      if (!e || !String(e.message || '').includes('duplicate column name')) throw e;
+    }
   }
   
   // Hardening: Added missing indices for batched performance (Phase 3)
@@ -1293,7 +1225,7 @@ async function init() {
   // from running a destructive data reset on startup. Do not remove this entry.
   await applyMigration('2026-03-03-protect-points-reset', async () => { });
 
-  await runIntegrityChecks(db, 'startup');
+  await runIntegrityChecks(db, 'startup', process.env);
 
   return db;
 }
@@ -1333,7 +1265,7 @@ module.exports = {
     dbPromise = null;
     dbInitError = null;
   },
-  checkIntegrity: async (label) => runIntegrityChecks(await getDbOrThrow(), label || 'manual'),
+  checkIntegrity: async (label) => runIntegrityChecks(await getDbOrThrow(), label || 'manual', process.env),
   getInternalHandle: async () => getDbOrThrow(),
   // prepare returns object with async helpers to ease migration
   prepare: (sql) => ({

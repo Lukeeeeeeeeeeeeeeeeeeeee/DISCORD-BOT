@@ -1,4 +1,3 @@
-const db = require('../db_async');
 const { resolveGuildId } = require('./guild');
 const { fetchMembersByIds } = require('./member-fetch');
 

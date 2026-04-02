@@ -1,5 +1,5 @@
 const { EmbedBuilder, PermissionsBitField } = require('discord.js');
-const { ROLE_IDS, CHANNELS, RECRUIT_POLICY } = require('../../constants');
+const { ROLE_IDS, CHANNELS } = require('../../constants');
 const { replyError } = require('../../lib/embeds');
 const recruitsRepo = require('../../repos/recruits-repo');
 const { withTransaction } = require('../../lib/transactions');

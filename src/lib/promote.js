@@ -1,6 +1,7 @@
 const { ROLE_IDS } = require('../constants');
 const { getRegionInfo } = require('./regions');
 const { PermissionsBitField } = require('discord.js');
+const { ensureRecruiter } = require('../repos/recruiters-repo');
 
 async function retrySetNickname(member, nickname, delaysMs = [0, 1000, 2000]) {
     if (!member || !nickname) return false;
@@ -57,6 +58,7 @@ function stripRookiePoints(nickname) {
 async function promoteMember({ member, db, guild, verifierId }) {
     const guildId = guild ? guild.id : null;
     const team = inferTeamFromOnboarding(member) || inferTeamFromRegionTag(member);
+    const teamInfo = getRegionInfo(team) || { name: team || 'Unknown', emoji: '' };
     const teamRoleId = ROLE_IDS.TEAM_MEMBER && team ? ROLE_IDS.TEAM_MEMBER[team] : null;
 
     // Roles to remove
@@ -76,7 +78,17 @@ async function promoteMember({ member, db, guild, verifierId }) {
       && typeof member.roles.add === 'function';
 
     const botMember = member.guild?.members?.me;
-    const canManageRoles = botMember && botMember.permissions.has(PermissionsBitField.Flags.ManageRoles) && botMember.roles.highest.position > member.roles.highest.position;
+    const canManageRoles = !botMember
+      || !botMember.permissions
+      || typeof botMember.permissions.has !== 'function'
+      || !botMember.roles
+      || !botMember.roles.highest
+      || !member.roles
+      || !member.roles.highest
+      || (
+        botMember.permissions.has(PermissionsBitField.Flags.ManageRoles)
+        && botMember.roles.highest.position > member.roles.highest.position
+      );
 
     if (canManageRoles) {
         if (hasGranularRoleOps) {
@@ -107,7 +119,6 @@ async function promoteMember({ member, db, guild, verifierId }) {
 
     // Update Nickname
     const cleanedNickname = stripRookiePoints(member.nickname) || member.user.username;
-    const teamInfo = getRegionInfo(team);
     const teamEmoji = teamInfo.emoji || '';
     const newNick = `${cleanedNickname} ${teamEmoji}`.trim();
     if (newNick !== member.nickname) {
@@ -126,6 +137,9 @@ async function promoteMember({ member, db, guild, verifierId }) {
     } catch (e) { void e; }
 
     try {
+        if (recruiterId) {
+            await ensureRecruiter(db, guildId, recruiterId);
+        }
         await db.run(
             'INSERT OR REPLACE INTO verifications (guild_id, recruited_id, recruiter_id, verified_at, verified_by) VALUES (?, ?, ?, ?, ?)',
             guildId,
@@ -144,7 +158,7 @@ async function promoteMember({ member, db, guild, verifierId }) {
         await scheduler.recomputeLeaderboards(db, guild);
     } catch (e) { void e; }
 
-    const teamName = getRegionInfo(team).name || (team || 'Unknown');
+    const teamName = teamInfo.name || (team || 'Unknown');
     return { team, teamName, teamEmoji };
 }
 

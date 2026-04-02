@@ -7,9 +7,7 @@ const {
     pickWorker,
     pickLeastRecentlyUsedWeighted,
     classifyDmError,
-    getRetryAfterMs,
-    DEFAULT_STICKY_WINDOW_MS,
-    DEFAULT_MAX_MISC_STREAK
+    getRetryAfterMs
 } = require('../src/services/dm/dm-worker-selector');
 
 function makeWorker(id, { weight = 1, enabled = 1, last_seen_at = Date.now() } = {}) {

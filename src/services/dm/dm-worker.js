@@ -63,64 +63,57 @@ class DMWorker {
 
         // ATOMIC CLAIM: Use withTransaction to ensure that concurrent workers
         // do not interleave their database transactions on the singleton connection.
-        try {
-            return await withTransaction(db, async (tx) => {
-                // 1. Expire stale claims
+        return withTransaction(db, async (tx) => {
+            // 1. Expire stale claims
+            await tx.run(
+                `UPDATE dm_campaign_targets
+                 SET status = 'pending', assigned_worker_id = NULL, claim_id = NULL, updated_at = ?
+                 WHERE status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?`,
+                now, now
+            );
+
+            // 2. Claim new targets
+            await tx.run(
+                `UPDATE dm_campaign_targets
+                 SET status = 'claimed',
+                     assigned_worker_id = ?,
+                     claim_id = ?,
+                     claim_expires_at = ?,
+                     updated_at = ?
+                 WHERE id IN (
+                     SELECT id
+                     FROM dm_campaign_targets
+                     WHERE (status IN ('pending', 'retry_wait') OR (status = 'sending' AND claim_expires_at <= ?))
+                       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                       AND campaign_id IN (SELECT id FROM dm_campaigns WHERE status IN ('queued', 'running'))
+                     ORDER BY batch_no ASC, id ASC
+                     LIMIT ?
+                 )`,
+                this.workerId, claimId, leaseExpiry, now, now, now, batchSize
+            );
+
+            const rows = await tx.all(
+                `SELECT t.id, t.campaign_id, t.guild_id, t.user_id, t.batch_no, t.attempts, t.worker_switches,
+                        c.message_type, c.message_body, c.max_misc_streak, c.sticky_window_hours
+                 FROM dm_campaign_targets t
+                 JOIN dm_campaigns c ON c.id = t.campaign_id
+                 WHERE t.claim_id = ?`,
+                claimId
+            );
+
+            if (rows.length === 0) return [];
+
+            const uniqueCampaigns = [...new Set(rows.map(r => r.campaign_id))];
+            for (const cid of uniqueCampaigns) {
                 await tx.run(
-                    `UPDATE dm_campaign_targets
-                     SET status = 'pending', assigned_worker_id = NULL, claim_id = NULL, updated_at = ?
-                     WHERE status = 'claimed' AND claim_expires_at IS NOT NULL AND claim_expires_at <= ?`,
-                    now, now
+                    `UPDATE dm_campaigns SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
+                     WHERE id = ? AND status = 'queued'`,
+                    now, now, cid
                 );
+            }
 
-                // 2. Claim new targets
-                await tx.run(
-                    `UPDATE dm_campaign_targets
-                     SET status = 'claimed',
-                         assigned_worker_id = ?,
-                         claim_id = ?,
-                         claim_expires_at = ?,
-                         updated_at = ?
-                     WHERE id IN (
-                         SELECT id
-                         FROM dm_campaign_targets
-                         WHERE (status = 'pending' OR (status = 'sending' AND claim_expires_at <= ?))
-                           AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                           AND campaign_id IN (SELECT id FROM dm_campaigns WHERE status IN ('queued', 'running'))
-                         ORDER BY batch_no ASC, id ASC
-                         LIMIT ?
-                     )`,
-                    this.workerId, claimId, leaseExpiry, now, now, now, batchSize
-                );
-
-                const rows = await tx.all(
-                    `SELECT t.id, t.campaign_id, t.guild_id, t.user_id, t.batch_no, t.attempts, t.worker_switches,
-                            c.message_type, c.message_body, c.max_misc_streak, c.sticky_window_hours
-                     FROM dm_campaign_targets t
-                     JOIN dm_campaigns c ON c.id = t.campaign_id
-                     WHERE t.claim_id = ?`,
-                    claimId
-                );
-
-                if (rows.length === 0) return [];
-
-                const uniqueCampaigns = [...new Set(rows.map(r => r.campaign_id))];
-                for (const cid of uniqueCampaigns) {
-                    await tx.run(
-                        `UPDATE dm_campaigns SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
-                         WHERE id = ? AND status = 'queued'`,
-                        now, now, cid
-                    );
-                }
-
-                return rows;
-            }, { immediate: true });
-        } catch (err) {
-            // SQLITE_BUSY or other transient errors are handled via withTransaction retries.
-            // If it still fails, it's a real logic error.
-            throw err;
-        }
-        return rows;
+            return rows;
+        }, { immediate: true });
     }
 
     async processTarget(target) {
@@ -470,7 +463,9 @@ class DMWorker {
                 `UPDATE dm_workers SET status = 'offline', last_seen_at = ? WHERE worker_id = ?`,
                 Date.now(), this.workerId
             );
-        } catch (_e) { }
+        } catch (err) {
+            void logUnexpectedError('dm.worker.stop', err, { workerId: this.workerId });
+        }
 
         activeWorkers.delete(this.workerId);
         void logRuntimeEvent('info', 'dm.worker.stop', 'DM worker stopped', { workerId: this.workerId });
@@ -656,8 +651,14 @@ async function stopAllWorkers() {
     await Promise.all(workers.map(w => w.stop()));
 }
 
+async function processTarget(target, client, workerId, displayName) {
+    const worker = new DMWorker(client, workerId, displayName || workerId);
+    return worker.processTarget(target);
+}
+
 module.exports = {
     startWorker, stopWorker, stopAllWorkers, DMWorker,
+    processTarget,
     checkCampaignCompletion, getAffinity, getBlockedWorkerIds,
     getEligibleWorkers, updateAffinity, recordBlock, recordAttempt,
     updateTargetStatus, routeTargetToWorker

@@ -19,7 +19,7 @@ const COOLDOWN_MS = 60 * 1000;
 module.exports = {
   data: { name: 'dm' },
 
-  async execute(interaction, _client, _db) {
+  async execute(interaction, client, _db) {
     const allowed = await ensureCommandAccess(interaction, {
       allowStaff: false,
       deniedMessage: 'Administrator permission required.'
@@ -34,29 +34,29 @@ module.exports = {
       interaction.options && typeof interaction.options.getSubcommand === 'function'
     );
     if (!hasSubcommandResolver) {
-      return legacyDmCommand.execute(interaction, _client, _db);
+      return legacyDmCommand.execute(interaction, client, _db);
     }
 
     let sub = null;
     try {
       sub = interaction.options.getSubcommand(false);
     } catch (_error) {
-      return legacyDmCommand.execute(interaction, _client, _db);
+      return legacyDmCommand.execute(interaction, client, _db);
     }
 
     if (sub === 'status') return handleStatus(interaction);
     if (sub === 'cancel') return handleCancel(interaction);
-    if (sub === 'report') return handleReport(interaction, _client);
+    if (sub === 'report') return handleReport(interaction, client);
     if (sub === 'workers') return handleWorkers(interaction);
 
     // Default / 'create'
-    return handleCreate(interaction, _client);
+    return handleCreate(interaction);
   }
 };
 
 // ── /dm create ──────────────────────────────────────────────────────────────
 
-async function handleCreate(interaction, client) {
+async function handleCreate(interaction) {
   const messageType = interaction.options.getString('message_type', true);
   const message = interaction.options.getString('message', true);
   const targetMode = interaction.options.getString('target_mode') || 'any_roles';

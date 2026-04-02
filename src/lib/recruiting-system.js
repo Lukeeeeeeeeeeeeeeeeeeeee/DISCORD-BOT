@@ -3,6 +3,7 @@ const { hasAdministrator } = require('./permissions');
 const { resolveGuildId } = require('./guild');
 const { fetchMembersByIds } = require('./member-fetch');
 const { logUnexpectedError } = require('./logger');
+const { ensureRecruiter } = require('../repos/recruiters-repo');
 
 // Role hierarchy for permissions
 const ROLE_HIERARCHY = {
@@ -90,6 +91,8 @@ function hasModPlusPermissions(member) {
 async function isNewStaff(db, recruiterId, opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const guildId = resolveGuildId(opts.guild || opts.guildId);
+  
+  // Strategy: Prioritize high-fidelity role-change analytics if available.
   try {
     const recruiterRoleIds = [
       ROLE_IDS.RECRUITER,
@@ -111,15 +114,19 @@ async function isNewStaff(db, recruiterId, opts = {}) {
         const ageMs = now - Number(row.last_added);
         const graceMs = NEW_RECRUITER_GRACE_DAYS * 24 * 60 * 60 * 1000;
         if (ageMs >= 0 && ageMs <= graceMs) return true;
+        
+        // If we found a record and it exceeds the grace period, they are NOT new staff.
+        return false;
       }
     }
   } catch (error) {
     const msg = (error && error.message) ? String(error.message) : '';
     if (!msg.toLowerCase().includes('no such table: analytics_role_changes')) {
-      console.error('Error checking recruiter start date:', error);
+      void logUnexpectedError('recruiting.isNewStaff.analytics', error, { recruiterId });
     }
   }
 
+  // Fallback: Check calculation history. A veteran will have multiple weekly historical records.
   try {
     const calculationCount = await db.get(
       'SELECT COUNT(*) as c FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ?',
@@ -132,7 +139,7 @@ async function isNewStaff(db, recruiterId, opts = {}) {
     if (msg.toLowerCase().includes('no such table: weekly_calculations')) {
       return true;
     }
-    console.error('Error checking if new staff:', error);
+    void logUnexpectedError('recruiting.isNewStaff.fallback', error, { recruiterId });
     return false;
   }
 }
@@ -147,7 +154,6 @@ function calculateMinRecruitsFixed({
   member,
   recruits7d,
   activityRate: _activityRate,
-  verifyRate: _verifyRate,
   retention,
   warnings,
   previousMinReq,
@@ -188,7 +194,6 @@ function calculateMinRecruitsFixed({
   let smoothed = rawMin;
   if (previousMinReq != null) {
     // If a user has active warnings, prevent their requirement from decreasing (no maxDeltaDown).
-    // However, still allow it to increase (maxDeltaUp) if they continue to perform poorly.
     const hasWarnings = (warnings || 0) > 0;
     const maxDeltaUp = BASE_MAX_DELTA_UP;
     const maxDeltaDown = hasWarnings ? 0 : BASE_MAX_DELTA_DOWN;
@@ -203,29 +208,30 @@ function calculateMinRecruitsFixed({
 }
 
 function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, absent = false, attention = false } = {}) {
+  // Audit Fix: Use robust Unicode escapes to prevent mangling across environments.
   if (absent || minReq === 0) {
-    return { bucket: 'ABSENT', label: '??? Absent', color: 0x808080 };
+    return { bucket: 'ABSENT', label: '\uD83D\uDCD3 Absent', color: 0x808080 };
   }
 
   if (activeWarnings >= 2) {
-    return { bucket: 'DEMOTION', label: '?? Demotion Watch (2+ warnings)', color: 0x992D22 };
+    return { bucket: 'DEMOTION', label: '\u26A0\uFE0F Demotion Watch (2+ warnings)', color: 0x992D22 };
   }
 
   // Per requested rules: failing if you got none.
   if ((recruits7d || 0) === 0) {
-    return { bucket: 'FAILING', label: `? Failing (0/${minReq})`, color: 0xFF4444 };
+    return { bucket: 'FAILING', label: `\u274C Failing (0/${minReq})`, color: 0xFF4444 };
   }
 
   // Attention if you meet the auto-warning criteria (computed by caller).
   if (attention && (recruits7d || 0) < (minReq || 0)) {
-    return { bucket: 'ATTENTION', label: `?? Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
+    return { bucket: 'ATTENTION', label: `\uD83D\uDD35 Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
   }
 
   if ((recruits7d || 0) < (minReq || 0)) {
-    return { bucket: 'FAILING', label: `?? Below Minimum (${recruits7d}/${minReq})`, color: 0xFFAA00 };
+    return { bucket: 'FAILING', label: `\u26A0\uFE0F Below Minimum (${recruits7d}/${minReq})`, color: 0xFFAA00 };
   }
 
-  return { bucket: 'PASSING', label: `? Passing (${recruits7d}/${minReq})`, color: 0x00CC66 };
+  return { bucket: 'PASSING', label: `\u2705 Passing (${recruits7d}/${minReq})`, color: 0x00CC66 };
 }
 
 /**
@@ -287,11 +293,13 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
       verifyRate = 0;
     }
 
-    // Calculate retention for 7-day window
+    // Calculate retention for cohort (with Sampling Strategy to prevent rate-limits)
     let retention = 0;
     if (guild) {
+      // P-03: Sampling Strategy — Cap retention checks at 50 most recent recruits.
+      // This is statistically sufficient and protects the Discord API during raids/mass-recruit events.
       const retentionCohort = await db.all(
-        'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC',
+        'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC LIMIT 50',
         guildId,
         recruiterId,
         retentionStart,
@@ -331,7 +339,15 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
 async function storeWeeklyCalculation(db, data) {
   try {
     const guildId = resolveGuildId(data.guild || data.guildId);
-    const weekStart = data.weekStart ?? null;
+    await ensureRecruiter(db, guildId, data.recruiterId);
+    let weekStart = data.weekStart ?? null;
+    
+    // Audit Fix: Snapshot Isolation Strategy.
+    // If this is a promotion snapshot, offset the key by -1ms to prevent current-week overwrites.
+    if (data.isSnapshot && Number.isFinite(weekStart)) {
+      weekStart = weekStart - 1;
+    }
+
     const absent = data.absent ? 1 : 0;
     const nowTs = Date.now();
     const values = [

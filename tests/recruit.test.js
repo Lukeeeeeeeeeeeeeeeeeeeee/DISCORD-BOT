@@ -1,6 +1,7 @@
 jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
+const { PermissionsBitField } = require('discord.js');
 
 // Mock scheduler to avoid side effects
 jest.mock('../src/scheduler', () => ({
@@ -8,7 +9,12 @@ jest.mock('../src/scheduler', () => ({
   formatLeaderboardMessage: jest.fn()
 }));
 
+jest.mock('../src/services/dm/dm-campaign-service', () => ({
+  createCampaign: jest.fn().mockResolvedValue({ campaignId: 1 })
+}));
+
 const { recomputeLeaderboards } = require('../src/scheduler');
+const { createCampaign } = require('../src/services/dm/dm-campaign-service');
 
 function makeTempDbPath() {
   const tmp = require('os').tmpdir();
@@ -21,14 +27,44 @@ function makeInteraction({
   team = 'EU',
   ign = 'player123',
   creditTo = null,
-  creditToTeam = 'EU'
+  creditToTeam = 'EU',
+  recruiterIsAdmin = false,
+  creditedRecruiterIsAdmin = false,
+  memberRoleIds = []
 } = {}) {
   const ROLE_IDS = require('../src/constants').ROLE_IDS;
   const { RECRUITER_ROLE_IDS } = require('../src/constants');
 
-  // simulate role counts
+  const getTeamRoleIds = (teamCode) => {
+    const roleIds = [];
+    if (teamCode === 'EU' && RECRUITER_ROLE_IDS.EU) roleIds.push(RECRUITER_ROLE_IDS.EU);
+    if (teamCode === 'NA' && RECRUITER_ROLE_IDS.NA) roleIds.push(RECRUITER_ROLE_IDS.NA);
+    if (teamCode === 'AS' && RECRUITER_ROLE_IDS.AS) roleIds.push(RECRUITER_ROLE_IDS.AS);
+    return roleIds;
+  };
+  const makePermissions = (isAdmin) => ({
+    has: jest.fn((flag) => {
+      if (!isAdmin) return false;
+      return flag === PermissionsBitField.Flags.Administrator || flag === 'Administrator';
+    })
+  });
+
+  const makeRole = (id, name, position = 10) => ({
+    id,
+    name,
+    position,
+    members: new Map()
+  });
+
   const rolesCache = new Map();
-  ROLE_IDS.ONBOARDING.forEach(r => rolesCache.set(r, { members: new Map() }));
+  rolesCache.set(ROLE_IDS.ROOKIE, makeRole(ROLE_IDS.ROOKIE, 'Rookie', 10));
+  if (ROLE_IDS.UNVERIFIED) rolesCache.set(ROLE_IDS.UNVERIFIED, makeRole(ROLE_IDS.UNVERIFIED, 'Unverified', 9));
+  if (ROLE_IDS.ONBOARDING_FIRE) rolesCache.set(ROLE_IDS.ONBOARDING_FIRE, makeRole(ROLE_IDS.ONBOARDING_FIRE, 'Fire', 11));
+  if (ROLE_IDS.ONBOARDING_WATER) rolesCache.set(ROLE_IDS.ONBOARDING_WATER, makeRole(ROLE_IDS.ONBOARDING_WATER, 'Water', 11));
+  if (ROLE_IDS.ONBOARDING_AIR) rolesCache.set(ROLE_IDS.ONBOARDING_AIR, makeRole(ROLE_IDS.ONBOARDING_AIR, 'Air', 11));
+  ROLE_IDS.ONBOARDING.forEach((r, index) => {
+    if (!rolesCache.has(r)) rolesCache.set(r, makeRole(r, `Onboarding-${index + 1}`, 11));
+  });
 
   const channelsCache = new Map();
   channelsCache.set(require('../src/constants').CHANNELS.INVITES_OVERALL, { send: jest.fn().mockResolvedValue(true) });
@@ -59,13 +95,34 @@ function makeInteraction({
     channels: { cache: { get: (id) => channelsCache.get(id) } }
   };
 
+  const botMember = {
+    id: 'BOT_1',
+    permissions: {
+      has: jest.fn((flag) => {
+        return flag === PermissionsBitField.Flags.ManageRoles
+          || flag === PermissionsBitField.Flags.ManageNicknames
+          || flag === 'ManageRoles'
+          || flag === 'ManageNicknames';
+      })
+    },
+    roles: {
+      highest: { position: 100 }
+    }
+  };
+  guild.members.me = botMember;
+
   const guildMember = {
     id: member.id,
     user: { id: member.id, createdAt: member.createdAt, bot: false, tag: member.tag },
     joinedAt: new Date(Date.now() - (30 * 60 * 1000)), // joined 30 minutes ago
+    manageable: true,
     roles: {
       cache: {
-        has: (_id) => false
+        has: (id) => memberRoleIds.includes(id),
+        values: () => memberRoleIds.map((id) => rolesCache.get(id) || { id, name: id }),
+        filter: (predicate) => memberRoleIds
+          .map((id) => rolesCache.get(id) || { id, name: id })
+          .filter(predicate)
       },
       add: jest.fn().mockResolvedValue(true),
       remove: jest.fn().mockResolvedValue(true)
@@ -76,6 +133,7 @@ function makeInteraction({
 
   const recruiterMember = {
     id: recruiterId,
+    permissions: makePermissions(recruiterIsAdmin),
     roles: {
       cache: {
         has: (id) => {
@@ -83,7 +141,8 @@ function makeInteraction({
           if (team === 'NA' && id === RECRUITER_ROLE_IDS.NA) return true;
           if (team === 'AS' && id === RECRUITER_ROLE_IDS.AS) return true;
           return false;
-        }
+        },
+        keys: () => getTeamRoleIds(team)
       },
       add: jest.fn(),
       remove: jest.fn()
@@ -93,6 +152,7 @@ function makeInteraction({
   const creditedRecruiterMember = creditTo
     ? {
       id: creditTo.id,
+      permissions: makePermissions(creditedRecruiterIsAdmin),
       roles: {
         cache: {
           has: (id) => {
@@ -100,7 +160,8 @@ function makeInteraction({
             if (creditToTeam === 'NA' && id === RECRUITER_ROLE_IDS.NA) return true;
             if (creditToTeam === 'AS' && id === RECRUITER_ROLE_IDS.AS) return true;
             return false;
-          }
+          },
+          keys: () => getTeamRoleIds(creditToTeam)
         },
         add: jest.fn(),
         remove: jest.fn()
@@ -116,7 +177,8 @@ function makeInteraction({
       }
       return null;
     },
-    getString: (k) => (k === 'ign' ? ign : undefined)
+    getString: (k) => (k === 'ign' ? ign : undefined),
+    getBoolean: (_k) => false
   };
 
   guild.members.fetch = jest.fn(async (arg) => {
@@ -147,7 +209,8 @@ function makeInteraction({
     options,
     guild,
     reply,
-    locale: 'en'
+    locale: 'en',
+    client: { user: { id: botMember.id } }
   };
 
   return { interaction, guildMember, recruiterMember, channelsCache, rolesCache, reply };
@@ -175,6 +238,7 @@ describe('/recruit command', () => {
   });
 
   afterEach(async () => {
+    createCampaign.mockClear();
     try { await require('../src/db_async').close(); } catch (e) { void e; }
     try { delete require.cache[require.resolve('../src/db_async.js')]; } catch (e) { void e; }
     try { fs.unlinkSync(dbPath); } catch (e) { void e; }
@@ -220,12 +284,13 @@ describe('/recruit command', () => {
     expect(weekly).toBeDefined();
     expect(Number(weekly.recruits7d)).toBe(1);
 
-    // Welcome DM should be sent once recruit completes, with resolved team name
-    expect(guildMember.send).toHaveBeenCalled();
-    const dmArg = guildMember.send.mock.calls[0][0];
-    const dmContent = typeof dmArg === 'string' ? dmArg : dmArg.content;
-    expect(dmContent).toContain('**Fire**');
-    expect(dmContent).not.toContain('[team]');
+    expect(createCampaign).toHaveBeenCalledWith(expect.objectContaining({
+      guild: interaction.guild,
+      requestedBy: interaction.user.id,
+      messageType: 'system_welcome',
+      targetMode: 'direct',
+      directUserIds: ['M1']
+    }));
 
     // channels should NOT have a per-recruit send (leaderboards are updated via upsert)
     const chOverall = channelsCache.get(require('../src/constants').CHANNELS.INVITES_OVERALL);
@@ -241,7 +306,8 @@ describe('/recruit command', () => {
       recruiterId: 'STAFF1',
       member: { id: 'M_CREDIT', tag: 'Credit#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
       creditTo: credited,
-      creditToTeam: 'NA'
+      creditToTeam: 'NA',
+      recruiterIsAdmin: true
     });
     const db = require('../src/db_async');
     const cmd = require('../src/commands/recruiting/recruit.js');
@@ -265,7 +331,8 @@ describe('/recruit command', () => {
     const { interaction } = makeInteraction({
       recruiterId: 'STAFF2',
       member: { id: 'M_BOT_CREDIT', tag: 'BotCredit#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
-      creditTo: { id: 'BOT_1', tag: 'Bot#1234', bot: true }
+      creditTo: { id: 'BOT_1', tag: 'Bot#1234', bot: true },
+      recruiterIsAdmin: true
     });
     const cmd = require('../src/commands/recruiting/recruit.js');
 
@@ -274,6 +341,23 @@ describe('/recruit command', () => {
     const replyArg = interaction.reply.mock.calls[0][0];
     const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
     expect(desc).toBe('Cannot credit recruits to bot accounts.');
+  });
+
+  test('rejects credit_to when target lacks recruiter/staff permissions', async () => {
+    const { interaction } = makeInteraction({
+      recruiterId: 'STAFF3',
+      member: { id: 'M_BAD_CREDIT', tag: 'CreditBad#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
+      creditTo: { id: 'R3', tag: 'RecruiterThree#0003' },
+      creditToTeam: 'NONE',
+      recruiterIsAdmin: true
+    });
+    const cmd = require('../src/commands/recruiting/recruit.js');
+
+    await cmd.execute(interaction);
+
+    const replyArg = interaction.reply.mock.calls[0][0];
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toBe('Credited recruiter must have recruiter/staff permissions.');
   });
 
   test('rejects if joined more than 2 hours ago', async () => {
@@ -286,19 +370,19 @@ describe('/recruit command', () => {
     expect(desc).toBe('Cannot give roles to someone who joined more than 2 hours ago.');
   });
 
-  test('treats message-based DM errors as expected blocked DM', async () => {
+  test('continues when welcome DM campaign queueing fails', async () => {
     const { interaction, guildMember } = makeInteraction({
       member: { id: 'M_DM_MSG', tag: 'DmMsg#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) }
     });
-    guildMember.send.mockRejectedValue(new Error('Cannot send messages to this user'));
+    createCampaign.mockRejectedValueOnce(new Error('Cannot enqueue welcome campaign'));
     const cmd = require('../src/commands/recruiting/recruit.js');
 
     await cmd.execute(interaction);
 
     expect(interaction.reply).toHaveBeenCalled();
     const replyArg = interaction.reply.mock.calls[0][0];
-    expect(replyArg.content).toContain('could not DM them (their DMs are closed)');
-    expect(replyArg.content).not.toContain('unexpected error');
+    expect(replyArg.content).toContain('Successfully recruited');
+    expect(guildMember.roles.add).toHaveBeenCalled();
   });
 
   test('rejects if account too young', async () => {
@@ -335,46 +419,38 @@ describe('/recruit command', () => {
     expect(desc).toBe('That member has already been recruited previously.');
   });
 
-  test('assigns least occupied onboarding team when recruiter has no team role', async () => {
-    const ROLE_IDS = require('../src/constants').ROLE_IDS;
-    const { interaction, guildMember, rolesCache } = makeInteraction({
+  test('rejects recruiters without a team role when they are not admins', async () => {
+    const { interaction } = makeInteraction({
       recruiterId: 'R_NO_TEAM',
       member: { id: 'M_NO_TEAM', tag: 'NoTeam#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
       team: 'NONE'
     });
 
-    rolesCache.set(ROLE_IDS.ONBOARDING_FIRE, { members: new Map([['u1', {}], ['u2', {}], ['u3', {}]]) });
-    rolesCache.set(ROLE_IDS.ONBOARDING_WATER, { members: new Map([['u4', {}]]) });
-    rolesCache.set(ROLE_IDS.ONBOARDING_AIR, { members: new Map([['u5', {}], ['u6', {}]]) });
-
     const cmd = require('../src/commands/recruiting/recruit.js');
     await cmd.execute(interaction);
 
-    expect(interaction.reply).toHaveBeenCalled();
-    const addedRoles = guildMember.roles.add.mock.calls.map(call => call[0]);
-    expect(addedRoles).toEqual(expect.arrayContaining([ROLE_IDS.ROOKIE, ROLE_IDS.ONBOARDING_WATER]));
+    const replyArg = interaction.reply.mock.calls[0][0];
+    const desc = replyArg.embeds ? replyArg.embeds[0].data.description : replyArg.content;
+    expect(desc).toMatch(/You must have a team recruiter role/);
   });
 
-  test('assigns random onboarding team when all occupancies are equal', async () => {
+  test('infers onboarding team from recruit region for admins without team roles', async () => {
     const ROLE_IDS = require('../src/constants').ROLE_IDS;
-    const { interaction, guildMember, rolesCache } = makeInteraction({
-      recruiterId: 'R_RANDOM',
-      member: { id: 'M_RANDOM', tag: 'Random#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
-      team: 'NONE'
+    const { REGION_ROLE_IDS } = require('../src/constants');
+    const { interaction, guildMember } = makeInteraction({
+      recruiterId: 'ADMIN_NO_TEAM',
+      member: { id: 'M_REGION', tag: 'Region#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)) },
+      team: 'NONE',
+      recruiterIsAdmin: true,
+      memberRoleIds: [REGION_ROLE_IDS.NA]
     });
 
-    rolesCache.set(ROLE_IDS.ONBOARDING_FIRE, { members: new Map([['u1', {}], ['u2', {}]]) });
-    rolesCache.set(ROLE_IDS.ONBOARDING_WATER, { members: new Map([['u3', {}], ['u4', {}]]) });
-    rolesCache.set(ROLE_IDS.ONBOARDING_AIR, { members: new Map([['u5', {}], ['u6', {}]]) });
-
-    const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0.99);
     const cmd = require('../src/commands/recruiting/recruit.js');
     await cmd.execute(interaction);
-    randomSpy.mockRestore();
 
     expect(interaction.reply).toHaveBeenCalled();
-    const addedRoles = guildMember.roles.add.mock.calls.map(call => call[0]);
-    expect(addedRoles).toEqual(expect.arrayContaining([ROLE_IDS.ROOKIE, ROLE_IDS.ONBOARDING_AIR]));
+    const addedRoles = guildMember.roles.add.mock.calls.flatMap(call => (Array.isArray(call[0]) ? call[0] : [call[0]]));
+    expect(addedRoles).toEqual(expect.arrayContaining([ROLE_IDS.ROOKIE, ROLE_IDS.ONBOARDING_WATER]));
   });
 
   test('recruiter info shows extended fields', async () => {

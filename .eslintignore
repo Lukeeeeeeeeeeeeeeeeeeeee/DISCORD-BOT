@@ -1,2 +1,13 @@
 node_modules/
 dist/
+DISCORD-BOT/
+error.log
+failures.txt
+final_test_results.txt
+jest_failures.txt
+jest_detect_open_handles.txt
+test_output.txt
+verify_output.txt
+phase1_full_test_output.txt
+phase1_targeted_test_output.txt
+phase1_verify_output.txt

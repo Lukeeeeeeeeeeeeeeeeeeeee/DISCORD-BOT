@@ -133,7 +133,7 @@ async function getInactivePoints({ db, member, guild }) {
 }
 
 // ── Promote back to member ──────────────────────────────────────────
-async function promoteInactiveToMember({ member, db, guild, verifierId }) {
+async function promoteInactiveToMember({ member }) {
     const resolved = resolveInactiveTeam(member);
     if (!resolved) return { promoted: false, error: 'No inactive role found' };
 

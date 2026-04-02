@@ -1,19 +1,14 @@
 const db = require('../../db_async');
-const { EmbedBuilder, PermissionsBitField } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const {
-  PURCHASE_ITEMS,
-  APPROVAL_ONLY_ITEMS,
-  PURCHASE_ITEM_ALIASES,
   ROLE_IDS,
   RECRUITER_ROLE_IDS,
   TESTING_USER_ID
 } = require('../../constants');
-const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions, hasAdministrator, getMemberRoleIds } = require('../../lib/permissions');
+const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions } = require('../../lib/permissions');
 const { formatPointsValue } = require('../../lib/economy');
 const { formatDiscordTimestamp, formatUtcDate } = require('../../lib/time');
 const { clampText, sanitizeForEmbed } = require('../../lib/text');
-const { replyError } = require('../../lib/embeds');
-const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { resolveGuildId } = require('../../lib/guild');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { handleBuy } = require('../../services/recruiting/recruiter-buy-service');
@@ -35,13 +30,6 @@ const {
 } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
 
-function reportRecruiterCommandError(scope, error, meta = {}) {
-  void logUnexpectedError(scope, error, {
-    command: 'recruiter',
-    ...meta
-  });
-}
-
 function toUnixSeconds(ms) {
   return Math.floor(ms / 1000);
 }
@@ -57,30 +45,6 @@ function safeDaysLeftFromEndDate(endDateStr) {
 function formatPct(x) {
   if (!Number.isFinite(x)) return '0%';
   return `${Math.round(Math.max(0, Math.min(1, x)) * 100)}%`;
-}
-
-const PURCHASE_ITEM_LABELS = Object.freeze({
-  'custom-nickname': 'Custom nickname',
-  'vip': 'VIP',
-  'mvp': 'MVP',
-  'custom-vc': 'Custom VC',
-  'custom-role': 'Custom role',
-  'custom-suggestion': 'Custom suggestion'
-});
-
-function normalizePurchaseItemKey(item) {
-  if (!item) return '';
-  const value = String(item).trim();
-  if (!value) return '';
-  if (PURCHASE_ITEM_ALIASES && PURCHASE_ITEM_ALIASES[value]) {
-    return PURCHASE_ITEM_ALIASES[value];
-  }
-  return value;
-}
-
-function getPurchaseItemLabel(itemKey) {
-  if (!itemKey) return 'Unknown item';
-  return PURCHASE_ITEM_LABELS[itemKey] || itemKey;
 }
 
 function hasRecruiterRole(member) {
@@ -124,27 +88,6 @@ async function getAverageWeeklyRecruits(db, recruiterId, guildId, weeks = 4) {
   }
 }
 
-async function postPurchaseLog({ guild, userId, item, cost }) {
-  if (!guild) return;
-  try {
-    const { CHANNELS } = require('../../constants');
-    const channelId = CHANNELS && CHANNELS.ECONOMY_NOTIFICATIONS;
-    if (!channelId) return;
-    const channel = guild.channels && guild.channels.cache
-      ? guild.channels.cache.get(channelId)
-      : null;
-    if (channel && channel.send) {
-      const formattedCost = formatPointsValue(cost);
-      await channel.send(`<@${userId}> bought **${item}** for **${formattedCost}** pts!`).catch(err => {
-        reportRecruiterCommandError('command.recruiter.postPurchaseLog', err, { userId, item });
-      });
-    }
-    } catch (e) {
-        // best-effort logging
-        void e;
-    }
-}
-
 async function computeRetentionCounts({ db, guild, recruiterId, cohortStartMs, cohortEndMs, cap = 30 } = {}) {
     if (!db || !guild || !recruiterId) return { cohortSize: 0, retained: 0, sampled: false };
 
@@ -163,39 +106,6 @@ async function computeRetentionCounts({ db, guild, recruiterId, cohortStartMs, c
     const ids = slice.map(r => r.recruited_id);
     const members = await fetchMembersByIds(guild, ids).catch(() => new Map());
     return { cohortSize, retained: members.size, sampled };
-}
-
-function parseExpiryDateToUtcMs(rawDate) {
-    if (!rawDate) return null;
-    const value = String(rawDate).trim();
-    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!match) return null;
-    const year = Number(match[1]);
-    const month = Number(match[2]);
-    const day = Number(match[3]);
-    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-    const utcMs = Date.UTC(year, month - 1, day, 23, 59, 59, 999);
-    return Number.isFinite(utcMs) ? utcMs : null;
-}
-
-function buildEventMultiplierType({ label, value, durationDays, expiresAt }) {
-    const normalizedLabel = label == null
-        ? ''
-        : String(label)
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9_-]+/g, '_')
-            .replace(/_+/g, '_')
-            .replace(/^_+|_+$/g, '');
-    if (normalizedLabel) return `event_${normalizedLabel}`.slice(0, 80);
-
-    const valuePart = String(formatPointsValue(value)).replace('.', '_');
-    if (Number.isFinite(durationDays) && durationDays > 0) {
-        return `event_x${valuePart}_${Math.floor(durationDays)}d`;
-    }
-    const isoDate = new Date(expiresAt).toISOString().slice(0, 10);
-    return `event_x${valuePart}_${isoDate}`;
 }
 
 module.exports = {

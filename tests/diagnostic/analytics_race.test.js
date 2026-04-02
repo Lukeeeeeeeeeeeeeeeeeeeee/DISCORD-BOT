@@ -15,10 +15,8 @@ async function testAnalyticsFailure() {
     console.log('[+] Simulating exclusive lock on SQLite file');
     await db.exec('BEGIN EXCLUSIVE');
 
-    let lockReleased = false;
     setTimeout(async () => {
         console.log('[+] Releasing exclusive lock');
-        lockReleased = true;
         await db.exec('COMMIT');
     }, 2000);
 

@@ -3,23 +3,20 @@ const { EmbedBuilder } = require('discord.js');
 const { getWeekStartUtcTs } = require('./week');
 const { formatUtcDateOnly } = require('./time');
 const {
-  calculate7DayStats,
   getPreviousMinReq,
   storeWeeklyCalculation,
   calculateMinRecruitsFixed,
   getBaseRequirement,
-  isNewStaff,
   getRoleLevel
 } = require('../lib/recruiting-system');
 const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
-const { acquireJobLock } = require('../lib/job-locks');
 const { resolveGuildId } = require('./guild');
 const { withTransaction } = require('../lib/transactions');
-const { loadRecruiterMeta, loadPreviousMinReqs } = require('../lib/leaderboard-utils');
+const { loadRecruiterMeta } = require('../lib/leaderboard-utils');
 const { logUnexpectedError, logRuntimeEvent } = require('../lib/logger');
 
 const WEEK_ROLLOVER_OFFSET_MS = 5 * 60 * 1000;
-const DM_CONCURRENCY = 5;
+const DM_CONCURRENCY = 5; // [HARDENED] Concurrency limit for weekly report delivery
 const CALC_CONCURRENCY = Number.parseInt(process.env.RECALC_CONCURRENCY || '4', 10);
 
 const { runWithConcurrency } = require('../lib/concurrency');

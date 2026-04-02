@@ -39,6 +39,31 @@ function pickWorkerWeightedRandom(candidates) {
 }
 
 /**
+ * Deterministic selector used by compatibility tests and routing fallbacks.
+ * Prefer the highest weight, then the oldest last_seen_at to spread load.
+ *
+ * @param {Array} candidates
+ * @returns {string|null}
+ */
+function pickLeastRecentlyUsedWeighted(candidates) {
+    if (!candidates || candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0].worker_id;
+
+    const ranked = [...candidates].sort((a, b) => {
+        const weightDelta = (Number(b.weight) || 1) - (Number(a.weight) || 1);
+        if (weightDelta !== 0) return weightDelta;
+
+        const aLastSeen = Number.isFinite(Number(a.last_seen_at)) ? Number(a.last_seen_at) : Number.POSITIVE_INFINITY;
+        const bLastSeen = Number.isFinite(Number(b.last_seen_at)) ? Number(b.last_seen_at) : Number.POSITIVE_INFINITY;
+        if (aLastSeen !== bLastSeen) return aLastSeen - bLastSeen;
+
+        return String(a.worker_id || '').localeCompare(String(b.worker_id || ''));
+    });
+
+    return ranked[0] ? ranked[0].worker_id : null;
+}
+
+/**
  * Fetch enabled and online workers from the database with a local cache.
  * 
  * @param {number} [staleThresholdMs=120000] 
@@ -102,7 +127,7 @@ function pickWorker({
         if (aff.war_worker_id && candidates.some(w => w.worker_id === aff.war_worker_id)) {
             return aff.war_worker_id;
         }
-        // War worker unavailable — fallback to Weighted Random
+        // War worker unavailable — fallback to weighted random.
         return pickWorkerWeightedRandom(candidates);
     }
 
@@ -183,6 +208,7 @@ function getRetryAfterMs(error, fallbackMs = 2000) {
 module.exports = {
     getEligibleWorkers,
     pickWorker,
+    pickLeastRecentlyUsedWeighted,
     pickWorkerWeightedRandom,
     classifyDmError,
     getRetryAfterMs,

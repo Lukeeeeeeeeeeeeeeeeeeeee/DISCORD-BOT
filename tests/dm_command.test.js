@@ -11,8 +11,16 @@ jest.mock('../src/lib/embeds', () => ({
   replyError: jest.fn().mockResolvedValue(null)
 }));
 
+jest.mock('../src/services/dm/dm-campaign-service', () => ({
+  createCampaign: jest.fn(),
+  getCampaignStatus: jest.fn(),
+  cancelCampaign: jest.fn(),
+  listWorkers: jest.fn()
+}));
+
 const { ensureCommandAccess } = require('../src/lib/command-auth');
 const { replyError } = require('../src/lib/embeds');
+const { createCampaign } = require('../src/services/dm/dm-campaign-service');
 const dmCommand = require('../src/commands/dm');
 
 function sleep(ms) {
@@ -104,6 +112,12 @@ describe('/dm command', () => {
     process.env.DM_HISTORY_FILE = historyFile;
     process.env.DM_PROGRESS_UPDATES = 'false';
     ensureCommandAccess.mockResolvedValue(true);
+    createCampaign.mockImplementation(async ({ directUserIds = [], preview = false }) => ({
+      campaignId: 321,
+      totalTargets: directUserIds.length,
+      totalBatches: directUserIds.length ? 1 : 0,
+      preview
+    }));
   });
 
   afterEach(() => {
@@ -298,6 +312,43 @@ describe('/dm command', () => {
       })
     );
     expect(replyError).not.toHaveBeenCalled();
+  });
+
+  test('history is scoped by role so the same message can be reused for a different audience', async () => {
+    const sharedMember = makeMember('u1', ['role-fire', 'role-water']);
+    const fetchedMembers = new Collection([['u1', sharedMember]]);
+    const fireRole = {
+      id: 'role-fire',
+      name: '[FIRE]',
+      members: new Collection()
+    };
+    const waterRole = {
+      id: 'role-water',
+      name: '[WATER]',
+      members: new Collection()
+    };
+
+    const first = makeInteraction({
+      role: fireRole,
+      fetchedMembers,
+      preview: false,
+      userId: 'admin-history-scope'
+    });
+    await dmCommand.execute(first, BOT_CLIENT, null);
+
+    const second = makeInteraction({
+      role: waterRole,
+      fetchedMembers,
+      preview: true,
+      userId: 'admin-history-scope'
+    });
+    await dmCommand.execute(second, BOT_CLIENT, null);
+
+    expect(second.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining('1 are left to send')
+      })
+    );
   });
 
   test('returns guild-only error outside a server context', async () => {

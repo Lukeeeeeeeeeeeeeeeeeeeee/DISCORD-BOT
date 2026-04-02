@@ -1,7 +1,7 @@
 /**
- * DM Campaign Service — Control Plane
+ * DM Campaign Service - Control Plane
  *
- * Creates campaigns + targets in the DB queue.  The main bot calls this;
+ * Creates campaigns and target rows in the DB queue. The main bot calls this;
  * worker bots poll the queue and actually send DMs.
  */
 'use strict';
@@ -10,19 +10,17 @@ const crypto = require('crypto');
 const db = require('../../db_async');
 const { envInt } = require('../../lib/env-utils');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
+const { withTransaction } = require('../../lib/transactions');
 
-// ── Tunables ────────────────────────────────────────────────────────────────
-const DEFAULT_INSERT_BATCH_SIZE = 25; // rows per INSERT batch
+const DEFAULT_INSERT_BATCH_SIZE = 25;
 const HARD_MAX_TARGETS = 50000;
 
 const VALID_MESSAGE_TYPES = new Set(['misc', 'war_early', 'war_late', 'system_welcome', 'system_quota']);
 const VALID_TARGET_MODES = new Set(['everyone', 'any_roles', 'all_roles', 'direct']);
-const VALID_CAMPAIGN_STATUSES = new Set(['queued', 'running', 'completed', 'completed_with_errors', 'cancelled', 'failed']);
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-function nowMs() { return Date.now(); }
-
-function nowMs() { return Date.now(); }
+function nowMs() {
+    return Date.now();
+}
 
 function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -30,7 +28,9 @@ function clamp(value, min, max) {
 
 function chunkArray(arr, size) {
     const chunks = [];
-    for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+    for (let i = 0; i < arr.length; i += size) {
+        chunks.push(arr.slice(i, i + size));
+    }
     return chunks;
 }
 
@@ -75,9 +75,41 @@ async function computeInsertBatchSize(totalTargets) {
     return clamp(dynamicSize, cfg.minBatchSize, cfg.maxBatchSize);
 }
 
+async function buildCampaignTargetPlan(dbHandle, { guildId, messageHash, uniqueIds, isSystemMessage, threshold }) {
+    let finalIds = uniqueIds;
+    let excludedCount = 0;
+
+    if (!isSystemMessage) {
+        const activeDuplicate = await dbHandle.get(
+            `SELECT id FROM dm_campaigns
+             WHERE guild_id = ? AND message_hash = ? AND status IN ('queued', 'running')`,
+            guildId,
+            messageHash
+        );
+        if (activeDuplicate) {
+            throw new Error(`An active campaign (ID: ${activeDuplicate.id}) already exists with this exact message in this server. Wait for it to finish or cancel it.`);
+        }
+
+        const alreadySentRows = await dbHandle.all(
+            `SELECT DISTINCT user_id FROM dm_campaign_targets
+             WHERE status IN ('sent', 'pending', 'claimed', 'sending', 'retry_wait')
+             AND created_at > ?
+             AND campaign_id IN (SELECT id FROM dm_campaigns WHERE message_hash = ? AND guild_id = ?)`,
+            threshold,
+            messageHash,
+            guildId
+        );
+        const alreadySentSet = new Set(alreadySentRows.map((row) => String(row.user_id)));
+        finalIds = uniqueIds.filter((id) => !alreadySentSet.has(id));
+        excludedCount = uniqueIds.length - finalIds.length;
+    }
+
+    return { finalIds, excludedCount };
+}
+
 /**
  * Resolve target member IDs from guild based on target mode and role IDs.
- * Returns an array of unique user-ID strings (no bots).
+ * Returns an array of unique user-ID strings with bots filtered out.
  */
 async function resolveTargetMemberIds(guild, { targetMode, roleIds, directUserIds = [] }) {
     if (targetMode === 'direct') {
@@ -88,49 +120,39 @@ async function resolveTargetMemberIds(guild, { targetMode, roleIds, directUserId
     try {
         membersCol = await guild.members.fetch();
     } catch (_err) {
-        void logRuntimeEvent('warn', 'dm.resolveMembers.cacheFallback', 'Failed to fetch guild members; falling back to local cache (may be stale).', {
-            guildId: guild.id
-        });
+        void logRuntimeEvent(
+            'warn',
+            'dm.resolveMembers.cacheFallback',
+            'Failed to fetch guild members; falling back to local cache (may be stale).',
+            { guildId: guild.id }
+        );
         membersCol = guild.members.cache;
     }
 
     if (targetMode === 'everyone') {
-        return Array.from(membersCol.filter(m => !m.user.bot).values()).map(m => m.id);
+        return Array.from(membersCol.filter((member) => !member.user.bot).values()).map((member) => member.id);
     }
 
     if (!Array.isArray(roleIds) || roleIds.length === 0) return [];
     const roleSet = new Set(roleIds.map(String));
 
     if (targetMode === 'all_roles') {
-        // Intersection: member must have ALL specified roles
         return Array.from(
-            membersCol.filter(m => !m.user.bot && roleIds.every(rid => m.roles.cache.has(rid))).values()
-        ).map(m => m.id);
+            membersCol
+                .filter((member) => !member.user.bot && roleIds.every((roleId) => member.roles.cache.has(roleId)))
+                .values()
+        ).map((member) => member.id);
     }
 
-    // Default: any_roles — union of members who have at least one role
     return Array.from(
-        membersCol.filter(m => !m.user.bot && m.roles.cache.some(r => roleSet.has(r.id))).values()
-    ).map(m => m.id);
+        membersCol
+            .filter((member) => !member.user.bot && member.roles.cache.some((role) => roleSet.has(role.id)))
+            .values()
+    ).map((member) => member.id);
 }
-
-// ── Campaign CRUD ───────────────────────────────────────────────────────────
 
 /**
  * Create a new DM campaign and insert all target rows.
- *
- * @param {object} opts
- * @param {object} opts.guild           Discord guild object (must support members.fetch)
- * @param {string} opts.requestedBy     User ID of requester (or "SYSTEM")
- * @param {string} opts.messageType     'misc' | 'war_early' | 'war_late' | 'system_welcome' | 'system_quota'
- * @param {string} opts.messageBody     Message text (≤ 2000 chars)
- * @param {string} opts.targetMode      'everyone' | 'any_roles' | 'all_roles' | 'direct'
- * @param {string[]} opts.roleIds       Role IDs (ignored if targetMode='everyone' or 'direct')
- * @param {string[]} opts.directUserIds User IDs (required if targetMode='direct')
- * @param {string} [opts.reportChannelId]
- * @param {string} [opts.requestedChannelId]
- * @param {boolean} [opts.preview=false]  If true, return stats without writing.
- * @returns {{ campaignId, totalTargets, totalBatches, preview, targets? }}
  */
 async function createCampaign({
     guild,
@@ -144,14 +166,13 @@ async function createCampaign({
     requestedChannelId = null,
     preview = false
 } = {}) {
-    // ── validation ──
     if (!guild) throw new Error('guild is required');
     if (!requestedBy) throw new Error('requestedBy is required');
     if (!VALID_MESSAGE_TYPES.has(messageType)) {
         throw new Error(`Invalid message_type "${messageType}". Must be one of: ${[...VALID_MESSAGE_TYPES].join(', ')}`);
     }
     if (!messageBody || typeof messageBody !== 'string') throw new Error('messageBody is required');
-    if (messageBody.length > 3000) throw new Error('messageBody must be ≤ 3000 characters'); // Increased for system templates
+    if (messageBody.length > 3000) throw new Error('messageBody must be <= 3000 characters');
     if (!VALID_TARGET_MODES.has(targetMode)) {
         throw new Error(`Invalid target_mode "${targetMode}". Must be one of: ${[...VALID_TARGET_MODES].join(', ')}`);
     }
@@ -162,124 +183,147 @@ async function createCampaign({
         throw new Error('directUserIds required when target_mode is "direct".');
     }
 
-    // ── resolve targets ──
     const memberIds = await resolveTargetMemberIds(guild, { targetMode, roleIds, directUserIds });
     const uniqueIds = [...new Set(memberIds.map(String))];
-
     if (uniqueIds.length === 0) {
         return { campaignId: null, totalTargets: 0, totalBatches: 0, preview };
     }
-
-    // ── deduplicate against history (14 days) ──
-    const messageHash = hashMessage(messageBody);
-    const lookbackMs = 14 * 24 * 60 * 60 * 1000;
     if (uniqueIds.length > HARD_MAX_TARGETS) {
         throw new Error(`Total resolved targets ${uniqueIds.length} exceeds the hard safety limit of ${HARD_MAX_TARGETS}. Refine your filters.`);
     }
 
-    // IDEMPOTENCY GUARD: Check if an identical campaign is already active in this guild
-    const activeDuplicate = await db.get(
-        `SELECT id FROM dm_campaigns 
-         WHERE guild_id = ? AND message_hash = ? AND status IN ('queued', 'running')`,
-        guild.id, messageHash
-    );
-    if (activeDuplicate) {
-        throw new Error(`An active campaign (ID: ${activeDuplicate.id}) already exists with this exact message in this server. Wait for it to finish or cancel it.`);
-    }
-
-    const now = Date.now();
-    const threshold = now - lookbackMs;
-
-    // Use a high-performance subquery to find all user_ids who are already in the queue or have received this hash
-    const alreadySentRows = await db.all(
-        `SELECT DISTINCT user_id FROM dm_campaign_targets 
-         WHERE status IN ('sent', 'pending', 'claimed', 'sending', 'retry_wait') 
-         AND created_at > ?
-         AND campaign_id IN (SELECT id FROM dm_campaigns WHERE message_hash = ? AND guild_id = ?)`,
-        threshold, messageHash, guild.id
-    );
-    const alreadySentSet = new Set(alreadySentRows.map(r => String(r.user_id)));
-    const finalIds = uniqueIds.filter(id => !alreadySentSet.has(id));
-    const excludedCount = uniqueIds.length - finalIds.length;
-
-    if (finalIds.length === 0) {
-        return { 
-            campaignId: null, 
-            totalTargets: 0, 
-            totalBatches: 0, 
-            preview, 
-            excludedByDedupe: excludedCount 
-        };
-    }
-
-    const insertBatchSize = await computeInsertBatchSize(finalIds.length);
-    const totalBatches = Math.ceil(finalIds.length / insertBatchSize);
+    const messageHash = hashMessage(messageBody);
+    const threshold = nowMs() - (14 * 24 * 60 * 60 * 1000);
+    const isSystemMessage = messageType === 'system_welcome' || messageType === 'system_quota';
 
     if (preview) {
-        const sample = finalIds.slice(0, 10);
+        const { finalIds, excludedCount } = await buildCampaignTargetPlan(db, {
+            guildId: guild.id,
+            messageHash,
+            uniqueIds,
+            isSystemMessage,
+            threshold
+        });
+        if (finalIds.length === 0) {
+            return {
+                campaignId: null,
+                totalTargets: 0,
+                totalBatches: 0,
+                preview: true,
+                excludedByDedupe: excludedCount
+            };
+        }
+
+        const insertBatchSize = await computeInsertBatchSize(finalIds.length);
+        const totalBatches = Math.ceil(finalIds.length / insertBatchSize);
         return {
             campaignId: null,
             totalTargets: finalIds.length,
             totalBatches,
             preview: true,
-            sampleUserIds: sample,
+            sampleUserIds: finalIds.slice(0, 10),
             excludedByDedupe: excludedCount
         };
     }
 
-    // ── write campaign row ──
-    const campaignResult = await db.run(
-        `INSERT INTO dm_campaigns
-       (guild_id, requested_by, message_type, message_body, message_hash, target_mode, target_role_ids,
-        status, report_channel_id, requested_channel_id,
-        total_targets, total_batches, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
-        guild.id,
-        requestedBy,
-        messageType,
-        messageBody,
-        messageHash,
-        targetMode,
-        JSON.stringify(roleIds),
-        reportChannelId,
-        requestedChannelId,
-        finalIds.length,
-        totalBatches,
-        now,
-        now
-    );
-
-    const campaignId = campaignResult.lastID;
-
-    // ── insert target rows in batches ──
-    const batches = chunkArray(finalIds, insertBatchSize);
-    for (let batchNo = 0; batchNo < batches.length; batchNo++) {
-        const batch = batches[batchNo];
-        const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
-        const params = [];
-        for (const userId of batch) {
-            params.push(campaignId, guild.id, userId, batchNo + 1, now, now);
+    const now = nowMs();
+    const writeResult = await withTransaction(db, async (tx) => {
+        const { finalIds, excludedCount } = await buildCampaignTargetPlan(tx, {
+            guildId: guild.id,
+            messageHash,
+            uniqueIds,
+            isSystemMessage,
+            threshold
+        });
+        if (finalIds.length === 0) {
+            return {
+                inserted: false,
+                campaignId: null,
+                totalTargets: 0,
+                totalBatches: 0,
+                excludedByDedupe: excludedCount
+            };
         }
-        await db.run(
-            `INSERT OR IGNORE INTO dm_campaign_targets
-         (campaign_id, guild_id, user_id, batch_no, created_at, updated_at)
-       VALUES ${placeholders}`,
-            ...params
+
+        const insertBatchSize = await computeInsertBatchSize(finalIds.length);
+        const totalBatches = Math.ceil(finalIds.length / insertBatchSize);
+        const campaignResult = await tx.run(
+            `INSERT INTO dm_campaigns
+           (guild_id, requested_by, message_type, message_body, message_hash, target_mode, target_role_ids,
+            status, report_channel_id, requested_channel_id,
+            total_targets, total_batches, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)`,
+            guild.id,
+            requestedBy,
+            messageType,
+            messageBody,
+            messageHash,
+            targetMode,
+            JSON.stringify(roleIds),
+            reportChannelId,
+            requestedChannelId,
+            finalIds.length,
+            totalBatches,
+            now,
+            now
         );
+
+        const campaignId = campaignResult.lastID;
+        const batches = chunkArray(finalIds, insertBatchSize);
+        for (let batchNo = 0; batchNo < batches.length; batchNo++) {
+            const batch = batches[batchNo];
+            const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+            const params = [];
+            for (const userId of batch) {
+                params.push(campaignId, guild.id, userId, batchNo + 1, now, now);
+            }
+            await tx.run(
+                `INSERT OR IGNORE INTO dm_campaign_targets
+                 (campaign_id, guild_id, user_id, batch_no, created_at, updated_at)
+                 VALUES ${placeholders}`,
+                ...params
+            );
+        }
+
+        return {
+            inserted: true,
+            campaignId,
+            totalTargets: finalIds.length,
+            totalBatches,
+            excludedByDedupe: excludedCount,
+            insertBatchSize
+        };
+    }, { immediate: true });
+
+    if (!writeResult.inserted) {
+        return {
+            campaignId: null,
+            totalTargets: 0,
+            totalBatches: 0,
+            preview: false,
+            excludedByDedupe: writeResult.excludedByDedupe
+        };
     }
 
     void logRuntimeEvent('info', 'dm.campaign.created', 'DM campaign created', {
-        campaignId,
+        campaignId: writeResult.campaignId,
         guildId: guild.id,
         requestedBy,
         messageType,
         targetMode,
-        totalTargets: uniqueIds.length,
-        totalBatches,
-        insertBatchSize
+        totalTargets: writeResult.totalTargets,
+        totalResolvedTargets: uniqueIds.length,
+        totalBatches: writeResult.totalBatches,
+        insertBatchSize: writeResult.insertBatchSize
     });
 
-    return { campaignId, totalTargets: finalIds.length, totalBatches, preview: false, excludedByDedupe: excludedCount };
+    return {
+        campaignId: writeResult.campaignId,
+        totalTargets: writeResult.totalTargets,
+        totalBatches: writeResult.totalBatches,
+        preview: false,
+        excludedByDedupe: writeResult.excludedByDedupe
+    };
 }
 
 /**
@@ -291,44 +335,55 @@ async function getCampaignStatus(campaignId) {
 
     const statusCounts = await db.all(
         `SELECT status, COUNT(*) as count
-     FROM dm_campaign_targets
-     WHERE campaign_id = ?
-     GROUP BY status`,
+         FROM dm_campaign_targets
+         WHERE campaign_id = ?
+         GROUP BY status`,
         campaignId
     );
 
     const workerCounts = await db.all(
         `SELECT assigned_worker_id, status, COUNT(*) as count
-     FROM dm_campaign_targets
-     WHERE campaign_id = ? AND assigned_worker_id IS NOT NULL
-     GROUP BY assigned_worker_id, status`,
+         FROM dm_campaign_targets
+         WHERE campaign_id = ? AND assigned_worker_id IS NOT NULL
+         GROUP BY assigned_worker_id, status`,
         campaignId
     );
 
     return {
         campaign,
-        statusCounts: statusCounts.reduce((acc, r) => { acc[r.status] = r.count; return acc; }, {}),
+        statusCounts: statusCounts.reduce((acc, row) => {
+            acc[row.status] = row.count;
+            return acc;
+        }, {}),
         workerCounts
     };
 }
 
 /**
- * Cancel a campaign — mark all pending/claimed targets as cancelled.
+ * Cancel a campaign and mark queued work as cancelled.
  */
 async function cancelCampaign(campaignId) {
     const now = nowMs();
     const result = await db.run(
         `UPDATE dm_campaign_targets
-     SET status = 'cancelled', updated_at = ?
-     WHERE campaign_id = ? AND status IN ('pending', 'claimed')`,
-        now, campaignId
+         SET status = 'cancelled',
+             assigned_worker_id = NULL,
+             claim_id = NULL,
+             claim_expires_at = NULL,
+             next_attempt_at = NULL,
+             updated_at = ?
+         WHERE campaign_id = ? AND status IN ('pending', 'claimed', 'retry_wait')`,
+        now,
+        campaignId
     );
 
     await db.run(
         `UPDATE dm_campaigns
-     SET status = 'cancelled', updated_at = ?, finished_at = ?
-     WHERE id = ? AND status NOT IN ('completed', 'completed_with_errors', 'failed')`,
-        now, now, campaignId
+         SET status = 'cancelled', updated_at = ?, finished_at = ?
+         WHERE id = ? AND status NOT IN ('completed', 'completed_with_errors', 'failed')`,
+        now,
+        now,
+        campaignId
     );
 
     void logRuntimeEvent('info', 'dm.campaign.cancelled', 'DM campaign cancelled', {
@@ -348,54 +403,57 @@ async function getReport(campaignId) {
 
     const statusCounts = await db.all(
         `SELECT status, COUNT(*) as count
-     FROM dm_campaign_targets
-     WHERE campaign_id = ?
-     GROUP BY status`,
+         FROM dm_campaign_targets
+         WHERE campaign_id = ?
+         GROUP BY status`,
         campaignId
     );
 
     const workerBreakdown = await db.all(
         `SELECT
-       da.worker_id,
-       da.result,
-       COUNT(*) as count
-     FROM dm_delivery_attempts da
-     WHERE da.campaign_id = ?
-     GROUP BY da.worker_id, da.result`,
+           da.worker_id,
+           da.result,
+           COUNT(*) as count
+         FROM dm_delivery_attempts da
+         WHERE da.campaign_id = ?
+         GROUP BY da.worker_id, da.result`,
         campaignId
     );
 
     const blockedUsers = await db.all(
         `SELECT user_id, blocked_by_worker_id, NULL as assigned_worker_id, last_error_code, last_error_message
-     FROM dm_campaign_targets
-     WHERE campaign_id = ? AND status = 'blocked'`,
+         FROM dm_campaign_targets
+         WHERE campaign_id = ? AND status = 'blocked'`,
         campaignId
     );
 
     const undeliverableUsers = await db.all(
         `SELECT user_id, NULL as assigned_worker_id, last_error_code, last_error_message
-     FROM dm_campaign_targets
-     WHERE campaign_id = ? AND status = 'undeliverable'`,
+         FROM dm_campaign_targets
+         WHERE campaign_id = ? AND status = 'undeliverable'`,
         campaignId
     );
 
     const failedUsers = await db.all(
         `SELECT user_id, assigned_worker_id, last_error_code, last_error_message
-     FROM dm_campaign_targets
-     WHERE campaign_id = ? AND status = 'failed'`,
+         FROM dm_campaign_targets
+         WHERE campaign_id = ? AND status = 'failed'`,
         campaignId
     );
-    
+
     const sentUsers = await db.all(
         `SELECT user_id, assigned_worker_id, NULL as last_error_code, NULL as last_error_message
-     FROM dm_campaign_targets
-     WHERE campaign_id = ? AND status = 'sent'`,
+         FROM dm_campaign_targets
+         WHERE campaign_id = ? AND status = 'sent'`,
         campaignId
     );
-    
+
     return {
         campaign,
-        statusCounts: statusCounts.reduce((acc, r) => { acc[r.status] = r.count; return acc; }, {}),
+        statusCounts: statusCounts.reduce((acc, row) => {
+            acc[row.status] = row.count;
+            return acc;
+        }, {}),
         workerBreakdown,
         blockedUsers,
         undeliverableUsers,
@@ -404,61 +462,46 @@ async function getReport(campaignId) {
     };
 }
 
-/**
- * Mark a campaign's report as posted.
- */
 async function markReportPosted(campaignId) {
     const now = nowMs();
     await db.run(
-        `UPDATE dm_campaigns SET report_posted = 1, report_posted_at = ?, updated_at = ? WHERE id = ?`,
-        now, now, campaignId
+        'UPDATE dm_campaigns SET report_posted = 1, report_posted_at = ?, updated_at = ? WHERE id = ?',
+        now,
+        now,
+        campaignId
     );
 }
 
-/**
- * Increment report attempts to track failure streaks.
- */
 async function incrementReportAttempts(campaignId) {
     await db.run(
-        `UPDATE dm_campaigns SET report_attempts = report_attempts + 1, updated_at = ? WHERE id = ?`,
-        Date.now(), campaignId
+        'UPDATE dm_campaigns SET report_attempts = report_attempts + 1, updated_at = ? WHERE id = ?',
+        Date.now(),
+        campaignId
     );
 }
 
-/**
- * Find campaigns that are done but report not yet posted.
- */
 async function getUnreportedCampaigns() {
     return db.all(
         `SELECT * FROM dm_campaigns
-     WHERE status IN ('completed', 'completed_with_errors')
-       AND report_posted = 0
-     ORDER BY finished_at ASC`
+         WHERE status IN ('completed', 'completed_with_errors')
+           AND report_posted = 0
+         ORDER BY finished_at ASC`
     );
 }
 
-/**
- * Find campaigns that are currently active for progress monitoring.
- */
 async function getRunningCampaigns() {
-    return db.all(
-        `SELECT * FROM dm_campaigns WHERE status = 'running'`
-    );
+    return db.all('SELECT * FROM dm_campaigns WHERE status = \'running\'');
 }
 
-/**
- * Update the last notified progress percentage for a campaign.
- */
 async function updateCampaignNotificationThreshold(campaignId, percentage) {
     await db.run(
-        `UPDATE dm_campaigns SET last_notified_percentage = ?, updated_at = ? WHERE id = ?`,
-        percentage, Date.now(), campaignId
+        'UPDATE dm_campaigns SET last_notified_percentage = ?, updated_at = ? WHERE id = ?',
+        percentage,
+        Date.now(),
+        campaignId
     );
 }
 
-/**
- * List/manage workers.
- */
 async function listWorkers() {
     return db.all('SELECT * FROM dm_workers ORDER BY display_name ASC, worker_id ASC');
 }
@@ -466,22 +509,27 @@ async function listWorkers() {
 async function setWorkerEnabled(workerId, enabled) {
     const now = nowMs();
     await db.run(
-        `UPDATE dm_workers SET enabled = ?, last_seen_at = ? WHERE worker_id = ?`,
-        enabled ? 1 : 0, now, workerId
+        'UPDATE dm_workers SET enabled = ?, last_seen_at = ? WHERE worker_id = ?',
+        enabled ? 1 : 0,
+        now,
+        workerId
     );
 }
 
 async function unblockUserForWorker(guildId, userId, workerId) {
     await db.run(
-        `DELETE FROM dm_worker_user_blocks WHERE guild_id = ? AND user_id = ? AND worker_id = ?`,
-        guildId, userId, workerId
+        'DELETE FROM dm_worker_user_blocks WHERE guild_id = ? AND user_id = ? AND worker_id = ?',
+        guildId,
+        userId,
+        workerId
     );
 }
 
 async function unblockUserForAllWorkers(guildId, userId) {
     await db.run(
-        `DELETE FROM dm_worker_user_blocks WHERE guild_id = ? AND user_id = ?`,
-        guildId, userId
+        'DELETE FROM dm_worker_user_blocks WHERE guild_id = ? AND user_id = ?',
+        guildId,
+        userId
     );
 }
 
@@ -499,10 +547,6 @@ module.exports = {
     setWorkerEnabled,
     unblockUserForWorker,
     unblockUserForAllWorkers,
-    // Exposed for testing
     resolveTargetMemberIds,
-    computeInsertBatchSize,
-    VALID_MESSAGE_TYPES,
-    VALID_TARGET_MODES,
-    HARD_MAX_TARGETS
+    computeInsertBatchSize
 };

@@ -13,11 +13,23 @@ async function countAll(db, guildId) {
 }
 
 async function ensureRecruiter(db, guildId, recruiterId) {
-  return db.run(
-    'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
-    guildId,
-    recruiterId
-  );
+  try {
+    return await db.run(
+      'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
+      guildId,
+      recruiterId
+    );
+  } catch (error) {
+    const message = String(error && error.message ? error.message : '').toLowerCase();
+    if (
+      message.includes('no such table: recruiters')
+      || message.includes('has no column named guild_id')
+      || message.includes('table recruiters has no column named')
+    ) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function getPoints(db, guildId, recruiterId) {

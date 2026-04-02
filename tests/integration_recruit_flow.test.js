@@ -30,6 +30,7 @@ function makeChannel(id) {
 
 function makeGuildMock({ recruiterId, recruitedId }) {
   const constants = require('../src/constants');
+  const { ROLE_IDS } = constants;
 
   const prevChannels = { ...constants.CHANNELS };
 
@@ -37,15 +38,26 @@ function makeGuildMock({ recruiterId, recruitedId }) {
   channels.set('EU_CH', makeChannel('EU_CH'));
   channels.set('CENTRAL_CH', makeChannel('CENTRAL_CH'));
 
-  // Provide minimal roles cache (scheduler has fallback DB path if roles missing)
-  const roles = { cache: { get: jest.fn(() => null) } };
+  const makeRole = (id, name, position = 10) => ({ id, name, position });
+  const rolesMap = new Map();
+  rolesMap.set(ROLE_IDS.ROOKIE, makeRole(ROLE_IDS.ROOKIE, 'Rookie', 10));
+  if (ROLE_IDS.UNVERIFIED) rolesMap.set(ROLE_IDS.UNVERIFIED, makeRole(ROLE_IDS.UNVERIFIED, 'Unverified', 9));
+  if (ROLE_IDS.ONBOARDING_FIRE) rolesMap.set(ROLE_IDS.ONBOARDING_FIRE, makeRole(ROLE_IDS.ONBOARDING_FIRE, 'Fire', 11));
+  if (ROLE_IDS.ONBOARDING_WATER) rolesMap.set(ROLE_IDS.ONBOARDING_WATER, makeRole(ROLE_IDS.ONBOARDING_WATER, 'Water', 11));
+  if (ROLE_IDS.ONBOARDING_AIR) rolesMap.set(ROLE_IDS.ONBOARDING_AIR, makeRole(ROLE_IDS.ONBOARDING_AIR, 'Air', 11));
+  const roles = { cache: { get: jest.fn((id) => rolesMap.get(id) || null) } };
 
   const recruitedMember = {
     id: recruitedId,
     user: { id: recruitedId, tag: 'Recruit#0001', createdAt: new Date(Date.now() - (365 * 24 * 60 * 60 * 1000)), bot: false },
     joinedAt: new Date(Date.now() - (30 * 60 * 1000)),
+    manageable: true,
     roles: {
-      cache: { has: jest.fn(() => false) },
+      cache: {
+        has: jest.fn(() => false),
+        filter: jest.fn(() => []),
+        values: jest.fn(() => [])
+      },
       add: jest.fn().mockResolvedValue(true),
       remove: jest.fn().mockResolvedValue(true)
     },
@@ -69,6 +81,16 @@ function makeGuildMock({ recruiterId, recruitedId }) {
     permissions: { has: jest.fn(() => true) }
   };
 
+  const botMember = {
+    id: 'BOT_1',
+    permissions: {
+      has: jest.fn(() => true)
+    },
+    roles: {
+      highest: { position: 100 }
+    }
+  };
+
   const members = {
     fetch: jest.fn(async (id) => {
       if (!id) return new Map([[recruiterId, recruiterMember], [recruitedId, recruitedMember]]);
@@ -85,6 +107,7 @@ function makeGuildMock({ recruiterId, recruitedId }) {
     members,
     channels: { cache: { get: (id) => channels.get(id) } }
   };
+  guild.members.me = botMember;
 
   // Wire constants to our mock channels
   constants.CHANNELS.INVITES_EU = 'EU_CH';
@@ -147,11 +170,13 @@ describe('integration: /recruit -> scheduler -> leaderboard_messages', () => {
           if (key === 'credit_to' || key === 'recruiter') return null;
           return null;
         },
-        getString: (key) => (key === 'ign' ? 'player' : null)
+        getString: (key) => (key === 'ign' ? 'player' : null),
+        getBoolean: () => false
       },
       deferReply: jest.fn().mockResolvedValue(true),
       reply: jest.fn().mockResolvedValue(true),
-      editReply: jest.fn().mockResolvedValue(true)
+      editReply: jest.fn().mockResolvedValue(true),
+      client: { user: { id: 'BOT_1' } }
     };
 
     const cmd = require('../src/commands/recruiting/recruit');
