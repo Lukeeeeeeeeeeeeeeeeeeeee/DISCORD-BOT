@@ -51,6 +51,37 @@ function hasRole(member, roleId) {
     return Boolean(member && member.roles && member.roles.cache && roleId && member.roles.cache.has(roleId));
 }
 
+function isRegionToken(value) {
+    const normalized = String(value || '').trim().toUpperCase();
+    return normalized === 'EU'
+        || normalized === 'NA'
+        || normalized === 'AS'
+        || normalized === 'ME'
+        || normalized === 'AF'
+        || normalized === 'SA';
+}
+
+function isStatusToken(value) {
+    const normalized = String(value || '').trim();
+    return /^\d+(?:\.\d+)?\s*\/\s*(?:2|10)$/.test(normalized);
+}
+
+function cleanIgnSegment(value) {
+    let out = String(value || '').trim();
+    if (!out) return '';
+
+    out = out.replace(/\s+/g, ' ').trim();
+    out = out.replace(/^\d+(?:\.\d+)?\s*\/\s*(?:2|10)\s*[|:-]?\s*/i, '').trim();
+    out = out.replace(/\s*[|:-]?\s*\d+(?:\.\d+)?\s*\/\s*(?:2|10)$/i, '').trim();
+    out = out.replace(/^(EU|NA|AS|ME|AF|SA)\s*[|:-]\s*/i, '').trim();
+    out = out.replace(/\s*[|:-]\s*(EU|NA|AS|ME|AF|SA)$/i, '').trim();
+    out = out.replace(/\s+(EU|NA|AS|ME|AF|SA)\s+\d+(?:\.\d+)?\s*\/\s*(?:2|10)$/i, '').trim();
+    out = out.replace(/^\s*(EU|NA|AS|ME|AF|SA)\s+\d+(?:\.\d+)?\s*\/\s*(?:2|10)\s*/i, '').trim();
+    out = out.replace(/[\u{1F300}-\u{1FAFF}\u2600-\u27BF]+/gu, '').trim();
+    out = out.replace(/\s+/g, ' ').trim();
+    return out;
+}
+
 /**
  * Extract the IGN from a display string.
  * "EU | SomeName"       → "SomeName"
@@ -60,8 +91,23 @@ function hasRole(member, roleId) {
  */
 function extractIgn(raw) {
     if (!raw || !raw.trim()) return '';
-    const parts = raw.split('|');
-    return parts[parts.length - 1].trim();
+    const rawValue = String(raw).trim();
+    const pipeParts = rawValue
+        .split('|')
+        .map(part => cleanIgnSegment(part))
+        .filter(Boolean)
+        .filter(part => !isRegionToken(part) && !isStatusToken(part));
+
+    if (pipeParts.length) {
+        for (let i = pipeParts.length - 1; i >= 0; i -= 1) {
+            const candidate = cleanIgnSegment(pipeParts[i]);
+            if (candidate && !isRegionToken(candidate) && !isStatusToken(candidate)) return candidate;
+        }
+    }
+
+    const cleaned = cleanIgnSegment(rawValue);
+    if (cleaned && !isRegionToken(cleaned) && !isStatusToken(cleaned)) return cleaned;
+    return '';
 }
 
 /**
@@ -309,4 +355,11 @@ module.exports = {
             files: [attachment]
         });
     }
+};
+
+module.exports._private = {
+    extractIgn,
+    cleanIgnSegment,
+    isRegionToken,
+    isStatusToken
 };
