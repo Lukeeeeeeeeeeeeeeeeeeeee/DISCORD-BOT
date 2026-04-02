@@ -9,12 +9,13 @@
 const { ensureCommandAccess } = require('../lib/command-auth');
 const { replyError } = require('../lib/embeds');
 const { logRuntimeEvent } = require('../lib/logger');
+const { envInt } = require('../lib/env-utils');
 const campaignService = require('../services/dm/dm-campaign-service');
 const reporter = require('../services/dm/dm-reporter');
 const legacyDmCommand = require('../services/dm/dm-legacy-command');
 
 const cooldowns = new Map();
-const COOLDOWN_MS = 60 * 1000;
+const COOLDOWN_MS = envInt('DM_COMMAND_COOLDOWN_MS', 60 * 1000, 0, 24 * 60 * 60 * 1000);
 
 module.exports = {
   data: { name: 'dm' },

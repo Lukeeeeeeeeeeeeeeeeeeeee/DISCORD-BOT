@@ -25,11 +25,11 @@ async function replyError(interaction, message, opts = {}) {
       if (typeof interaction.editReply === 'function') {
         const editPayload = { ...payload };
         delete editPayload.flags;
-        return interaction.editReply(editPayload);
+        return await interaction.editReply(editPayload);
       }
-      if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
+      if (typeof interaction.followUp === 'function') return await interaction.followUp(payload);
     }
-    return interaction.reply(payload);
+    return await interaction.reply(payload);
   } catch (error) {
     if (isInteractionAckError(error)) return null;
     throw error;

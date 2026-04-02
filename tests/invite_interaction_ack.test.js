@@ -97,4 +97,17 @@ describe('/invite interaction acknowledgment handling', () => {
     expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(interaction.reply).not.toHaveBeenCalled();
   });
+
+  test('swallows stale original-reply errors while reporting command failures', async () => {
+    const interaction = makeInteraction();
+    mockIsRecruiter.mockResolvedValue(true);
+    mockCreateInvite.mockRejectedValue(new Error('boom'));
+    interaction.editReply.mockRejectedValue(Object.assign(new Error('Unknown Message'), { code: 10008 }));
+    const cmd = require('../src/commands/recruiting/invite.js');
+
+    await cmd.execute(interaction);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
+    expect(interaction.reply).not.toHaveBeenCalled();
+  });
 });

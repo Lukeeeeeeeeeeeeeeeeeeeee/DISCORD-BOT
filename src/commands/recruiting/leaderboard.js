@@ -12,7 +12,12 @@ const { logUnexpectedError } = require('../../lib/logger');
 const FULL_FETCH_MAX = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_MAX || '5000', 10);
 const FULL_FETCH_COOLDOWN_MS = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_COOLDOWN_MS || '600000', 10);
 const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
+const INTERACTION_ACK_ERROR_CODES = new Set([10008, 10062, 40060]);
 let lastFullFetchAt = 0;
+
+function isInteractionAckError(error) {
+  return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
+}
 
 function reportLeaderboardCommandError(scope, error, meta = {}) {
   void logUnexpectedError(scope, error, {
@@ -370,6 +375,7 @@ module.exports = {
         }
         return interaction.editReply({ content: summary.join('\n'), allowedMentions: { parse: [] } });
       } catch (e) {
+        if (isInteractionAckError(e)) return null;
         reportLeaderboardCommandError('command.leaderboard.init', e, { guildId });
         return replyError(interaction, 'Failed to initialize leaderboards.');
       }

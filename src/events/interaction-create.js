@@ -13,7 +13,7 @@ function createInteractionCreateHandler({
   logUnexpectedError,
   buildErrorEmbed
 } = {}) {
-  const interactionAckErrorCodes = new Set([10062, 40060]);
+  const interactionAckErrorCodes = new Set([10008, 10062, 40060]);
   const isInteractionAckError = (error) => Boolean(error && interactionAckErrorCodes.has(Number(error.code)));
 
   return async function onInteractionCreate(interaction) {

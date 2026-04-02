@@ -84,4 +84,16 @@ describe('/leaderboard init command', () => {
     expect(interaction.deferReply).toHaveBeenCalledTimes(1);
     expect(mockReplyError).toHaveBeenCalledWith(interaction, 'Failed to initialize leaderboards.');
   });
+
+  test('swallows stale original-reply errors after successful recompute', async () => {
+    const interaction = makeInteraction();
+    interaction.editReply.mockRejectedValueOnce(Object.assign(new Error('Unknown Message'), { code: 10008 }));
+
+    await expect(cmd.execute(interaction)).resolves.toBeNull();
+
+    expect(interaction.deferReply).toHaveBeenCalledTimes(1);
+    expect(mockRecomputeLeaderboards).toHaveBeenCalledTimes(1);
+    expect(mockRecomputeWarningsLeaderboard).toHaveBeenCalledTimes(1);
+    expect(mockReplyError).not.toHaveBeenCalled();
+  });
 });
