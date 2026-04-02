@@ -120,12 +120,17 @@ function makeTarget(overrides = {}) {
 
 function makeClient(sendImpl = null) {
     const send = sendImpl || jest.fn().mockResolvedValue(true);
-    const member = { send };
+    const user = { send };
+    const member = { send, user };
     const guild = { members: { fetch: jest.fn().mockResolvedValue(member) } };
     return {
         send,
         memberFetch: guild.members.fetch,
         client: {
+            users: {
+                cache: new Map(),
+                fetch: jest.fn().mockResolvedValue(user)
+            },
             guilds: {
                 fetch: jest.fn().mockResolvedValue(guild)
             }
@@ -169,9 +174,54 @@ describe('dm-worker integration routing', () => {
 
         expect(result.ok).toBe(true);
         expect(result.sent).toBe(true);
-        expect(client.guilds.fetch).toHaveBeenCalledWith('g1');
+        expect(client.users.fetch).toHaveBeenCalledWith('u1');
+        expect(client.guilds.fetch).not.toHaveBeenCalled();
         expect(send).toHaveBeenCalledWith('hello');
         expect(mockState.campaignCounters.sent).toBe(1);
+    });
+
+    test('sends immediately when target is already assigned to this worker', async () => {
+        const t = makeTarget({ message_type: 'misc', user_id: 'u1', assigned_worker_id: 'w1' });
+        const { client, send } = makeClient();
+
+        const result = await dmWorker.processTarget(t, client, 'w1');
+
+        expect(result.ok).toBe(true);
+        expect(result.sent).toBe(true);
+        expect(send).toHaveBeenCalledWith('hello');
+        expect(mockState.campaignCounters.sent).toBe(1);
+    });
+
+    test('falls back to guild member resolution when user manager is unavailable', async () => {
+        const t = makeTarget({ message_type: 'misc', user_id: 'u1', assigned_worker_id: 'w1' });
+        const { client, send, memberFetch } = makeClient();
+        delete client.users.fetch;
+
+        const result = await dmWorker.processTarget(t, client, 'w1');
+
+        expect(result.ok).toBe(true);
+        expect(result.sent).toBe(true);
+        expect(client.guilds.fetch).toHaveBeenCalledWith('g1');
+        expect(memberFetch).toHaveBeenCalledWith('u1');
+        expect(send).toHaveBeenCalledWith('hello');
+    });
+
+    test('returns target to its assigned worker when claimed by the wrong worker', async () => {
+        const t = makeTarget({ message_type: 'misc', user_id: 'u1', assigned_worker_id: 'w1' });
+        const { client, send } = makeClient();
+
+        const result = await dmWorker.processTarget(t, client, 'w2');
+
+        expect(result.ok).toBe(true);
+        expect(result.sent).toBe(false);
+        expect(result.reassignedTo).toBe('w1');
+        expect(send).not.toHaveBeenCalled();
+        const reassignUpdate = mockState.targetUpdates.find((u) =>
+            u.targetId === 1
+            && u.update.status === 'pending'
+            && u.update.assigned_worker_id === 'w1'
+        );
+        expect(reassignUpdate).toBeTruthy();
     });
 
     test('reassigns misc target to preferred worker when claimed by different worker', async () => {

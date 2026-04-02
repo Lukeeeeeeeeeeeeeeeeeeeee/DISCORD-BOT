@@ -14,12 +14,13 @@ const { envInt } = require('../../lib/env-utils');
 
 // ── Tunables (env) ──────────────────────────────────────────────────────────
 
-const POLL_MS = envInt('DM_QUEUE_POLL_MS', 800, 200, 30000);
-const CLAIM_BATCH = 1; // Atomic Sync: Only 1 DM at a time per worker to force parallel fleet distribution
-const SEND_DELAY_MS = envInt('DM_MIN_DELAY_MS', 2000, 100, 5000);
+const POLL_MS = envInt('DM_QUEUE_POLL_MS', 300, 100, 30000);
+const CLAIM_BATCH = envInt('DM_CLAIM_BATCH_SIZE', envInt('DM_CLAIM_BATCH', 3, 1, 25), 1, 25);
+const SEND_DELAY_MS = envInt('DM_MIN_DELAY_MS', 500, 100, 5000);
 const RETRY_LIMIT = 3;
 const HEARTBEAT_MS = envInt('DM_HEARTBEAT_MS', 15000, 5000, 60000);
 const CLAIM_LEASE_MS = envInt('DM_CLAIM_LEASE_MS', 60000, 10000, 300000);
+const ASSIGNMENT_STALE_MS = envInt('DM_ASSIGNMENT_STALE_MS', 45000, 5000, 300000);
 
 // ── Shared Registry ─────────────────────────────────────────────────────────
 const activeWorkers = new Map();
@@ -72,6 +73,20 @@ class DMWorker {
                 now, now
             );
 
+            // 1b. Release assignments that point to offline / stale workers so they can be redistributed.
+            await tx.run(
+                `UPDATE dm_campaign_targets
+                 SET assigned_worker_id = NULL, updated_at = ?
+                 WHERE status IN ('pending', 'retry_wait')
+                   AND assigned_worker_id IS NOT NULL
+                   AND assigned_worker_id NOT IN (
+                     SELECT worker_id
+                     FROM dm_workers
+                     WHERE enabled = 1 AND status = 'online' AND last_seen_at >= ?
+                   )`,
+                now, now - ASSIGNMENT_STALE_MS
+            );
+
             // 2. Claim new targets
             await tx.run(
                 `UPDATE dm_campaign_targets
@@ -85,15 +100,17 @@ class DMWorker {
                      FROM dm_campaign_targets
                      WHERE (status IN ('pending', 'retry_wait') OR (status = 'sending' AND claim_expires_at <= ?))
                        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                       AND (assigned_worker_id IS NULL OR assigned_worker_id = ?)
                        AND campaign_id IN (SELECT id FROM dm_campaigns WHERE status IN ('queued', 'running'))
-                     ORDER BY batch_no ASC, id ASC
+                     ORDER BY CASE WHEN assigned_worker_id = ? THEN 0 ELSE 1 END, batch_no ASC, id ASC
                      LIMIT ?
                  )`,
-                this.workerId, claimId, leaseExpiry, now, now, now, batchSize
+                this.workerId, claimId, leaseExpiry, now, now, now, this.workerId, this.workerId, batchSize
             );
 
             const rows = await tx.all(
                 `SELECT t.id, t.campaign_id, t.guild_id, t.user_id, t.batch_no, t.attempts, t.worker_switches,
+                        t.assigned_worker_id,
                         c.message_type, c.message_body, c.max_misc_streak, c.sticky_window_hours
                  FROM dm_campaign_targets t
                  JOIN dm_campaigns c ON c.id = t.campaign_id
@@ -162,11 +179,10 @@ class DMWorker {
                 claimExpiresAt: Date.now() + 60000 // Ensure lease is fresh for this send
             });
 
-            const guild = await this.client.guilds.fetch(guild_id);
-            const member = await guild.members.fetch(user_id);
+            const recipient = await this.resolveRecipient(user_id, guild_id);
 
             // ACT: The external side effect
-            const msg = await member.send(message_body);
+            const msg = await recipient.send(message_body);
             clearInterval(leaseRefresher);
 
             // RESOLVE: Record success and store the message ID for surgical cancellation
@@ -277,6 +293,32 @@ class DMWorker {
             await db.run('UPDATE dm_campaigns SET total_failed = total_failed + 1, updated_at = ? WHERE id = ?', Date.now(), campaign_id);
             return { ok: false, category: classified.category };
         }
+    }
+
+    async resolveRecipient(userId, guildId) {
+        if (this.client && this.client.users && this.client.users.cache) {
+            const cachedUser = this.client.users.cache.get(userId);
+            if (cachedUser) return cachedUser;
+        }
+
+        if (this.client && this.client.users && typeof this.client.users.fetch === 'function') {
+            return this.client.users.fetch(userId);
+        }
+
+        if (!guildId || !this.client.guilds) {
+            throw new Error(`Unable to resolve DM recipient ${userId}`);
+        }
+
+        const cachedGuild = this.client.guilds.cache && this.client.guilds.cache.get
+            ? this.client.guilds.cache.get(guildId)
+            : null;
+        const guild = cachedGuild || await this.client.guilds.fetch(guildId);
+        const cachedMember = guild && guild.members && guild.members.cache && guild.members.cache.get
+            ? guild.members.cache.get(userId)
+            : null;
+        const member = cachedMember || await guild.members.fetch(userId);
+        if (member && member.user) return member.user;
+        throw new Error(`Unable to resolve guild member ${userId}`);
     }
 
     async pollOnce() {
@@ -414,17 +456,25 @@ class DMWorker {
         if (this.running) return;
         this.running = true;
 
-        void logRuntimeEvent('info', 'dm.worker.start', 'DM worker started', { workerId: this.workerId, displayName: this.displayName });
+        void logRuntimeEvent('info', 'dm.worker.start', 'DM worker started', {
+            workerId: this.workerId,
+            displayName: this.displayName,
+            pollMs: POLL_MS,
+            claimBatch: CLAIM_BATCH,
+            sendDelayMs: SEND_DELAY_MS,
+            assignmentStaleMs: ASSIGNMENT_STALE_MS
+        });
 
         const poll = async () => {
             if (!this.running) return;
+            let processed = 0;
             try {
-                await this.pollOnce();
+                processed = await this.pollOnce();
             } catch (err) {
                 void logUnexpectedError('dm.worker.poll', err, { workerId: this.workerId });
             } finally {
                 if (this.running) {
-                    this.pollTimer = setTimeout(poll, POLL_MS);
+                    this.pollTimer = setTimeout(poll, processed > 0 ? 50 : POLL_MS);
                 }
             }
         };
@@ -574,6 +624,14 @@ function toPositiveInt(value, fallback) {
 
 async function routeTargetToWorker(target, selfWorkerId) {
     if (target.assigned_worker_id === selfWorkerId) return { selectedWorkerId: selfWorkerId, action: 'send' };
+    if (target.assigned_worker_id && target.assigned_worker_id !== selfWorkerId) {
+        await updateTargetStatus(target.id, 'pending', {
+            assignedWorkerId: target.assigned_worker_id,
+            claimExpiresAt: null,
+            lastWorkerId: selfWorkerId
+        });
+        return { selectedWorkerId: target.assigned_worker_id, action: 'reassigned' };
+    }
     const affinity = await getAffinity(target.guild_id, target.user_id);
     const blockedWorkerIds = await getBlockedWorkerIds(target.guild_id, target.user_id);
     const eligibleWorkers = await getEligibleWorkers();

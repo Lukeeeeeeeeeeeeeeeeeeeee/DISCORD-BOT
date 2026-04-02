@@ -15,7 +15,7 @@ jest.mock('../src/db_async', () => {
                 return { lastID: lastId, changes: 1 };
             }
             if (sql.includes('INSERT OR IGNORE INTO dm_campaign_targets')) {
-                return { changes: params.length / 6 };
+                return { changes: params.length / 7 };
             }
             if (sql.includes('UPDATE dm_campaign_targets')) {
                 return { changes: 3 };
@@ -69,6 +69,12 @@ jest.mock('../src/db_async', () => {
             if (sql.includes('GROUP BY da.worker_id')) {
                 return [{ worker_id: 'w1', result: 'sent', count: 3 }];
             }
+            if (sql.includes('FROM dm_user_affinity')) {
+                return [];
+            }
+            if (sql.includes('FROM dm_worker_user_blocks')) {
+                return [];
+            }
             if (sql.includes("status = 'blocked'")) {
                 return [{ user_id: 'u99', blocked_by_worker_id: 'w1', last_error_code: '50007' }];
             }
@@ -79,9 +85,14 @@ jest.mock('../src/db_async', () => {
                 return [{ user_id: 'u55', assigned_worker_id: 'w2', last_error_code: 'TIMEOUT' }];
             }
             if (sql.includes('FROM dm_workers')) {
+                if (sql.includes("status = 'online'")) {
+                    return [
+                        { worker_id: 'w1', display_name: 'Worker 1', enabled: 1, weight: 1, status: 'online', last_seen_at: Date.now() }
+                    ];
+                }
                 return [
-                    { worker_id: 'w1', display_name: 'Worker 1', enabled: 1, weight: 1, status: 'online' },
-                    { worker_id: 'w2', display_name: 'Worker 2', enabled: 1, weight: 1, status: 'offline' }
+                    { worker_id: 'w1', display_name: 'Worker 1', enabled: 1, weight: 1, status: 'online', last_seen_at: Date.now() },
+                    { worker_id: 'w2', display_name: 'Worker 2', enabled: 1, weight: 1, status: 'offline', last_seen_at: Date.now() }
                 ];
             }
             if (sql.includes('report_posted = 0')) {
@@ -136,7 +147,8 @@ describe('dm-campaign-service', () => {
         DM_BATCHES_PER_WORKER: process.env.DM_BATCHES_PER_WORKER,
         DM_INSERT_BATCH_SIZE: process.env.DM_INSERT_BATCH_SIZE,
         DM_MIN_INSERT_BATCH_SIZE: process.env.DM_MIN_INSERT_BATCH_SIZE,
-        DM_MAX_INSERT_BATCH_SIZE: process.env.DM_MAX_INSERT_BATCH_SIZE
+        DM_MAX_INSERT_BATCH_SIZE: process.env.DM_MAX_INSERT_BATCH_SIZE,
+        DM_PREASSIGN_TARGETS: process.env.DM_PREASSIGN_TARGETS
     };
 
     beforeEach(() => {
@@ -144,6 +156,7 @@ describe('dm-campaign-service', () => {
         db._reset();
         process.env.DM_BATCH_STRATEGY = 'fixed';
         process.env.DM_INSERT_BATCH_SIZE = '25';
+        process.env.DM_PREASSIGN_TARGETS = 'true';
         delete process.env.DM_BATCHES_PER_WORKER;
         delete process.env.DM_MIN_INSERT_BATCH_SIZE;
         delete process.env.DM_MAX_INSERT_BATCH_SIZE;
@@ -160,6 +173,8 @@ describe('dm-campaign-service', () => {
         else process.env.DM_MIN_INSERT_BATCH_SIZE = envSnapshot.DM_MIN_INSERT_BATCH_SIZE;
         if (envSnapshot.DM_MAX_INSERT_BATCH_SIZE === undefined) delete process.env.DM_MAX_INSERT_BATCH_SIZE;
         else process.env.DM_MAX_INSERT_BATCH_SIZE = envSnapshot.DM_MAX_INSERT_BATCH_SIZE;
+        if (envSnapshot.DM_PREASSIGN_TARGETS === undefined) delete process.env.DM_PREASSIGN_TARGETS;
+        else process.env.DM_PREASSIGN_TARGETS = envSnapshot.DM_PREASSIGN_TARGETS;
     });
 
     describe('createCampaign', () => {
@@ -328,6 +343,31 @@ describe('dm-campaign-service', () => {
 
             expect(result.totalTargets).toBe(10);
             expect(result.totalBatches).toBe(4);
+        });
+
+        test('preassigns target rows to online workers when queue preassignment is enabled', async () => {
+            const members = [
+                makeMember('u1', ['role-a']),
+                makeMember('u2', ['role-a'])
+            ];
+            const guild = makeGuild(members);
+
+            await campaignService.createCampaign({
+                guild,
+                requestedBy: 'admin1',
+                messageType: 'misc',
+                messageBody: 'Preassign test',
+                targetMode: 'any_roles',
+                roleIds: ['role-a']
+            });
+
+            const targetInsert = db.run.mock.calls.find((call) =>
+                call[0].includes('INSERT OR IGNORE INTO dm_campaign_targets')
+            );
+            expect(targetInsert).toBeTruthy();
+            expect(targetInsert[0]).toContain('assigned_worker_id');
+            expect(targetInsert[4]).toBe('w1');
+            expect(targetInsert[11]).toBe('w1');
         });
     });
 

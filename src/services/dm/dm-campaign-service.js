@@ -8,12 +8,16 @@
 
 const crypto = require('crypto');
 const db = require('../../db_async');
-const { envInt } = require('../../lib/env-utils');
+const { envBool, envInt } = require('../../lib/env-utils');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { withTransaction } = require('../../lib/transactions');
+const { pickWorker } = require('./dm-worker-selector');
 
 const DEFAULT_INSERT_BATCH_SIZE = 25;
 const HARD_MAX_TARGETS = 50000;
+const ASSIGNMENT_QUERY_CHUNK_SIZE = 400;
+const DEFAULT_STICKY_WINDOW_HOURS = 24;
+const DEFAULT_MAX_MISC_STREAK = 4;
 
 const VALID_MESSAGE_TYPES = new Set(['misc', 'war_early', 'war_late', 'system_welcome', 'system_quota']);
 const VALID_TARGET_MODES = new Set(['everyone', 'any_roles', 'all_roles', 'direct']);
@@ -32,6 +36,10 @@ function chunkArray(arr, size) {
         chunks.push(arr.slice(i, i + size));
     }
     return chunks;
+}
+
+function inClausePlaceholders(count) {
+    return Array.from({ length: count }, () => '?').join(', ');
 }
 
 function getBatchingConfig() {
@@ -73,6 +81,106 @@ async function computeInsertBatchSize(totalTargets) {
     const desiredBatches = Math.max(1, workerCount * cfg.batchesPerWorker);
     const dynamicSize = Math.ceil(totalTargets / desiredBatches);
     return clamp(dynamicSize, cfg.minBatchSize, cfg.maxBatchSize);
+}
+
+async function loadEligibleWorkers(dbHandle) {
+    const staleMs = envInt('DM_ASSIGNMENT_STALE_MS', 45000, 5000, 300000);
+    const cutoff = nowMs() - staleMs;
+    return dbHandle.all(
+        `SELECT worker_id, display_name, weight, last_seen_at, status
+         FROM dm_workers
+         WHERE enabled = 1 AND status = 'online' AND last_seen_at >= ?
+         ORDER BY worker_id ASC`,
+        cutoff
+    );
+}
+
+async function loadAffinityState(dbHandle, guildId, userIds) {
+    const affinityByUserId = new Map();
+    const blockedByUserId = new Map();
+
+    for (const chunk of chunkArray(userIds, ASSIGNMENT_QUERY_CHUNK_SIZE)) {
+        if (chunk.length === 0) continue;
+        const placeholders = inClausePlaceholders(chunk.length);
+
+        const affinityRows = await dbHandle.all(
+            `SELECT *
+             FROM dm_user_affinity
+             WHERE guild_id = ?
+               AND user_id IN (${placeholders})`,
+            guildId,
+            ...chunk
+        );
+        for (const row of affinityRows) {
+            affinityByUserId.set(String(row.user_id), row);
+        }
+
+        const blockRows = await dbHandle.all(
+            `SELECT user_id, worker_id
+             FROM dm_worker_user_blocks
+             WHERE guild_id = ?
+               AND user_id IN (${placeholders})`,
+            guildId,
+            ...chunk
+        );
+        for (const row of blockRows) {
+            const key = String(row.user_id);
+            const blocked = blockedByUserId.get(key) || new Set();
+            blocked.add(String(row.worker_id));
+            blockedByUserId.set(key, blocked);
+        }
+    }
+
+    return { affinityByUserId, blockedByUserId };
+}
+
+async function buildTargetAssignments(dbHandle, { guildId, userIds, messageType }) {
+    if (!envBool('DM_PREASSIGN_TARGETS', true) || !Array.isArray(userIds) || userIds.length === 0) {
+        return {
+            assignedWorkerByUserId: new Map(),
+            workerAssignmentCounts: {},
+            assignedCount: 0,
+            unassignedCount: userIds.length
+        };
+    }
+
+    const eligibleWorkers = await loadEligibleWorkers(dbHandle);
+    if (!eligibleWorkers || eligibleWorkers.length === 0) {
+        return {
+            assignedWorkerByUserId: new Map(),
+            workerAssignmentCounts: {},
+            assignedCount: 0,
+            unassignedCount: userIds.length
+        };
+    }
+
+    const { affinityByUserId, blockedByUserId } = await loadAffinityState(dbHandle, guildId, userIds);
+    const stickyWindowMs = DEFAULT_STICKY_WINDOW_HOURS * 60 * 60 * 1000;
+    const assignedWorkerByUserId = new Map();
+    const workerAssignmentCounts = {};
+    const now = nowMs();
+
+    for (const userId of userIds) {
+        const selectedWorkerId = pickWorker({
+            messageType,
+            affinity: affinityByUserId.get(userId) || null,
+            eligibleWorkers,
+            blockedWorkerIds: blockedByUserId.get(userId) || new Set(),
+            stickyWindowMs,
+            maxMiscStreak: DEFAULT_MAX_MISC_STREAK
+        }, now);
+
+        if (!selectedWorkerId) continue;
+        assignedWorkerByUserId.set(userId, selectedWorkerId);
+        workerAssignmentCounts[selectedWorkerId] = (workerAssignmentCounts[selectedWorkerId] || 0) + 1;
+    }
+
+    return {
+        assignedWorkerByUserId,
+        workerAssignmentCounts,
+        assignedCount: assignedWorkerByUserId.size,
+        unassignedCount: Math.max(0, userIds.length - assignedWorkerByUserId.size)
+    };
 }
 
 async function buildCampaignTargetPlan(dbHandle, { guildId, messageHash, uniqueIds, isSystemMessage, threshold }) {
@@ -247,6 +355,11 @@ async function createCampaign({
 
         const insertBatchSize = await computeInsertBatchSize(finalIds.length);
         const totalBatches = Math.ceil(finalIds.length / insertBatchSize);
+        const assignmentPlan = await buildTargetAssignments(tx, {
+            guildId: guild.id,
+            userIds: finalIds,
+            messageType
+        });
         const campaignResult = await tx.run(
             `INSERT INTO dm_campaigns
            (guild_id, requested_by, message_type, message_body, message_hash, target_mode, target_role_ids,
@@ -272,14 +385,22 @@ async function createCampaign({
         const batches = chunkArray(finalIds, insertBatchSize);
         for (let batchNo = 0; batchNo < batches.length; batchNo++) {
             const batch = batches[batchNo];
-            const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+            const placeholders = batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
             const params = [];
             for (const userId of batch) {
-                params.push(campaignId, guild.id, userId, batchNo + 1, now, now);
+                params.push(
+                    campaignId,
+                    guild.id,
+                    userId,
+                    assignmentPlan.assignedWorkerByUserId.get(userId) || null,
+                    batchNo + 1,
+                    now,
+                    now
+                );
             }
             await tx.run(
                 `INSERT OR IGNORE INTO dm_campaign_targets
-                 (campaign_id, guild_id, user_id, batch_no, created_at, updated_at)
+                 (campaign_id, guild_id, user_id, assigned_worker_id, batch_no, created_at, updated_at)
                  VALUES ${placeholders}`,
                 ...params
             );
@@ -291,7 +412,10 @@ async function createCampaign({
             totalTargets: finalIds.length,
             totalBatches,
             excludedByDedupe: excludedCount,
-            insertBatchSize
+            insertBatchSize,
+            preassignedTargets: assignmentPlan.assignedCount,
+            unassignedTargets: assignmentPlan.unassignedCount,
+            workerAssignmentCounts: assignmentPlan.workerAssignmentCounts
         };
     }, { immediate: true });
 
@@ -314,7 +438,10 @@ async function createCampaign({
         totalTargets: writeResult.totalTargets,
         totalResolvedTargets: uniqueIds.length,
         totalBatches: writeResult.totalBatches,
-        insertBatchSize: writeResult.insertBatchSize
+        insertBatchSize: writeResult.insertBatchSize,
+        preassignedTargets: writeResult.preassignedTargets,
+        unassignedTargets: writeResult.unassignedTargets,
+        workerAssignmentCounts: writeResult.workerAssignmentCounts
     });
 
     return {
@@ -322,7 +449,10 @@ async function createCampaign({
         totalTargets: writeResult.totalTargets,
         totalBatches: writeResult.totalBatches,
         preview: false,
-        excludedByDedupe: writeResult.excludedByDedupe
+        excludedByDedupe: writeResult.excludedByDedupe,
+        preassignedTargets: writeResult.preassignedTargets,
+        unassignedTargets: writeResult.unassignedTargets,
+        workerAssignmentCounts: writeResult.workerAssignmentCounts
     };
 }
 

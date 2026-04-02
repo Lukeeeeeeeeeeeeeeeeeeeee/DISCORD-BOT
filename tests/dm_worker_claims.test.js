@@ -54,5 +54,7 @@ describe('dm-worker claim compatibility', () => {
 
         expect(rows).toHaveLength(1);
         expect(mockState.claimSql).toContain("status IN ('pending', 'retry_wait')");
+        expect(mockState.claimSql).toContain('(assigned_worker_id IS NULL OR assigned_worker_id = ?)');
+        expect(mockState.claimSql).toContain('CASE WHEN assigned_worker_id = ? THEN 0 ELSE 1 END');
     });
 });
