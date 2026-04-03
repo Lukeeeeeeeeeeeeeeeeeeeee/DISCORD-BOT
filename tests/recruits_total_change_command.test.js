@@ -2,6 +2,7 @@ const mockDbGet = jest.fn();
 const mockDbRun = jest.fn();
 const mockEnsureCommandAccess = jest.fn();
 const mockGetWeekStartUtcTs = jest.fn();
+const mockGetRolling7DayStartTs = jest.fn();
 const mockReplyError = jest.fn(async () => null);
 const mockRecomputeLeaderboards = jest.fn();
 const mockRecomputeWarningsLeaderboard = jest.fn();
@@ -18,7 +19,8 @@ jest.mock('../src/lib/command-auth', () => ({
 }));
 
 jest.mock('../src/lib/week', () => ({
-  getWeekStartUtcTs: (...args) => mockGetWeekStartUtcTs(...args)
+  getWeekStartUtcTs: (...args) => mockGetWeekStartUtcTs(...args),
+  getRolling7DayStartTs: (...args) => mockGetRolling7DayStartTs(...args)
 }));
 
 jest.mock('../src/lib/embeds', () => ({
@@ -68,6 +70,7 @@ describe('/recruits total change command', () => {
     jest.clearAllMocks();
     mockEnsureCommandAccess.mockResolvedValue(true);
     mockGetWeekStartUtcTs.mockReturnValue(1700000000000);
+    mockGetRolling7DayStartTs.mockReturnValue(1699500000000);
     mockRecomputeLeaderboards.mockResolvedValue(undefined);
     mockRecomputeWarningsLeaderboard.mockResolvedValue(undefined);
     mockDbRun.mockResolvedValue({ changes: 1 });
@@ -89,6 +92,12 @@ describe('/recruits total change command', () => {
 
     await command.execute(interaction);
 
+    expect(mockDbGet).toHaveBeenCalledWith(
+      expect.stringContaining('SELECT COUNT(*) as c FROM recruits'),
+      'guild-1',
+      'target-1',
+      1699500000000
+    );
     expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
     expect(mockDbRun).toHaveBeenCalledWith(
       expect.stringContaining('DELETE FROM weekly_recruit_overrides'),

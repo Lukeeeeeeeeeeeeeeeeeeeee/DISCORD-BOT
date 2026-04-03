@@ -13,7 +13,7 @@ describe('fetchLeaderboardRows weekly overrides', () => {
 
     const sql = all.mock.calls[0][0];
     expect(sql).toContain('weekly_recruit_overrides');
-    expect(sql).toContain('COALESCE(wro.total, c.cnt, 0) AS cnt');
+    expect(sql).toContain('MAX(COALESCE(wro.total, 0), COALESCE(c.cnt, 0)) AS cnt');
   });
 
   test('does not join weekly overrides without weekStart', async () => {

@@ -1,6 +1,6 @@
 const db = require('../../db_async');
 const { ensureCommandAccess } = require('../../lib/command-auth');
-const { getWeekStartUtcTs } = require('../../lib/week');
+const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
 const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
 const { formatPointsValue } = require('../../lib/economy');
@@ -138,12 +138,13 @@ module.exports = {
     }
 
     const weekStart = getWeekStartUtcTs();
+    const rolling7dStart = getRolling7DayStartTs();
     try {
       const realCountRow = await db.get(
         'SELECT COUNT(*) as c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND valid = 1 AND created_at >= ?',
         guildId,
         member.id,
-        weekStart
+        rolling7dStart
       );
       const realCount = realCountRow ? Number(realCountRow.c || 0) : 0;
 

@@ -114,10 +114,50 @@ async function resolveGuild(client) {
   return null;
 }
 
-let leaderboardsInFlight = null;
-let warningsInFlight = null;
+const leaderboardRefreshState = {
+  inFlight: null,
+  pending: false,
+  latestArgs: null
+};
+const warningsRefreshState = {
+  inFlight: null,
+  pending: false,
+  latestArgs: null
+};
 let quotaWarningsInFlight = null;
 let scheduledJobs = [];
+
+async function runCoalescedRefresh(state, task, args) {
+  state.latestArgs = args;
+  state.pending = true;
+
+  if (state.inFlight) return state.inFlight;
+
+  state.inFlight = (async () => {
+    let lastError = null;
+
+    while (state.pending) {
+      state.pending = false;
+      const runArgs = state.latestArgs;
+      try {
+        await task(...runArgs);
+        lastError = null;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (lastError) throw lastError;
+  })();
+
+  try {
+    return await state.inFlight;
+  } finally {
+    state.inFlight = null;
+    state.pending = false;
+    state.latestArgs = null;
+  }
+}
 
 async function enforceQuotaWarnings(db, guild, weekStart, recruiters) {
   if (!db || !guild || !weekStart || !recruiters) return;
@@ -372,7 +412,12 @@ async function recomputeLeaderboardsInternal(db, guild) {
     let rows = [];
     if (!leaderboardText) {
       const meta = await loadRecruiterMeta(db, recruiterMembers);
-      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: rolling7dStart });
+      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, {
+        guildId,
+        region: rg.key,
+        weekStart,
+        sinceTs: rolling7dStart
+      });
       const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
       const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart);
 
@@ -462,13 +507,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
 }
 
 async function recomputeLeaderboards(db, guild) {
-  if (leaderboardsInFlight) return leaderboardsInFlight;
-  leaderboardsInFlight = recomputeLeaderboardsInternal(db, guild);
-  try {
-    return await leaderboardsInFlight;
-  } finally {
-    leaderboardsInFlight = null;
-  }
+  return runCoalescedRefresh(leaderboardRefreshState, recomputeLeaderboardsInternal, [db, guild]);
 }
 
 async function recomputeWarningsLeaderboardInternal(db, guild) {
@@ -630,13 +669,7 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
 }
 
 async function recomputeWarningsLeaderboard(db, guild) {
-  if (warningsInFlight) return warningsInFlight;
-  warningsInFlight = recomputeWarningsLeaderboardInternal(db, guild);
-  try {
-    return await warningsInFlight;
-  } finally {
-    warningsInFlight = null;
-  }
+  return runCoalescedRefresh(warningsRefreshState, recomputeWarningsLeaderboardInternal, [db, guild]);
 }
 
 // Trial recruiter auto-promotion is now handled in recruit-service.js.

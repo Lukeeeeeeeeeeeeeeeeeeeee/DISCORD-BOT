@@ -67,4 +67,22 @@ describe('calculate7DayStats weekly overrides', () => {
       1700438400000
     );
   });
+
+  test('does not let an older override pin counts below newer real recruits', async () => {
+    const get = jest.fn()
+      .mockResolvedValueOnce({ c: 7 })
+      .mockResolvedValueOnce({ total: 5 })
+      .mockResolvedValueOnce({ c: 2 });
+    const db = { get, all: jest.fn() };
+
+    const stats = await calculate7DayStats(db, 'recruiter-1', null, {
+      guildId: 'guild-1',
+      sinceTs: 1700000000000,
+      untilTs: 1700600000000,
+      overrideWeekStart: 1700438400000
+    });
+
+    expect(stats.recruits7d).toBe(7);
+    expect(stats.activityRate).toBe(7);
+  });
 });

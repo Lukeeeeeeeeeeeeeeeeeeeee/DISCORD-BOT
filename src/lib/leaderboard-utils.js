@@ -32,7 +32,7 @@ function buildLeaderboardSql(valuesSql, options = {}) {
   const useRecruits = options.useRecruits !== false;
   const region = options.region || null;
   const cntExpr = useOverride
-    ? `COALESCE(wro.total, ${useRecruits ? 'c.cnt' : '0'}, 0)`
+    ? `MAX(COALESCE(wro.total, 0), ${useRecruits ? 'COALESCE(c.cnt, 0)' : '0'})`
     : (useRecruits ? 'COALESCE(c.cnt, 0)' : '0');
   const overrideJoin = useOverride
     ? 'LEFT JOIN weekly_recruit_overrides wro ON wro.guild_id = ? AND wro.recruiter_id = r.id AND wro.week_start = ?'

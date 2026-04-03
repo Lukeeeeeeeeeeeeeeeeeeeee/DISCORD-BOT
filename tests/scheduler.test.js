@@ -11,13 +11,27 @@ function makeGuildMock(_db) {
     return {
       id,
       messages: {
-        fetch: jest.fn(async (mid) => messages.get(mid) || Promise.reject(new Error('Not found'))),
+        fetch: jest.fn(async (mid) => {
+          if (typeof mid === 'object') {
+            return { values: () => Array.from(messages.values()) };
+          }
+          return messages.get(mid) || Promise.reject(new Error('Not found'));
+        }),
       },
       send: jest.fn(async (payload) => {
         // create a fake message object
-        const id = `m${Math.random().toString(36).slice(2)}`;
-        const msg = { id, edit: jest.fn(async () => true), content: typeof payload === 'string' ? payload : (payload.content || ''), embeds: payload.embeds || [] };
-        messages.set(id, msg);
+        const messageId = `m${Math.random().toString(36).slice(2)}`;
+        const msg = {
+          id: messageId,
+          content: typeof payload === 'string' ? payload : (payload.content || ''),
+          embeds: payload.embeds || [],
+          edit: jest.fn(async (nextPayload) => {
+            msg.content = typeof nextPayload === 'string' ? nextPayload : (nextPayload.content || '');
+            msg.embeds = nextPayload && nextPayload.embeds ? nextPayload.embeds : [];
+            return msg;
+          })
+        };
+        messages.set(messageId, msg);
         return msg;
       })
     };
@@ -51,6 +65,9 @@ describe('scheduler recompute & persistence', () => {
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(guild_id, recruited_id);
       CREATE TABLE IF NOT EXISTS leaderboard_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT NOT NULL, region TEXT, updated_at INTEGER NOT NULL );
       CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(guild_id, channel_id, region);
+      CREATE TABLE IF NOT EXISTS analytics_role_changes ( guild_id TEXT NOT NULL, user_id TEXT NOT NULL, action TEXT NOT NULL, role_id TEXT NOT NULL, created_at INTEGER NOT NULL );
+      CREATE TABLE IF NOT EXISTS weekly_calculations ( guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, week_start INTEGER, calculated_min_req INTEGER, timestamp INTEGER );
+      CREATE TABLE IF NOT EXISTS weekly_recruit_overrides ( guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, week_start INTEGER NOT NULL, total INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, note TEXT, PRIMARY KEY (guild_id, recruiter_id, week_start) );
       CREATE TABLE IF NOT EXISTS warnings ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, created_at INTEGER NOT NULL, note TEXT, revoked INTEGER DEFAULT 0, expired_at INTEGER );
     `);
   });
@@ -158,6 +175,78 @@ describe('scheduler recompute & persistence', () => {
     const message = await channel.messages.fetch(row.message_id);
     expect(message.content).toContain('<@A>');
     expect(message.content).toContain('<@B>');
+  });
+
+  test('recomputeLeaderboards reruns once when a new refresh is requested mid-flight', async () => {
+    const scheduler = require('../src/scheduler');
+    const consts = require('../src/constants');
+    consts.CHANNELS.INVITES_EU = 'EU_CH';
+    consts.CHANNELS.CENTRAL_LEADERBOARD = 'CENTRAL';
+
+    const now = Date.now();
+    await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)', 'GLOBAL', 'A');
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, ?, 1)', 'GLOBAL', 'A', 'u1', 'EU', 'x', now);
+
+    let releaseFirstSend;
+    const firstSendGate = new Promise((resolve) => { releaseFirstSend = resolve; });
+    const messages = new Map();
+    let sendCount = 0;
+    const channel = {
+      id: 'EU_CH',
+      messages: {
+        fetch: jest.fn(async (arg) => {
+          if (typeof arg === 'object') {
+            return { values: () => Array.from(messages.values()) };
+          }
+          return messages.get(arg) || Promise.reject(new Error('Not found'));
+        })
+      },
+      send: jest.fn(async (payload) => {
+        sendCount += 1;
+        const msg = {
+          id: `m${sendCount}`,
+          content: payload.content || '',
+          embeds: payload.embeds || [],
+          edit: jest.fn(async (nextPayload) => {
+            msg.content = nextPayload.content || '';
+            msg.embeds = nextPayload.embeds || [];
+            return msg;
+          })
+        };
+        if (sendCount === 1) {
+          await firstSendGate;
+        }
+        messages.set(msg.id, msg);
+        return msg;
+      })
+    };
+    const guild = {
+      id: 'GLOBAL',
+      channels: {
+        cache: {
+          get: (id) => {
+            if (id === 'EU_CH') return channel;
+            return null;
+          }
+        }
+      }
+    };
+
+    const firstRun = scheduler.recomputeLeaderboards(db, guild);
+    while (sendCount === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, ?, 1)', 'GLOBAL', 'A', 'u2', 'EU', 'y', now + 1);
+    const secondRun = scheduler.recomputeLeaderboards(db, guild);
+
+    releaseFirstSend();
+    await Promise.all([firstRun, secondRun]);
+
+    const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', 'EU_CH', 'EU');
+    const message = await channel.messages.fetch(row.message_id);
+    expect(message.content).toContain('[2/');
+    expect(channel.send).toHaveBeenCalledTimes(1);
   });
 
   test('formatLeaderboardMessage lists recruiters and counts', () => {

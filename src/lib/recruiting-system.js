@@ -273,7 +273,7 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
         overrideWeekStart
       ).catch(() => null);
       if (overrideRow && Number.isFinite(Number(overrideRow.total))) {
-        recruits7d = Math.max(0, Number(overrideRow.total));
+        recruits7d = Math.max(recruits7d, Math.max(0, Number(overrideRow.total)));
       }
     }
     const activityRate = recruits7d; // 7-day activity rate

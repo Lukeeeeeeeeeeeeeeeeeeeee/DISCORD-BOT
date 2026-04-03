@@ -64,7 +64,7 @@ async function batchCalculate7DayStats(database, recruiterIds, guild, opts = {})
     for (const row of overrideRows) {
       if (statsMap.has(row.recruiter_id) && Number.isFinite(Number(row.total))) {
         const stats = statsMap.get(row.recruiter_id);
-        stats.recruits7d = Math.max(0, Number(row.total));
+        stats.recruits7d = Math.max(stats.recruits7d, Math.max(0, Number(row.total)));
         stats.activityRate = stats.recruits7d;
       }
     }
