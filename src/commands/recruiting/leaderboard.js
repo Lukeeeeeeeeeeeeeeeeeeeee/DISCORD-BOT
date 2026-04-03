@@ -3,21 +3,17 @@ const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../../constants');
 const { getRegionInfo } = require('../../lib/regions');
 const { ensureCommandAccess } = require('../../lib/command-auth');
 const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
-const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
+const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs, loadRecruiterIdsFromRecentRecruits } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
+const { isInteractionAckError } = require('../../lib/interaction-errors');
 const { logUnexpectedError } = require('../../lib/logger');
 
 const FULL_FETCH_MAX = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_MAX || '5000', 10);
 const FULL_FETCH_COOLDOWN_MS = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_COOLDOWN_MS || '600000', 10);
 const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
-const INTERACTION_ACK_ERROR_CODES = new Set([10008, 10062, 40060]);
 let lastFullFetchAt = 0;
-
-function isInteractionAckError(error) {
-  return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
-}
 
 function reportLeaderboardCommandError(scope, error, meta = {}) {
   void logUnexpectedError(scope, error, {
@@ -123,6 +119,20 @@ module.exports = {
           }
         } catch (e) {
           reportLeaderboardCommandError('command.leaderboard.resolveMembers.region', e, {
+            guildId,
+            region
+          });
+        }
+
+        try {
+          const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
+            guildId,
+            region,
+            sinceTs: rolling7dStart
+          });
+          recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
+        } catch (e) {
+          reportLeaderboardCommandError('command.leaderboard.loadRecentRecruiterIds.region', e, {
             guildId,
             region
           });
@@ -264,6 +274,16 @@ module.exports = {
         }
       } catch (e) {
         reportLeaderboardCommandError('command.leaderboard.resolveMembers.global', e, { guildId });
+      }
+
+      try {
+        const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
+          guildId,
+          sinceTs: rolling7dStart
+        });
+        recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
+      } catch (e) {
+        reportLeaderboardCommandError('command.leaderboard.loadRecentRecruiterIds.global', e, { guildId });
       }
 
       const recruiterMembers = Array.from(allRecruiterIds);

@@ -1,7 +1,7 @@
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../../constants');
 const { getRegionInfo } = require('../../lib/regions');
 const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
-const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
+const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs, loadRecruiterIdsFromRecentRecruits } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const recruitersRepo = require('../../repos/recruiters-repo');
 const { runWithConcurrency } = require('../../lib/concurrency');
@@ -213,6 +213,20 @@ async function showLeaderboard({ interaction, db, guildId }) {
       });
     }
 
+    try {
+      const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
+        guildId,
+        region,
+        sinceTs: getRolling7DayStartTs()
+      });
+      recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
+    } catch (e) {
+      reportLeaderboardServiceError('service.leaderboard.loadRecentRecruiterIds.region', e, {
+        guildId,
+        region
+      });
+    }
+
     const recruiterMembers = Array.from(allRecruiterIds);
     if (recruiterMembers.length === 0) {
       const lang = interaction.locale || 'en';
@@ -279,6 +293,16 @@ async function showLeaderboard({ interaction, db, guildId }) {
     }
   } catch (e) {
     reportLeaderboardServiceError('service.leaderboard.resolveMembers.global', e, { guildId });
+  }
+
+  try {
+    const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
+      guildId,
+      sinceTs: getRolling7DayStartTs()
+    });
+    recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
+  } catch (e) {
+    reportLeaderboardServiceError('service.leaderboard.loadRecentRecruiterIds.global', e, { guildId });
   }
 
   const recruiterMembers = Array.from(allRecruiterIds);

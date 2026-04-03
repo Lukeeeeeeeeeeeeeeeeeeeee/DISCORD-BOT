@@ -125,6 +125,41 @@ describe('scheduler recompute & persistence', () => {
     expect(row).toBeDefined();
   });
 
+  test('recomputeLeaderboards includes recent recruiters even when they lack the regional recruiter role', async () => {
+    const scheduler = require('../src/scheduler');
+    const consts = require('../src/constants');
+    consts.CHANNELS.INVITES_EU = 'EU_CH';
+    consts.CHANNELS.CENTRAL_LEADERBOARD = 'CENTRAL';
+    consts.RECRUITER_ROLE_IDS.EU = 'EU_ROLE';
+
+    const now = Date.now();
+    await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 5, 0, 0, 4)', 'GLOBAL', 'A');
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, ?, 1)', 'GLOBAL', 'A', 'u1', 'EU', 'x', now);
+    await db.run('INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid) VALUES (?, ?, ?, ?, ?, ?, 1)', 'GLOBAL', 'B', 'u2', 'EU', 'y', now);
+
+    const guild = makeGuildMock(db);
+    guild.roles = {
+      cache: {
+        get: (id) => {
+          if (id !== 'EU_ROLE') return null;
+          return {
+            id: 'EU_ROLE',
+            members: new Map([['A', { id: 'A' }]])
+          };
+        }
+      }
+    };
+
+    await scheduler.recomputeLeaderboards(db, guild);
+
+    const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', 'EU_CH', 'EU');
+    expect(row).toBeDefined();
+    const channel = guild.channels.cache.get('EU_CH');
+    const message = await channel.messages.fetch(row.message_id);
+    expect(message.content).toContain('<@A>');
+    expect(message.content).toContain('<@B>');
+  });
+
   test('formatLeaderboardMessage lists recruiters and counts', () => {
     const scheduler = require('../src/scheduler');
     const rows = [{ recruiter_id: 'A', cnt: 1, points: 10 }, { recruiter_id: 'B', cnt: 1, points: 5 }];

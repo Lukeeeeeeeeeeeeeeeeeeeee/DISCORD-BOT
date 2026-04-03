@@ -6,7 +6,7 @@ const { formatPointsValue } = require('./lib/economy');
 const { getWeekStartUtcTs, getRolling7DayStartTs } = require('./lib/week');
 const { formatUtcDate } = require('./lib/time');
 const { fetchMembersByIds } = require('./lib/member-fetch');
-const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('./lib/leaderboard-utils');
+const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs, loadRecruiterIdsFromRecentRecruits } = require('./lib/leaderboard-utils');
 const { logUnexpectedError } = require('./lib/logger');
 
 const { performWeeklyRecalculations } = require('./lib/weekly-recalculations');
@@ -346,15 +346,15 @@ async function recomputeLeaderboardsInternal(db, guild) {
       }
     }
 
-    if (allRecruiterIds.size === 0) {
-      // Test-mode / minimal guild mock: fall back to anyone who has recruited in this region in-window.
-      const ids = await db.all(
-        'SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
+    try {
+      const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
         guildId,
-        rg.key,
-        rolling7dStart
-      );
-      (ids || []).forEach(r => allRecruiterIds.add(r.recruiter_id));
+        region: rg.key,
+        sinceTs: rolling7dStart
+      });
+      recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
+    } catch (e) {
+      console.error(`Failed to load recent recruiter IDs for ${rg.key} leaderboard:`, e);
     }
 
     debugLog(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
