@@ -26,4 +26,23 @@ describe('replyError', () => {
 
     await expect(replyError(interaction, 'Denied')).rejects.toThrow('Missing Permissions');
   });
+
+  test('swallows nested acknowledgement errors', async () => {
+    const interaction = {
+      deferred: true,
+      replied: false,
+      editReply: jest.fn().mockRejectedValue({
+        message: 'Request failed',
+        rawError: { code: 10062, message: 'Unknown interaction' }
+      }),
+      followUp: jest.fn(),
+      reply: jest.fn()
+    };
+
+    await expect(replyError(interaction, 'Failed to initialize leaderboards.')).resolves.toBeNull();
+
+    expect(interaction.editReply).toHaveBeenCalledTimes(1);
+    expect(interaction.followUp).not.toHaveBeenCalled();
+    expect(interaction.reply).not.toHaveBeenCalled();
+  });
 });

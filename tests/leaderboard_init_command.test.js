@@ -96,4 +96,15 @@ describe('/leaderboard init command', () => {
     expect(mockRecomputeWarningsLeaderboard).toHaveBeenCalledTimes(1);
     expect(mockReplyError).not.toHaveBeenCalled();
   });
+
+  test('swallows wrapped unknown-interaction errors before recompute starts', async () => {
+    const interaction = makeInteraction();
+    interaction.deferReply.mockRejectedValueOnce(new Error('Unknown interaction'));
+
+    await expect(cmd.execute(interaction)).resolves.toBeNull();
+
+    expect(mockRecomputeLeaderboards).not.toHaveBeenCalled();
+    expect(mockRecomputeWarningsLeaderboard).not.toHaveBeenCalled();
+    expect(mockReplyError).not.toHaveBeenCalled();
+  });
 });
