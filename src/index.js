@@ -1001,7 +1001,9 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
   }
 
   try {
+    console.log('BOOT: startup entered');
     await db.get('SELECT 1 AS ok');
+    console.log('BOOT: database connectivity ok');
 
     if (IS_DM_WORKER) {
       // DM Worker mode — lightweight: login + start worker, skip commands/events
@@ -1010,16 +1012,26 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
         console.error('FATAL: DM_WORKER_ID is required when BOT_RUNTIME_MODE=dm_worker');
         process.exit(1);
       }
+      console.log('BOOT: calling client.login (dm_worker mode)');
       await client.login(token);
+      console.log('BOOT: client.login resolved (dm_worker mode)');
       logRuntimeEvent('info', 'startup.dmWorker', 'Starting in DM worker mode', { workerId });
       dmWorker.startWorker(client, workerId, runtimeConfig.dmWorkerDisplayName || workerId);
       return;
     }
 
     // Main bot mode — full startup
+    console.log('BOOT: awaiting anti-nuke init');
     await antiNukeInitPromise;
+    console.log('BOOT: anti-nuke init resolved');
+    console.log('BOOT: awaiting invite init');
     await inviteInitPromise;
+    console.log('BOOT: invite init resolved');
+    console.log(`BOOT: internal worker enabled=${runtimeConfig.enableInternalWorker ? 'true' : 'false'}`);
+    console.log(`BOOT: extra worker tokens=${runtimeConfig.dmWorkerTokens.length}`);
+    console.log('BOOT: calling client.login');
     await client.login(token);
+    console.log('BOOT: client.login resolved');
 
     // ── DM Worker Spawning ──────────────────────────────────────────────────
     const dmWorkerTokens = runtimeConfig.dmWorkerTokens
