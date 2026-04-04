@@ -34,7 +34,7 @@ function buildRuntimeConfig(env = process.env, opts = {}) {
     dmWorkerId: trimString(env.DM_WORKER_ID),
     dmWorkerDisplayName: trimString(env.DM_WORKER_DISPLAY_NAME),
     dmWorkerTokens: splitCsv(env.DM_WORKER_TOKENS),
-    enableInternalWorker: envBool('ENABLE_INTERNAL_WORKER', true)
+    enableInternalWorker: envBool('ENABLE_INTERNAL_WORKER', false)
   };
 }
 

@@ -10,15 +10,15 @@ describe('runtime-config', () => {
         else process.env.ENABLE_INTERNAL_WORKER = originalEnableInternalWorker;
     });
 
-    test('enables the internal worker by default', () => {
+    test('disables the internal worker by default', () => {
         delete process.env.ENABLE_INTERNAL_WORKER;
         const config = buildRuntimeConfig({});
-        expect(config.enableInternalWorker).toBe(true);
+        expect(config.enableInternalWorker).toBe(false);
     });
 
-    test('allows disabling the internal worker explicitly', () => {
-        process.env.ENABLE_INTERNAL_WORKER = 'false';
+    test('allows enabling the internal worker explicitly', () => {
+        process.env.ENABLE_INTERNAL_WORKER = 'true';
         const config = buildRuntimeConfig({});
-        expect(config.enableInternalWorker).toBe(false);
+        expect(config.enableInternalWorker).toBe(true);
     });
 });

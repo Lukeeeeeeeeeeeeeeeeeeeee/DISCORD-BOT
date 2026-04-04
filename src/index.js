@@ -117,21 +117,28 @@ const inviteInitPromise = (async () => {
 });
 
 const commandsPath = path.join(__dirname, 'commands');
-const { loadErrors: commandLoadErrors } = loadCommandsIntoCollection({
-  commandsPath,
-  collection: client.commands,
-  onInfo: (message) => {
-    logRuntimeEvent('info', 'startup.commands', message);
-  },
-  onWarn: (message) => {
-    logRuntimeEvent('warn', 'startup.commands', message);
-  }
-});
+let commandLoadErrors = [];
+try {
+  ({ loadErrors: commandLoadErrors } = loadCommandsIntoCollection({
+    commandsPath,
+    collection: client.commands,
+    onInfo: (message) => {
+      logRuntimeEvent('info', 'startup.commands', message);
+    },
+    onWarn: (message) => {
+      logRuntimeEvent('warn', 'startup.commands', message);
+    }
+  }));
+} catch (error) {
+  console.error('FATAL: command loader crashed during startup.', error);
+  throw error;
+}
 if (commandLoadErrors.length > 0) {
   const details = commandLoadErrors.map(entry => {
     const message = entry && entry.error && entry.error.message ? entry.error.message : String(entry.error);
     return `${entry.file}: ${message}`;
   });
+  console.error(`FATAL: command loading failed.\n${details.join('\n')}`);
   throw new Error(`Command loading failed:\n${details.join('\n')}`);
 }
 
