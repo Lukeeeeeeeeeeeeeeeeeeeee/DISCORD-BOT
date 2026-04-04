@@ -1,4 +1,5 @@
 const { MessageFlags } = require('discord.js');
+const { isInteractionAckError } = require('../lib/interaction-errors');
 
 function createInteractionCreateHandler({
   isSystemsReady,
@@ -13,9 +14,6 @@ function createInteractionCreateHandler({
   logUnexpectedError,
   buildErrorEmbed
 } = {}) {
-  const interactionAckErrorCodes = new Set([10008, 10062, 40060]);
-  const isInteractionAckError = (error) => Boolean(error && interactionAckErrorCodes.has(Number(error.code)));
-
   return async function onInteractionCreate(interaction) {
     if (!isSystemsReady || !isSystemsReady()) return;
     if (!interaction || typeof interaction.isChatInputCommand !== 'function' || !interaction.isChatInputCommand()) return;
@@ -35,13 +33,19 @@ function createInteractionCreateHandler({
     } catch (err) {
       if (isInteractionAckError(err)) return;
       const isKnown = isAppError ? isAppError(err) : false;
+      let dispatchResult = null;
       if (!isKnown && logUnexpectedError) {
-        logUnexpectedError('command', err, { ...meta, category });
+        dispatchResult = await logUnexpectedError('command', err, { ...meta, category });
       }
       if (logVerbose) logVerbose('command.error', 'Command failed', { ...meta, category });
       try {
         const title = isKnown && err && err.title ? err.title : 'Error';
-        const userMessage = isKnown && err && err.userMessage ? err.userMessage : 'Command failed.';
+        const supportSuffix = !isKnown && dispatchResult && dispatchResult.supportId
+          ? ` Support ID: \`${dispatchResult.supportId}\`.`
+          : '';
+        const userMessage = isKnown && err && err.userMessage
+          ? err.userMessage
+          : `Command failed.${supportSuffix}`;
         const embed = buildErrorEmbed ? buildErrorEmbed(userMessage, title) : null;
         if (!embed) return;
         if (interaction.deferred || interaction.replied) {

@@ -1,6 +1,6 @@
 require('dotenv').config();
 const path = require('path');
-const { Client, GatewayIntentBits, Collection, PermissionsBitField, MessageFlags } = require('discord.js');
+const { Client, GatewayIntentBits, Collection, PermissionsBitField } = require('discord.js');
 const db = require('./db_async');
 const scheduler = require('./scheduler');
 const { GUILD_ID, ROLE_IDS, RECRUITER_ROLE_IDS } = require('./constants');
@@ -9,12 +9,14 @@ const AntiNukeSystem = require('./lib/antinuke-system');
 const { dispatchCommand } = require('./lib/command-dispatcher');
 const { trackRookieChatMessage } = require('./lib/rookie-chat');
 const { handleRookieWarLogMessage } = require('./lib/rookie-war');
+const { createInteractionCreateHandler } = require('./events/interaction-create');
 const { createVoiceStateUpdateHandler } = require('./events/voice-state-update');
 const analytics = require('./lib/analytics');
 const runtime = require('./lib/runtime');
 const { logUnexpectedError, logRuntimeEvent, getCommandCategory, getInteractionMeta } = require('./lib/logger');
 const { AECS, CodexError, provisionTelemetryWebhooks } = require('./lib/aecs');
 const { preloadLocales } = require('./lib/i18n');
+const { isAppError } = require('./lib/errors');
 const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
 const { startHealthServer } = require('./lib/health-server');
 const { loadCommandsIntoCollection } = require('./lib/command-loader');
@@ -71,7 +73,6 @@ const inviteTrackLocks = new Map();
 const invitePendingAttributions = new Map();
 const voiceSessions = new Map();
 const INVITE_SNAPSHOT_TTL_MS = runtimeConfig.inviteSnapshotTtlMs;
-const INTERACTION_ACK_ERROR_CODES = new Set([10008, 10062, 40060]);
 const SHUTDOWN_STEP_TIMEOUT_MS = runtimeConfig.shutdownStepTimeoutMs;
 const SHUTDOWN_ANALYTICS_TIMEOUT_MS = runtimeConfig.shutdownAnalyticsTimeoutMs;
 const SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS = runtimeConfig.shutdownAntinukeSaveTimeoutMs;
@@ -80,10 +81,6 @@ const ENFORCED_ROLE_ID = runtimeConfig.enforcedRoleId;
 const ENFORCED_GUILD_ID = runtimeConfig.enforcedGuildId;
 const ENFORCED_CHECK_INTERVAL_MS = runtimeConfig.enforcedCheckIntervalMs;
 let enforcedRoleTimer = null;
-
-function isInteractionAckError(error) {
-  return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
-}
 
 // Global Mutex for Sequential Join Processing (FIX: VULN-02)
 const guildJoinQueues = new Map();
@@ -512,10 +509,18 @@ async function flushShutdown(signal) {
 
 process.on('SIGINT', () => void flushShutdown('SIGINT'));
 process.on('SIGTERM', () => void flushShutdown('SIGTERM'));
+function logFatalProcessError(prefix, error) {
+  if (error && error.stack) {
+    console.error(`${prefix}\n${error.stack}`);
+    return;
+  }
+  console.error(prefix, error);
+}
 // R-01: These handlers must NOT be async functions — Node.js ignores the returned promise so any
 // secondary throw becomes an unhandled rejection that may crash before graceful shutdown completes.
 // We use synchronous .then().catch() chains to ensure secondary failures are caught.
 process.on('uncaughtException', (err) => {
+  logFatalProcessError('FATAL: uncaught exception', err);
   const codex = new CodexError('SYS-910', {
     scope: 'process.uncaughtException',
     name: err && err.name ? err.name : 'Error',
@@ -529,6 +534,7 @@ process.on('uncaughtException', (err) => {
 });
 process.on('unhandledRejection', (reason) => {
   const error = reason instanceof Error ? reason : new Error(String(reason));
+  logFatalProcessError('FATAL: unhandled rejection', error);
   const codex = new CodexError('SYS-910', {
     scope: 'process.unhandledRejection',
     name: error.name,
@@ -541,40 +547,23 @@ process.on('unhandledRejection', (reason) => {
     .catch(() => process.exit(1));
 });
 
+const onInteractionCreate = createInteractionCreateHandler({
+  isSystemsReady: () => true,
+  client,
+  db,
+  analytics,
+  dispatchCommand,
+  getCommandCategory,
+  getInteractionMeta,
+  isAppError,
+  logUnexpectedError,
+  buildErrorEmbed
+});
+
 client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+  if (!interaction || typeof interaction.isChatInputCommand !== 'function' || !interaction.isChatInputCommand()) return;
   await AECS.withInteraction(interaction, async () => {
-    const cmd = client.commands.get(interaction.commandName);
-    if (!cmd) return;
-    try {
-      if (interaction.guild) {
-        await analytics.recordCommand({ guildId: interaction.guild.id, commandName: interaction.commandName });
-      }
-      await dispatchCommand(cmd, interaction, { client, db });
-    } catch (err) {
-      // Ignore ack/expiry races (unknown interaction / already acknowledged).
-      if (isInteractionAckError(err)) return;
-      const meta = getInteractionMeta(interaction);
-      const category = getCommandCategory(meta.command);
-      const dispatchResult = await logUnexpectedError('command', err, { ...meta, category });
-      const supportSuffix = dispatchResult && dispatchResult.supportId
-        ? ` Support ID: \`${dispatchResult.supportId}\`.`
-        : '';
-      // Safely notify the user (use editReply if deferred/replied)
-      try {
-        const embed = buildErrorEmbed(`Command failed.${supportSuffix}`);
-        if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({ embeds: [embed] });
-        } else {
-          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
-        }
-      } catch (err2) {
-        // If the interaction is expired, Discord returns code 10062 - ignore silently
-        if (isInteractionAckError(err2)) return;
-        // otherwise log
-        console.error('Failed to send error response for interaction:', err2);
-      }
-    }
+    await onInteractionCreate(interaction);
   });
 });
 

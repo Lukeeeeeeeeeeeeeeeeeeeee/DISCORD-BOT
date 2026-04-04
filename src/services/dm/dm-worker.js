@@ -494,7 +494,12 @@ class DMWorker {
         };
         this.cancellationTimer = setTimeout(pollCancel, 5000);
 
-        void this.heartbeat();
+        void this.heartbeat().catch(err => {
+            void logUnexpectedError('dm.worker.heartbeat', err, {
+                workerId: this.workerId,
+                phase: 'startup'
+            });
+        });
         this.heartbeatTimer = setInterval(() => {
             void this.heartbeat().catch(err => {
                 void logUnexpectedError('dm.worker.heartbeat', err, { workerId: this.workerId });

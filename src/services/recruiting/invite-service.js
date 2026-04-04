@@ -3,14 +3,10 @@ const InviteSystem = require('../../lib/invite-system');
 const { hasAdministrator } = require('../../lib/permissions');
 const analytics = require('../../lib/analytics');
 const { replyError } = require('../../lib/embeds');
+const { isInteractionAckError } = require('../../lib/interaction-errors');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 
 const inviteSystems = new Map();
-const INTERACTION_ACK_ERROR_CODES = new Set([10008, 10062, 40060]);
-
-function isInteractionAckError(error) {
-  return Boolean(error && INTERACTION_ACK_ERROR_CODES.has(Number(error.code)));
-}
 
 function toGuildKey(guildId = null) {
   return guildId || 'GLOBAL';

@@ -14,7 +14,8 @@ describe('interactionCreate handler', () => {
 
   test('suppresses stale original-reply errors while reporting command failures', async () => {
     const dispatchCommand = jest.fn().mockRejectedValue(new Error('boom'));
-    const logUnexpectedError = jest.fn().mockResolvedValue(null);
+    const logUnexpectedError = jest.fn().mockResolvedValue({ supportId: 'SUP-123' });
+    const buildErrorEmbed = jest.fn(() => ({ title: 'Error' }));
     const handler = createInteractionCreateHandler({
       isSystemsReady: () => true,
       client: { commands: new Map([['leaderboard', {}]]) },
@@ -25,7 +26,7 @@ describe('interactionCreate handler', () => {
       getInteractionMeta: () => ({ command: 'leaderboard', guildId: 'guild-1' }),
       isAppError: () => false,
       logUnexpectedError,
-      buildErrorEmbed: () => ({ title: 'Error' })
+      buildErrorEmbed
     });
     const interaction = {
       commandName: 'leaderboard',
@@ -41,6 +42,7 @@ describe('interactionCreate handler', () => {
 
     expect(dispatchCommand).toHaveBeenCalledTimes(1);
     expect(logUnexpectedError).toHaveBeenCalledTimes(1);
+    expect(buildErrorEmbed).toHaveBeenCalledWith('Command failed. Support ID: `SUP-123`.', 'Error');
     expect(interaction.editReply).toHaveBeenCalledWith({ embeds: [{ title: 'Error' }] });
     expect(consoleErrorSpy).not.toHaveBeenCalled();
   });

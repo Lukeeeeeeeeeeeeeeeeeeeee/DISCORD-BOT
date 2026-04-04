@@ -1,113 +1,49 @@
+const mockExecute = jest.fn();
 const mockInit = jest.fn();
-const mockIsRecruiter = jest.fn();
-const mockGetInviteStatus = jest.fn();
-const mockCreateInvite = jest.fn();
-const mockHasAdministrator = jest.fn();
-const mockRecordInviteCreated = jest.fn();
+const mockInitWithDb = jest.fn();
+const mockDispose = jest.fn();
+const mockGetCached = jest.fn();
 
-jest.mock('../src/lib/invite-system', () => {
-  return jest.fn().mockImplementation(() => ({
-    init: mockInit,
-    isRecruiter: mockIsRecruiter,
-    getInviteStatus: mockGetInviteStatus,
-    createInvite: mockCreateInvite
-  }));
-});
-
-jest.mock('../src/lib/permissions', () => ({
-  hasAdministrator: (...args) => mockHasAdministrator(...args)
+jest.mock('../src/services/recruiting/invite-service', () => ({
+  execute: (...args) => mockExecute(...args),
+  init: (...args) => mockInit(...args),
+  initWithDb: (...args) => mockInitWithDb(...args),
+  dispose: (...args) => mockDispose(...args),
+  getCached: (...args) => mockGetCached(...args)
 }));
 
-jest.mock('../src/lib/analytics', () => ({
-  recordInviteCreated: (...args) => mockRecordInviteCreated(...args)
-}));
-
-function makeInteraction() {
-  const interaction = {
-    guild: { id: 'G1' },
-    member: {},
-    user: { id: 'U1', tag: 'User#0001' },
-    deferred: false,
-    replied: false
-  };
-
-  interaction.deferReply = jest.fn().mockImplementation(async () => {
-    interaction.deferred = true;
-  });
-  interaction.editReply = jest.fn().mockResolvedValue(true);
-  interaction.reply = jest.fn().mockResolvedValue(true);
-  return interaction;
-}
-
-describe('/invite interaction acknowledgment handling', () => {
-  let consoleErrorSpy;
-
+describe('/invite command wrapper', () => {
   beforeEach(() => {
-    jest.resetModules();
     jest.clearAllMocks();
-    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-    mockInit.mockResolvedValue(undefined);
-    mockIsRecruiter.mockResolvedValue(false);
-    mockGetInviteStatus.mockReturnValue({ hasActive: false, onCooldown: false });
-    mockCreateInvite.mockResolvedValue({ success: false, message: 'failed' });
-    mockHasAdministrator.mockReturnValue(false);
-    mockRecordInviteCreated.mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
-    if (consoleErrorSpy) consoleErrorSpy.mockRestore();
-  });
-
-  test('defers before role checks and edits deferred reply for recruiter-gate errors', async () => {
-    const interaction = makeInteraction();
+  test('delegates execute to the invite service', async () => {
     const cmd = require('../src/commands/recruiting/invite.js');
+    const interaction = { id: 'interaction-1' };
+    const client = { id: 'client-1' };
+    const db = { id: 'db-1' };
+    mockExecute.mockResolvedValue('ok');
 
-    await cmd.execute(interaction);
+    await expect(cmd.execute(interaction, client, db)).resolves.toBe('ok');
 
-    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
-    expect(mockIsRecruiter).toHaveBeenCalled();
-    expect(interaction.deferReply.mock.invocationCallOrder[0])
-      .toBeLessThan(mockIsRecruiter.mock.invocationCallOrder[0]);
-    expect(interaction.editReply).toHaveBeenCalledTimes(1);
-    expect(interaction.reply).not.toHaveBeenCalled();
+    expect(mockExecute).toHaveBeenCalledWith(interaction, client, db);
   });
 
-  test('swallows unknown interaction errors raised during defer', async () => {
-    const interaction = makeInteraction();
-    interaction.deferReply.mockRejectedValue(Object.assign(new Error('Unknown interaction'), { code: 10062 }));
+  test('re-exports init helpers for runtime callers', async () => {
     const cmd = require('../src/commands/recruiting/invite.js');
+    mockInit.mockResolvedValue('global-system');
+    mockInitWithDb.mockResolvedValue('guild-system');
+    mockGetCached.mockReturnValue('cached-system');
 
-    await cmd.execute(interaction);
+    await expect(cmd.init()).resolves.toBe('global-system');
+    await expect(cmd.initWithDb('guild-1', 'db-handle')).resolves.toBe('guild-system');
+    expect(cmd.getCached('guild-1')).toBe('cached-system');
 
-    expect(mockIsRecruiter).not.toHaveBeenCalled();
-    expect(interaction.reply).not.toHaveBeenCalled();
-    expect(interaction.editReply).not.toHaveBeenCalled();
-  });
+    cmd.dispose('guild-1');
 
-  test('swallows already-acknowledged errors while reporting command failures', async () => {
-    const interaction = makeInteraction();
-    mockIsRecruiter.mockResolvedValue(true);
-    mockCreateInvite.mockRejectedValue(new Error('boom'));
-    interaction.editReply.mockRejectedValue(Object.assign(new Error('Interaction has already been acknowledged.'), { code: 40060 }));
-    const cmd = require('../src/commands/recruiting/invite.js');
-
-    await cmd.execute(interaction);
-
-    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
-    expect(interaction.reply).not.toHaveBeenCalled();
-  });
-
-  test('swallows stale original-reply errors while reporting command failures', async () => {
-    const interaction = makeInteraction();
-    mockIsRecruiter.mockResolvedValue(true);
-    mockCreateInvite.mockRejectedValue(new Error('boom'));
-    interaction.editReply.mockRejectedValue(Object.assign(new Error('Unknown Message'), { code: 10008 }));
-    const cmd = require('../src/commands/recruiting/invite.js');
-
-    await cmd.execute(interaction);
-
-    expect(interaction.deferReply).toHaveBeenCalledWith({ flags: 64 });
-    expect(interaction.reply).not.toHaveBeenCalled();
+    expect(mockInit).toHaveBeenCalledWith();
+    expect(mockInitWithDb).toHaveBeenCalledWith('guild-1', 'db-handle');
+    expect(mockGetCached).toHaveBeenCalledWith('guild-1');
+    expect(mockDispose).toHaveBeenCalledWith('guild-1');
   });
 });
