@@ -32,12 +32,16 @@ class AecsVault {
     this.currentOffset = 0;
     this.logStream = null;
     this.idxStream = null;
+    this.persistenceDisabled = false;
+    this.persistenceError = null;
+    this.persistenceDisabledAt = null;
+    this.droppedRecords = 0;
 
     this.metricBuckets = new Map();
   }
 
   start() {
-    ensureDir(this.logDir);
+    if (!this.ensurePersistenceReady()) return;
     if (this.timer) return;
     this.timer = setInterval(() => {
       this.flush().catch((error) => {
@@ -160,12 +164,72 @@ class AecsVault {
       logDir: this.logDir,
       currentLogFile: this.currentJsonlPath,
       currentIdxFile: this.currentIdxPath,
-      queued: this.buffer.length
+      queued: this.buffer.length,
+      persistenceDisabled: this.persistenceDisabled,
+      persistenceError: this.persistenceError,
+      persistenceDisabledAt: this.persistenceDisabledAt,
+      droppedRecords: this.droppedRecords
     };
   }
 
+  ensurePersistenceReady() {
+    if (this.persistenceDisabled) return false;
+    try {
+      ensureDir(this.logDir);
+      return true;
+    } catch (error) {
+      this.disablePersistence(error, 'mkdir');
+      return false;
+    }
+  }
+
+  formatError(error) {
+    if (!error) return null;
+    if (error instanceof Error) {
+      return {
+        name: error.name,
+        code: error.code || null,
+        message: error.message || String(error)
+      };
+    }
+    return {
+      name: null,
+      code: error && error.code ? error.code : null,
+      message: String(error)
+    };
+  }
+
+  disablePersistence(error, phase = 'runtime') {
+    if (this.persistenceDisabled) return;
+    this.persistenceDisabled = true;
+    this.persistenceDisabledAt = Date.now();
+    this.persistenceError = {
+      phase,
+      ...this.formatError(error)
+    };
+
+    const streams = [this.logStream, this.idxStream].filter(Boolean);
+    this.logStream = null;
+    this.idxStream = null;
+    for (const stream of streams) {
+      try {
+        stream.destroy();
+      } catch (_error) {
+        // ignored
+      }
+    }
+
+    const code = error && error.code ? String(error.code) : 'UNKNOWN';
+    const message = error && error.message ? String(error.message) : String(error || 'Unknown AECS vault error');
+    console.error(`AECS vault persistence disabled (${phase}): ${code} ${message}`);
+  }
+
+  handleStreamError(error, streamType) {
+    this.disablePersistence(error, `stream:${streamType}`);
+  }
+
   ensureOpenForDate(dateKey) {
-    ensureDir(this.logDir);
+    if (!this.ensurePersistenceReady()) return;
     if (this.currentDateKey === dateKey && this.logStream && this.idxStream) {
       return;
     }
@@ -192,11 +256,18 @@ class AecsVault {
 
     this.logStream = fs.createWriteStream(this.currentJsonlPath, { flags: 'a' });
     this.idxStream = fs.createWriteStream(this.currentIdxPath, { flags: 'a' });
+    this.logStream.on('error', (error) => this.handleStreamError(error, 'jsonl'));
+    this.idxStream.on('error', (error) => this.handleStreamError(error, 'idx'));
   }
 
   async flush() {
     if (this.isFlushing) return;
     if (this.buffer.length === 0) return;
+    if (this.persistenceDisabled) {
+      this.droppedRecords += this.buffer.length;
+      this.buffer.length = 0;
+      return;
+    }
 
     this.isFlushing = true;
     try {
@@ -205,6 +276,10 @@ class AecsVault {
         const timestamp = Number(record.timestamp || Date.now());
         const dateKey = toDateKey(timestamp);
         this.ensureOpenForDate(dateKey);
+        if (this.persistenceDisabled || !this.logStream || !this.idxStream) {
+          this.droppedRecords += 1;
+          continue;
+        }
 
         const line = `${JSON.stringify(record)}\n`;
         const lineBuffer = Buffer.from(line, 'utf8');
@@ -223,7 +298,10 @@ class AecsVault {
 
   forceWriteSync(record) {
     if (!record || typeof record !== 'object') return;
-    ensureDir(this.logDir);
+    if (!this.ensurePersistenceReady()) {
+      this.droppedRecords += 1;
+      return;
+    }
 
     const timestamp = Number(record.timestamp || Date.now());
     const dateKey = toDateKey(timestamp);
@@ -238,8 +316,13 @@ class AecsVault {
       startOffset = 0;
     }
 
-    fs.appendFileSync(jsonlPath, lineBuffer);
-    fs.appendFileSync(idxPath, makeIdxEntry(timestamp, Number(record.hashId || 0), startOffset));
+    try {
+      fs.appendFileSync(jsonlPath, lineBuffer);
+      fs.appendFileSync(idxPath, makeIdxEntry(timestamp, Number(record.hashId || 0), startOffset));
+    } catch (error) {
+      this.droppedRecords += 1;
+      this.disablePersistence(error, 'forceWriteSync');
+    }
   }
 
   listLogFiles() {
