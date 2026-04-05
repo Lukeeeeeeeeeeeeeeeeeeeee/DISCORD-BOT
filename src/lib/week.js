@@ -15,7 +15,7 @@ function getWeekStartUtcTs(now = new Date(), offsetMs = DEFAULT_WEEK_OFFSET_MS) 
     0, 0, 0, 0
   ));
   weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
-  return weekStart.getTime() + (Number.isFinite(offsetMs) ? offsetMs : 0);
+  return weekStart.getTime();
 }
 
 function getRolling7DayStartTs(now = Date.now()) {

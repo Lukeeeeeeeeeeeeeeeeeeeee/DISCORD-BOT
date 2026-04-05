@@ -1,9 +1,24 @@
+function safeLoad(name) {
+  try {
+    return require(`./${name}.js`);
+  } catch (err) {
+    // Only log if the error is actually module not found for the TARGET file, 
+    // vs an internal error in the loaded file itself.
+    if (err && err.code === 'MODULE_NOT_FOUND' && String(err.message).includes(`./${name}.js`)) {
+      console.warn(`[AECS] Dictionary '${name}' not found; using empty fallback.`);
+    } else {
+      console.error(`[AECS] Fatal error loading dictionary '${name}':`, err);
+    }
+    return {};
+  }
+}
+
 const loaders = {
-  SYS: () => require('./sys'),
-  DB: () => require('./db'),
-  CMD: () => require('./cmd'),
-  SCH: () => require('./sch'),
-  API: () => require('./cmd')
+  SYS: () => safeLoad('sys'),
+  DB: () => safeLoad('db'),
+  CMD: () => safeLoad('cmd'),
+  SCH: () => safeLoad('sch'),
+  API: () => safeLoad('cmd')
 };
 
 const domainCache = new Map();

@@ -48,7 +48,13 @@ function buildLeaderboardSql(valuesSql, options = {}) {
         FROM recruits
         WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?
         GROUP BY recruiter_id
-      ) c ON c.recruiter_id = r.id`
+      ) c ON c.recruiter_id = r.id
+      LEFT JOIN (
+        SELECT recruiter_id, COUNT(*) as lifetime_cnt
+        FROM recruits
+        WHERE guild_id = ? AND valid = 1
+        GROUP BY recruiter_id
+      ) lc ON lc.recruiter_id = r.id`
     : '';
   const globalRecruitJoin = useRecruits
     ? `
@@ -57,7 +63,13 @@ function buildLeaderboardSql(valuesSql, options = {}) {
       FROM recruits
       WHERE guild_id = ? AND valid = 1 AND created_at >= ?
       GROUP BY recruiter_id
-    ) c ON c.recruiter_id = r.id`
+    ) c ON c.recruiter_id = r.id
+    LEFT JOIN (
+      SELECT recruiter_id, COUNT(*) as lifetime_cnt
+      FROM recruits
+      WHERE guild_id = ? AND valid = 1
+      GROUP BY recruiter_id
+    ) lc ON lc.recruiter_id = r.id`
     : '';
 
   if (region) {
@@ -66,6 +78,7 @@ function buildLeaderboardSql(valuesSql, options = {}) {
       SELECT
         r.id AS recruiter_id,
         ${cntExpr} AS cnt,
+        COALESCE(lc.lifetime_cnt, 0) AS lifetime_cnt,
         COALESCE(db_rec.points, 0) AS points,
         ${weeklyCalcSelect}
       FROM r
@@ -81,6 +94,7 @@ function buildLeaderboardSql(valuesSql, options = {}) {
     SELECT
       r.id AS recruiter_id,
       ${cntExpr} AS cnt,
+      COALESCE(lc.lifetime_cnt, 0) AS lifetime_cnt,
       COALESCE(db_rec.points, 0) AS points,
       ${weeklyCalcSelect}
     FROM r
@@ -99,6 +113,7 @@ function buildLeaderboardParams(chunk, options = {}) {
       params.push(options.region);
     }
     params.push(options.sinceTs);
+    params.push(options.guildId);
   }
   if (options.useOverride) {
     params.push(options.guildId, options.weekStart);

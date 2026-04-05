@@ -810,8 +810,9 @@ async function execute(interaction, _client, dbHandle = null) {
         reportRecruitServiceError('service.recruit.welcomeDm.queue', e, { guildId, recruitedId: member.id });
       }
 
+      const totalRecruits = await recruitsRepo.countValidByRecruiter(db, guildId, creditedRecruiterId);
       const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';
-      return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}.` });
+      return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}. Total recruits: **${totalRecruits}**.` });
     } catch (err) {
       const dispatchResult = await logUnexpectedError('service.recruit.execute.inner', err, {
         command: 'recruit',
