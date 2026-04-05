@@ -69,6 +69,7 @@ function sortDemotionRows(rows) {
 }
 
 function formatLeaderboardLine(row, index) {
+  const mention = row && row.recruiter_id ? `<@${row.recruiter_id}>` : 'Unknown';
   const recruitCount = getRecruitCount(row);
   const minReq = normalizeMinReq(row);
   const points = row && row.points != null ? row.points : 0;
