@@ -16,7 +16,10 @@ const { loadRecruiterMeta } = require('../lib/leaderboard-utils');
 const { logUnexpectedError, logRuntimeEvent } = require('../lib/logger');
 
 const WEEK_ROLLOVER_OFFSET_MS = 5 * 60 * 1000;
+<<<<<<< Updated upstream
 const DM_CONCURRENCY = 5; // [HARDENED] Concurrency limit for weekly report delivery
+=======
+>>>>>>> Stashed changes
 const CALC_CONCURRENCY = Number.parseInt(process.env.RECALC_CONCURRENCY || '4', 10);
 
 const { runWithConcurrency } = require('../lib/concurrency');
@@ -194,7 +197,6 @@ async function performWeeklyRecalculations(guild) {
     });
 
     const results = [];
-    const notifyQueue = [];
     for (const entry of calcResults) {
       if (entry && entry.ok === false && entry.error) {
         console.error('Error recalculating staff member:', entry.error);
@@ -202,15 +204,6 @@ async function performWeeklyRecalculations(guild) {
       }
       if (!entry || !entry.ok || !entry.result) continue;
       results.push(entry.result);
-      if (entry.notify) notifyQueue.push(entry.result);
-    }
-
-    // Send DMs with limited concurrency to avoid rate limits
-    const logChannel = guild.channels && guild.channels.cache
-      ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL)
-      : null;
-    if (notifyQueue.length) {
-      await runWithConcurrency(notifyQueue, DM_CONCURRENCY, (entry) => sendWeeklyRecalculationDM(entry, { logChannel }));
     }
 
     // Check for expired absences and post return messages
