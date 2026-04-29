@@ -6,6 +6,7 @@ const { formatPointsValue } = require('./lib/economy');
 const { getWeekStartUtcTs, getRolling7DayStartTs } = require('./lib/week');
 const { formatUtcDate } = require('./lib/time');
 const { fetchMembersByIds } = require('./lib/member-fetch');
+const { filterActiveRecruiters } = require('./lib/recruiter-helpers');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs, loadRecruiterIdsFromRecentRecruits } = require('./lib/leaderboard-utils');
 const { logUnexpectedError } = require('./lib/logger');
 
@@ -401,7 +402,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
     const lang = process.env.DEFAULT_LANG || 'en';
     let leaderboardText;
 
-    const recruiterMembers = Array.from(allRecruiterIds);
+    const recruiterMembers = Array.from(await filterActiveRecruiters(guild, allRecruiterIds, memberMap));
     await seedRecruiters(db, recruiterMembers, `leaderboard:${rg.key}`, guildId);
 
     if (recruiterMembers.length === 0) {
@@ -425,8 +426,8 @@ async function recomputeLeaderboardsInternal(db, guild) {
       const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now(), overrideWeekStart: weekStart };
 
       // P-01: Batch isNewStaff AND 7-day stats lookups — replaces N sequential DB queries with bulk queries.
-      const isNewStaffMap = await batchIsNewStaff(db, Array.from(allRecruiterIds), guildId).catch(() => new Map());
-      const allStats7dMap = await batchCalculate7DayStats(db, Array.from(allRecruiterIds), guild, { ...statsWindow, guildId, region: rg.key }).catch(() => new Map());
+      const isNewStaffMap = await batchIsNewStaff(db, recruiterMembers, guildId).catch(() => new Map());
+      const allStats7dMap = await batchCalculate7DayStats(db, recruiterMembers, guild, { ...statsWindow, guildId, region: rg.key }).catch(() => new Map());
 
       for (const r of (rowsBase || [])) {
         const absence = meta.absences.has(r.recruiter_id);
@@ -586,7 +587,8 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
     }
   }
 
-  const recruiterIds = Array.from(recruiterIdSet);
+  const memberMap = await fetchMembersByIds(guild, Array.from(recruiterIdSet));
+  const recruiterIds = Array.from(await filterActiveRecruiters(guild, recruiterIdSet, memberMap));
   if (!recruiterIds.length) {
     const text = makeDemotionWatchText([]);
     await upsertLeaderboardMessage(db, channel, 'WARNINGS', text, null, guild.id);
@@ -598,7 +600,6 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { guildId, weekStart, sinceTs: rolling7dStart });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
   const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
-  const memberMap = await fetchMembersByIds(guild, recruiterIds);
 
   const rows = [];
   const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now(), overrideWeekStart: weekStart };

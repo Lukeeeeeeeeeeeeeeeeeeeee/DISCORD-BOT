@@ -5,6 +5,7 @@ const { ensureCommandAccess } = require('../../lib/command-auth');
 const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
 const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs, loadRecruiterIdsFromRecentRecruits } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
+const { filterActiveRecruiters } = require('../../lib/recruiter-helpers');
 const { resolveGuildId } = require('../../lib/guild');
 const { replyError } = require('../../lib/embeds');
 const { isInteractionAckError } = require('../../lib/interaction-errors');
@@ -138,7 +139,7 @@ module.exports = {
           });
         }
 
-        const recruiterMembers = Array.from(allRecruiterIds);
+        const recruiterMembers = Array.from(await filterActiveRecruiters(interaction.guild, allRecruiterIds, memberMap));
         const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
 
         if (recruiterMembers.length === 0) {
@@ -286,7 +287,7 @@ module.exports = {
         reportLeaderboardCommandError('command.leaderboard.loadRecentRecruiterIds.global', e, { guildId });
       }
 
-      const recruiterMembers = Array.from(allRecruiterIds);
+      const recruiterMembers = Array.from(await filterActiveRecruiters(interaction.guild, allRecruiterIds, memberMap));
       const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
 
       if (recruiterMembers.length === 0) {

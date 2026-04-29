@@ -30,6 +30,38 @@ function hasRecruiterRole(member) {
   return recruiterRoleIds.some(roleId => member.roles.cache.has(roleId));
 }
 
+function hasStaffRole(member) {
+  if (!member || !member.roles || !member.roles.cache) return false;
+  const staffRoles = Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
+    ? ROLE_IDS.STAFF.filter(Boolean)
+    : [
+      ROLE_IDS.HELPER,
+      ROLE_IDS.HELPER_PLUS,
+      ROLE_IDS.HIGH_STAFF,
+      ROLE_IDS.MOD,
+      ROLE_IDS.CHIEF,
+      ROLE_IDS.CHIEF_OF_WAR,
+      ROLE_IDS.CHIEF_OF_COMMUNITY,
+      ROLE_IDS.CHIEF_OF_RECRUITMENT,
+      ROLE_IDS.CO_LEADER,
+      ROLE_IDS.LEADER
+    ].filter(Boolean);
+  return staffRoles.some(roleId => member.roles.cache.has(roleId));
+}
+
+async function filterActiveRecruiters(guild, candidateIds, memberMap) {
+  const active = new Set();
+  for (const id of candidateIds) {
+    const member = (memberMap && memberMap.get(id))
+      || (guild && guild.members && guild.members.cache ? guild.members.cache.get(id) : null);
+    if (!member) continue;
+    if (hasRecruiterRole(member) || hasStaffRole(member)) {
+      active.add(id);
+    }
+  }
+  return active;
+}
+
 async function getAverageWeeklyRecruits(db, recruiterId, guildId, weeks = 4) {
   try {
     const rows = await db.all(
@@ -179,6 +211,8 @@ module.exports = {
   safeDaysLeftFromEndDate,
   formatPct,
   hasRecruiterRole,
+  hasStaffRole,
+  filterActiveRecruiters,
   getAverageWeeklyRecruits,
   getAverageWeeklyRecruitsMap,
   postPurchaseLog,
