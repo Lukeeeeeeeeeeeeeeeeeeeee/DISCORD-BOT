@@ -22,8 +22,17 @@ function getMemberPermissions(member) {
 function getMemberRoleIds(member) {
   if (!member || !member.roles) return [];
   if (Array.isArray(member.roles)) return member.roles.filter(Boolean);
-  if (member.roles.cache && typeof member.roles.cache.keys === 'function') {
-    return Array.from(member.roles.cache.keys());
+  if (member.roles.cache) {
+    if (Array.isArray(member.roles.cache)) return member.roles.cache.filter(Boolean);
+    if (typeof member.roles.cache.keys === 'function') {
+      return Array.from(member.roles.cache.keys());
+    }
+    if (Array.isArray(member.roles.cache.values)) {
+      return member.roles.cache.values.map(role => role && role.id ? role.id : role).filter(Boolean);
+    }
+    if (member.roles.cache.has && typeof member.roles.cache.has === 'function' && member.roles.cache._roles) {
+      return Array.from(member.roles.cache._roles.keys ? member.roles.cache._roles.keys() : []);
+    }
   }
   if (member.roles instanceof Set) return Array.from(member.roles);
   return [];

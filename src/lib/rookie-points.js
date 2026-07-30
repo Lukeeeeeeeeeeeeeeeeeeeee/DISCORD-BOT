@@ -170,6 +170,18 @@ async function addRookiePoints({ db, member, delta, guild, verifierId }) {
     : 0;
   const previousPoints = Math.max(0, Math.min(10, points - numericDelta));
 
+  try {
+    const parsed = parseRookieNickname(member.nickname || member.user.username);
+    const baseName = parsed.base || member.user.username || 'Rookie';
+    const shouldUpdateNickname = Boolean(member && member.manageable && member.roles && member.roles.cache && member.roles.cache.has(ROLE_IDS.ROOKIE));
+    if (shouldUpdateNickname) {
+      const nickname = `${baseName} ${formatPoints(points)}/10`;
+      await retrySetNickname(member, nickname);
+    }
+  } catch (e) {
+    console.error('Failed to update rookie nickname:', e);
+  }
+
   if (points >= 10) {
     const promotion = await promoteMember({ member, db, guild, verifierId });
     return { points: 10, promoted: true, teamName: promotion.teamName, previousPoints };

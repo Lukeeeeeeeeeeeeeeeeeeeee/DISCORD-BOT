@@ -12,6 +12,7 @@ const defaultDb = require('../../db_async');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
+const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { hasRecruiterOrStaffPermissions, hasAdministrator } = require('../../lib/permissions');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
@@ -522,7 +523,7 @@ async function execute(interaction, _client, dbHandle = null) {
       return replyError(interaction, 'Unable to verify your guild membership.');
     }
 
-    if (process.env.NODE_ENV !== 'test' && !hasRecruiterOrStaffPermissions(guildMember)) {
+    if (!hasRecruiterOrStaffPermissions(guildMember)) {
       return replyError(interaction, 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).');
     }
 

@@ -34,6 +34,7 @@ function buildLeaderboardSql(valuesSql, options = {}) {
   const cntExpr = useOverride
     ? `MAX(COALESCE(wro.total, 0), ${useRecruits ? 'COALESCE(c.cnt, 0)' : '0'})`
     : (useRecruits ? 'COALESCE(c.cnt, 0)' : '0');
+  const lifetimeCntExpr = useRecruits ? 'COALESCE(lc.lifetime_cnt, 0)' : '0';
   const overrideJoin = useOverride
     ? 'LEFT JOIN weekly_recruit_overrides wro ON wro.guild_id = ? AND wro.recruiter_id = r.id AND wro.week_start = ?'
     : '';
@@ -78,7 +79,7 @@ function buildLeaderboardSql(valuesSql, options = {}) {
       SELECT
         r.id AS recruiter_id,
         ${cntExpr} AS cnt,
-        COALESCE(lc.lifetime_cnt, 0) AS lifetime_cnt,
+        ${lifetimeCntExpr} AS lifetime_cnt,
         COALESCE(db_rec.points, 0) AS points,
         ${weeklyCalcSelect}
       FROM r
@@ -94,7 +95,7 @@ function buildLeaderboardSql(valuesSql, options = {}) {
     SELECT
       r.id AS recruiter_id,
       ${cntExpr} AS cnt,
-      COALESCE(lc.lifetime_cnt, 0) AS lifetime_cnt,
+      ${lifetimeCntExpr} AS lifetime_cnt,
       COALESCE(db_rec.points, 0) AS points,
       ${weeklyCalcSelect}
     FROM r
