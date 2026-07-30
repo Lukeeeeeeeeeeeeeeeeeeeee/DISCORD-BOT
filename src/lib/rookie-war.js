@@ -74,8 +74,8 @@ async function handleRookieWarLogMessage({ db, message, member, guild, client })
 
   const totalPoints = Number.isFinite(result.points) ? formatPoints(result.points) : '0';
   const response = result.promoted
-    ? `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: 10/10. Promoted to ${result.teamName}.`
-    : `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints}/10.`;
+    ? `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints} pts. Promoted to ${result.teamName}.`
+    : `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints} pts.`;
 
   if (message.channel && message.channel.send) {
     message.channel.send(response).catch(err => {

@@ -170,7 +170,7 @@ module.exports = {
         }
 
         return interaction.editReply({
-            content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/2 inactive points.`
+            content: `Updated ${targetUser.tag} to ${formatPoints(result.points)} inactive points.`
         });
     }
 };

@@ -4,7 +4,7 @@ const { replyError } = require('../lib/embeds');
 
 
 // ── Target roles ────────────────────────────────────────────────────
-const ROOKIE_ROLE_ID = ROLE_IDS.ROOKIE;           // 0/10 | IGN
+const ROOKIE_ROLE_ID = ROLE_IDS.ROOKIE;           // IGN
 const MEMBER_ROLE_ID = ROLE_IDS.AUTO_PROMOTE_ROLE; // REGION | IGN
 
 // ── Region lookup (role-id → abbreviation) ──────────────────────────
@@ -85,7 +85,7 @@ function cleanIgnSegment(value) {
 /**
  * Extract the IGN from a display string.
  * "EU | SomeName"       → "SomeName"
- * "0/2 | SomeName"      → "SomeName"
+ * "Legacy status prefix | SomeName" → "SomeName"
  * "SomeName"            → "SomeName"
  * "EU | Team X | Ghost" → "Ghost"   (last segment)
  */
@@ -162,20 +162,14 @@ function computeNickname(member) {
         return { newNick, prefix, ign, skipReason: null };
     }
 
-    // Inactive members: anyone with an inactive team role → 0/2 | IGN
+    // Inactive members: use the IGN only, without legacy progress tokens.
     const isInactive = INACTIVE_ROLE_IDS.size > 0 && Array.from(INACTIVE_ROLE_IDS).some(id => hasRole(member, id));
     if (isInactive) {
         const ign = extractIgn(getSourceName(member));
         if (!ign) {
             return { skipReason: 'Could not determine IGN' };
         }
-        const prefix = '0/2';
-        let newNick = `${prefix} | ${ign}`;
-        if (newNick.length > 32) {
-            const maxIgn = 32 - prefix.length - 3;
-            newNick = `${prefix} | ${ign.substring(0, maxIgn)}`;
-        }
-        return { newNick, prefix, ign, skipReason: null };
+        return { newNick: ign, prefix: null, ign, skipReason: null };
     }
 
     if (isRookie) {
@@ -183,13 +177,7 @@ function computeNickname(member) {
         if (!ign) {
             return { skipReason: 'Could not determine IGN' };
         }
-        const prefix = '0/10';
-        let newNick = `${prefix} | ${ign}`;
-        if (newNick.length > 32) {
-            const maxIgn = 32 - prefix.length - 3;
-            newNick = `${prefix} | ${ign.substring(0, maxIgn)}`;
-        }
-        return { newNick, prefix, ign, skipReason: null };
+        return { newNick: ign, prefix: null, ign, skipReason: null };
     }
 
     return { skipReason: 'No target role (not Rookie or Member)' };

@@ -9,7 +9,6 @@ const { PermissionsBitField } = require('discord.js');
 const { getRegionInfo, getTeamLabel } = require('../../lib/regions');
 const { replyError } = require('../../lib/embeds');
 const defaultDb = require('../../db_async');
-const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
@@ -570,7 +569,7 @@ async function execute(interaction, _client, dbHandle = null) {
     }
     const teamInfo = getRegionInfo(team);
     const teamName = teamInfo && teamInfo.name ? teamInfo.name : team;
-    const nicknameSuffix = ` | ${regionTag || team} 0/10`;
+    const nicknameSuffix = (regionTag || team) ? ` | ${regionTag || team}` : '';
     const ign = normalizeIgn(rawIgn, nicknameSuffix);
     if (!ign) {
       return replyError(interaction, 'IGN must include at least 1 visible character.');

@@ -29,7 +29,7 @@ function sanitizeRookieBase(rawBase) {
   let cleaned = source.replace(/\s+/g, ' ').trim();
   if (!cleaned) return '';
 
-  // Strip legacy progress prefixes such as "0/2 | Name".
+  // Strip legacy status prefixes from mixed nicknames.
   cleaned = cleaned.replace(/^(?:\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\s*[|:-]\s*)+/g, '');
   // Strip trailing legacy progress fragments left by previous systems.
   cleaned = cleaned.replace(/(?:\s*[|:-]\s*\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?)+$/g, '');
@@ -127,15 +127,7 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
     return { points: clamped, promoted: true, teamName: promotion.teamName };
   }
 
-  if (!member.manageable) {
-    return { points: clamped, promoted: false, nicknameUpdated: false, skippedNickname: true };
-  }
-
-  const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-  const nickname = `${baseName} ${formatPoints(clamped)}/10`;
-  const nicknameUpdated = await retrySetNickname(member, nickname);
-
-  return { points: clamped, promoted: false, nicknameUpdated };
+  return { points: clamped, promoted: false, nicknameUpdated: false, skippedNickname: true };
 }
 
 async function addRookiePoints({ db, member, delta, guild, verifierId }) {
@@ -181,12 +173,6 @@ async function addRookiePoints({ db, member, delta, guild, verifierId }) {
   if (points >= 10) {
     const promotion = await promoteMember({ member, db, guild, verifierId });
     return { points: 10, promoted: true, teamName: promotion.teamName, previousPoints };
-  }
-
-  if (member.manageable) {
-    const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-    const nickname = `${baseName} ${formatPoints(points)}/10`;
-    await retrySetNickname(member, nickname);
   }
 
   return { points, promoted: false, previousPoints };

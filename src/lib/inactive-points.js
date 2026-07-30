@@ -228,17 +228,6 @@ async function addInactivePoints({ db, member, delta, guild, verifierId }) {
         return { points: INACTIVE_MAX, promoted: true, teamName: promotion.teamName, previousPoints };
     }
 
-    // Update nickname to show progress: X/2 | IGN
-    if (member.manageable) {
-        const parsed = parseInactiveNickname(member.nickname || member.user.globalName || member.user.username);
-        const baseName = parsed.base || extractIgn(member.nickname || member.user.globalName || member.user.username || '') || member.user.username;
-        const nickname = `${formatPoints(points)}/2 | ${baseName}`;
-        const truncated = nickname.length > 32
-            ? `${formatPoints(points)}/2 | ${baseName.substring(0, 32 - formatPoints(points).length - 5)}`
-            : nickname;
-        await retrySetNickname(member, truncated);
-    }
-
     return { points, promoted: false, previousPoints };
 }
 

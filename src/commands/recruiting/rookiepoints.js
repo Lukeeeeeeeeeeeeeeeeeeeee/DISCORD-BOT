@@ -123,12 +123,12 @@ module.exports = {
 
     if (result.promoted) {
       return interaction.editReply({
-        content: `Updated ${targetUser.tag} to 10/10 points. Promoted to ${result.teamName}.`
+        content: `Updated ${targetUser.tag} to ${formatPoints(result.points)} points. Promoted to ${result.teamName}.`
       });
     }
 
     return interaction.editReply({
-      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/10 points.`
+      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)} points.`
     });
   }
 };
