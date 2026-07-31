@@ -54,6 +54,16 @@ function hasRole(member, roleId) {
     return Boolean(member && member.roles && member.roles.cache && roleId && member.roles.cache.has(roleId));
 }
 
+const STATUS_WORDS = new Set([
+  'absent',
+  'on break',
+  'break',
+  'inactive',
+  'retired',
+  'away',
+  'afk'
+]);
+
 function isRegionToken(value) {
     const normalized = String(value || '').trim().toUpperCase();
     return normalized === 'EU'
@@ -66,7 +76,8 @@ function isRegionToken(value) {
 
 function isStatusToken(value) {
     const normalized = String(value || '').trim();
-    return /^\d+(?:\.\d+)?\s*\/\s*(?:2|10)$/.test(normalized);
+    if (STATUS_WORDS.has(normalized.toLowerCase())) return true;
+    return /^\d+(?:\.\d+)?\s*\/\s*\d+$/.test(normalized);
 }
 
 function cleanIgnSegment(value) {
@@ -74,12 +85,12 @@ function cleanIgnSegment(value) {
     if (!out) return '';
 
     out = out.replace(/\s+/g, ' ').trim();
-    out = out.replace(/^\d+(?:\.\d+)?\s*\/\s*(?:2|10)\s*[|:-]?\s*/i, '').trim();
-    out = out.replace(/\s*[|:-]?\s*\d+(?:\.\d+)?\s*\/\s*(?:2|10)$/i, '').trim();
+    out = out.replace(/^\d+(?:\.\d+)?\s*\/\s*\d+\s*[|:-]?\s*/i, '').trim();
+    out = out.replace(/\s*[|:-]?\s*\d+(?:\.\d+)?\s*\/\s*\d+$/i, '').trim();
     out = out.replace(/^(EU|NA|AS|ME|AF|SA)\s*[|:-]\s*/i, '').trim();
-    out = out.replace(/\s*[|:-]\s*(EU|NA|AS|ME|AF|SA)$/i, '').trim();
-    out = out.replace(/\s+(EU|NA|AS|ME|AF|SA)\s+\d+(?:\.\d+)?\s*\/\s*(?:2|10)$/i, '').trim();
-    out = out.replace(/^\s*(EU|NA|AS|ME|AF|SA)\s+\d+(?:\.\d+)?\s*\/\s*(?:2|10)\s*/i, '').trim();
+    out = out.replace(/\s*[|:-]?\s*(EU|NA|AS|ME|AF|SA)$/i, '').trim();
+    out = out.replace(/\s+(EU|NA|AS|ME|AF|SA)\s+\d+(?:\.\d+)?\s*\/\s*\d+$/i, '').trim();
+    out = out.replace(/^\s*(EU|NA|AS|ME|AF|SA)\s+\d+(?:\.\d+)?\s*\/\s*\d+\s*/i, '').trim();
     out = out.replace(/[\u{1F300}-\u{1FAFF}\u2600-\u27BF]+/gu, '').trim();
     out = out.replace(/\s+/g, ' ').trim();
     return out;

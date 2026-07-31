@@ -68,9 +68,9 @@
   },
   "REGIONS": ["EU", "NA", "AS"],
   "REGION_INFO": {
-    "EU": { "name": "Fire", "emoji": "\\uD83D\\uDD25", "color": 14729250 },
-    "NA": { "name": "Water", "emoji": "\\uD83D\\uDCA7", "color": 1993163 },
-    "AS": { "name": "Air", "emoji": "\\uD83C\\uDF2A\\uFE0F", "color": 9321741 }
+    "EU": { "name": "Fire", "emoji": "🔥", "color": 14729250 },
+    "NA": { "name": "Water", "emoji": "💧", "color": 1993163 },
+    "AS": { "name": "Air", "emoji": "🌪️", "color": 9321741 }
   },
   "PURCHASE_ITEMS": {
     "vip": 15,
