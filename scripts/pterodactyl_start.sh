@@ -3,11 +3,7 @@ set -euo pipefail
 
 cd /home/container
 
-git -c core.logallrefupdates=false fetch --no-tags \
-  https://github.com/Lukeeeeeeeeeeeeeeeeeeeee/DISCORD-BOT.git \
-  refs/heads/rescue_v3_indestructible:refs/tmp/ptero_update
-
-git reset --hard refs/tmp/ptero_update
+git -c core.logallrefupdates=false pull --no-tags --ff-only origin rescue_v3_indestructible
 
 echo "HEAD=$(git rev-parse --short HEAD)"
 
