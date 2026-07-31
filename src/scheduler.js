@@ -18,7 +18,7 @@ const campaignService = require('./services/dm/dm-campaign-service');
 
 const DEBUG_SCHEDULER = process.env.DEBUG_SCHEDULER === '1';
 const ALLOW_FULL_MEMBER_FETCH = (process.env.SCHEDULER_ALLOW_FULL_FETCH || process.env.ALLOW_FULL_MEMBER_FETCH || '').toLowerCase() === 'true';
-const FORCE_FULL_FETCH_ON_EMPTY = (process.env.SCHEDULER_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
+const FORCE_FULL_FETCH_ON_EMPTY = (process.env.SCHEDULER_FORCE_FULL_FETCH_ON_EMPTY || 'false').toLowerCase() === 'true';
 const FULL_FETCH_MAX = Number.parseInt(process.env.SCHEDULER_FULL_FETCH_MAX || '5000', 10);
 const MEMBER_CACHE_WARM_COOLDOWN_MS = Number.parseInt(process.env.MEMBER_CACHE_WARM_COOLDOWN_MS || '600000', 10);
 let lastMemberCacheWarmAt = 0;
