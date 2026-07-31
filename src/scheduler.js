@@ -359,9 +359,16 @@ async function recomputeLeaderboardsInternal(db, guild) {
     debugLog(`Processing region ${rg.key}...`);
     debugLog(`Channel ID for ${rg.key}: ${rg.channel}`);
 
-    const central = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
+    let central = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
       ? guild.channels.cache.get(CHANNELS.CENTRAL_LEADERBOARD)
       : null;
+    if (!central && typeof guild.channels.fetch === 'function') {
+      try {
+        central = await guild.channels.fetch(CHANNELS.CENTRAL_LEADERBOARD).catch(() => null);
+      } catch (e) {
+        console.error(`Failed to fetch central leaderboard channel ${CHANNELS.CENTRAL_LEADERBOARD}:`, e);
+      }
+    }
 
     const allRecruiterIds = new Set();
 
@@ -490,19 +497,34 @@ async function recomputeLeaderboardsInternal(db, guild) {
       leaderboardText = makeLeaderboardText(rows, rg.key, lang);
     }
 
-    const channel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
+    let channel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
       ? guild.channels.cache.get(rg.channel)
       : null;
+    if (!channel && typeof guild.channels.fetch === 'function') {
+      try {
+        channel = await guild.channels.fetch(rg.channel).catch(() => null);
+      } catch (e) {
+        console.error(`Failed to fetch leaderboard channel ${rg.channel} for ${rg.key}:`, e);
+      }
+    }
     debugLog(`Looking for channel ${rg.channel} for ${rg.key}...`);
     debugLog(`Channel found: ${!!channel}`);
 
     if (channel) {
       debugLog(`Updating leaderboard for ${rg.key} in channel ${channel.name || channel.id}...`);
-      await upsertLeaderboardMessage(db, channel, rg.key, leaderboardText, null, guild.id);
+      try {
+        await upsertLeaderboardMessage(db, channel, rg.key, leaderboardText, null, guild.id);
+      } catch (e) {
+        console.error(`Failed to upsert leaderboard message for ${rg.key}:`, e);
+      }
     }
     if (central) {
       debugLog(`Cross-posting to central leaderboard for ${rg.key}...`);
-      await upsertLeaderboardMessage(db, central, rg.key, leaderboardText, null, guild.id);
+      try {
+        await upsertLeaderboardMessage(db, central, rg.key, leaderboardText, null, guild.id);
+      } catch (e) {
+        console.error(`Failed to upsert central leaderboard message for ${rg.key}:`, e);
+      }
     }
   }
 }
@@ -516,9 +538,16 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   const guildId = guild.id || resolveGuildId();
   const rolling7dStart = getRolling7DayStartTs();
   const { upsertLeaderboardMessage, makeDemotionWatchText } = require('./lib/messages');
-  const channel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
+  let channel = guild.channels && guild.channels.cache && typeof guild.channels.cache.get === 'function'
     ? guild.channels.cache.get(CHANNELS.RECRUITER_WARNINGS)
     : null;
+  if (!channel && typeof guild.channels.fetch === 'function') {
+    try {
+      channel = await guild.channels.fetch(CHANNELS.RECRUITER_WARNINGS).catch(() => null);
+    } catch (e) {
+      console.error(`Failed to fetch warnings channel ${CHANNELS.RECRUITER_WARNINGS}:`, e);
+    }
+  }
   if (!channel) return;
 
   try {
