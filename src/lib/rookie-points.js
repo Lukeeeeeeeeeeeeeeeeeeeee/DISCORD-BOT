@@ -29,7 +29,7 @@ function sanitizeRookieBase(rawBase) {
   let cleaned = source.replace(/\s+/g, ' ').trim();
   if (!cleaned) return '';
 
-  // Strip legacy progress prefixes such as "0/2 | Name".
+  // Strip legacy status prefixes from mixed nicknames.
   cleaned = cleaned.replace(/^(?:\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\s*[|:-]\s*)+/g, '');
   // Strip trailing legacy progress fragments left by previous systems.
   cleaned = cleaned.replace(/(?:\s*[|:-]\s*\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?)+$/g, '');

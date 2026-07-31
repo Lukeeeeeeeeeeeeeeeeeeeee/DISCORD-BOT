@@ -88,7 +88,7 @@ function cleanIgnSegment(value) {
 /**
  * Extract the IGN from a display string.
  * "EU | SomeName"       → "SomeName"
- * "0/2 | SomeName"      → "SomeName"
+ * "Legacy status prefix | SomeName" → "SomeName"
  * "SomeName"            → "SomeName"
  * "EU | Team X | Ghost" → "Ghost"   (last segment)
  */
@@ -165,7 +165,7 @@ async function computeNickname(member) {
         return { newNick, prefix, ign, skipReason: null };
     }
 
-    // Inactive members: anyone with an inactive team role → 0/2 | IGN
+    // Inactive members: use the IGN only, without legacy progress tokens.
     const isInactive = INACTIVE_ROLE_IDS.size > 0 && Array.from(INACTIVE_ROLE_IDS).some(id => hasRole(member, id));
     if (isInactive) {
         const ign = extractIgn(getSourceName(member));

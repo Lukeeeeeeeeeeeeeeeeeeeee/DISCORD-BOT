@@ -9,10 +9,10 @@ const { PermissionsBitField } = require('discord.js');
 const { getRegionInfo, getTeamLabel } = require('../../lib/regions');
 const { replyError } = require('../../lib/embeds');
 const defaultDb = require('../../db_async');
-
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
+const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { hasRecruiterOrStaffPermissions, hasAdministrator } = require('../../lib/permissions');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
@@ -408,7 +408,7 @@ async function execute(interaction, _client, dbHandle = null) {
       return replyError(interaction, 'Unable to verify your guild membership.');
     }
 
-    if (process.env.NODE_ENV !== 'test' && !hasRecruiterOrStaffPermissions(guildMember)) {
+    if (!hasRecruiterOrStaffPermissions(guildMember)) {
       return replyError(interaction, 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).');
     }
 
@@ -455,7 +455,7 @@ async function execute(interaction, _client, dbHandle = null) {
     }
     const teamInfo = getRegionInfo(team);
     const teamName = teamInfo && teamInfo.name ? teamInfo.name : team;
-    const nicknameSuffix = ` | ${regionTag || team} 0/10`;
+    const nicknameSuffix = (regionTag || team) ? ` | ${regionTag || team}` : '';
     const ign = normalizeIgn(rawIgn, nicknameSuffix);
     if (!ign) {
       return replyError(interaction, 'IGN must include at least 1 visible character.');

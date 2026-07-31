@@ -209,7 +209,7 @@ const commands = [
     .addBooleanOption(opt => opt.setName('remove_source_role').setDescription('Remove source role from processed members (default true)').setRequired(false))
     .addBooleanOption(opt => opt.setName('delete_source_role').setDescription('Delete source role after completion (default true)').setRequired(false))
     .addStringOption(opt => opt.setName('confirm').setDescription('Type CONFIRM for live execution').setRequired(false)),
-  new SlashCommandBuilder().setName('fixnick').setDescription('Owner-only: fix all member nicknames to REGION | IGN or 0/10 | IGN')
+  new SlashCommandBuilder().setName('fixnick').setDescription('Owner-only: normalize member nicknames to REGION | IGN or IGN')
     .addBooleanOption(opt => opt.setName('preview').setDescription('Preview mode (default true)').setRequired(false)),
   new SlashCommandBuilder().setName('invite').setDescription('Create a time-limited invite link (Recruiters only)'),
   new SlashCommandBuilder().setName('leaderboard').setDescription('Update or show leaderboard')
