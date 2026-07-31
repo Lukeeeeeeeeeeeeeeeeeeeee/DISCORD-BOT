@@ -292,7 +292,7 @@ async function onReady() {
   let telemetryProvision = await configureAecsTelemetry(client, 'startup');
 
   await antiNukeInitPromise;
-  runtime.setAntiNuke(antiNukeSystem); // FIX (VULN-05): Register anti-nuke in runtime to enable AECS inheritance
+  runtime.setAntiNuke(antiNukeSystem.antiNuke); // FIX (VULN-05): Register anti-nuke in runtime to enable AECS inheritance
 
   await reconcileRecruits(client, db).catch(err => {
     logUnexpectedError('service.recruit.reconcile.startup', err);
