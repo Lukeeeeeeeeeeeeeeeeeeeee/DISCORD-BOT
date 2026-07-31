@@ -12,7 +12,6 @@ const defaultDb = require('../../db_async');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
-const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { hasRecruiterOrStaffPermissions, hasAdministrator } = require('../../lib/permissions');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
@@ -23,7 +22,6 @@ const rookiePointsRepo = require('../../repos/rookie-points-repo');
 const trialFastTrackRepo = require('../../repos/trial-fast-track-repo');
 const { changeRecruiterPoints } = require('./ledger-service');
 const scheduler = require('../../scheduler');
-const campaignService = require('../dm/dm-campaign-service');
 
 function createTraceId() {
   return `recruit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;

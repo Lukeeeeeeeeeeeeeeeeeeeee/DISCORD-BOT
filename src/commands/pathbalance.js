@@ -117,23 +117,6 @@ const PATH_BUCKETS = [
 
 const PATH_BUCKET_BY_KEY = Object.fromEntries(PATH_BUCKETS.map((bucket) => [bucket.key, bucket]));
 
-function getOwnerIdSet() {
-  const ids = new Set();
-  if (TESTING_USER_ID) ids.add(String(TESTING_USER_ID));
-
-  const envOwnerIds = [
-    process.env.PATH_BALANCE_OWNER_ID,
-    process.env.ACTIVITYCHECK_OWNER_ID,
-    process.env.OWNER_ID,
-    process.env.ANTINUKE_OWNER_ID
-  ]
-    .map((value) => (value == null ? '' : String(value).trim()))
-    .filter(Boolean);
-
-  for (const ownerId of envOwnerIds) ids.add(ownerId);
-  return ids;
-}
-
 function collectAllPathRoleIds() {
   const ids = new Set();
   for (const bucket of PATH_BUCKETS) {
@@ -273,10 +256,17 @@ module.exports = {
       return replyError(interaction, 'This bot instance is configured for a different guild.');
     }
 
-    const ownerIds = getOwnerIdSet();
-    const callerId = String(interaction.user && interaction.user.id);
-    if (!ownerIds.has(callerId)) {
-      return replyError(interaction, 'This one-time command is owner-only.');
+    // Permission check: Helper+ (HELPER, HELPER_PLUS, MOD) or Administrator
+    const caller = interaction.member;
+    const isAdmin = caller && caller.permissions && typeof caller.permissions.has === 'function'
+      && caller.permissions.has('Administrator');
+    const hasHelper = caller && caller.roles && caller.roles.cache && (
+      hasRole(caller, BASE_ROLES.HELPER)
+      || hasRole(caller, BASE_ROLES.HELPER_PLUS)
+      || hasRole(caller, BASE_ROLES.MOD)
+    );
+    if (!isAdmin && !hasHelper) {
+      return replyError(interaction, 'Helper+ or Administrator permission required.');
     }
 
     const preview = interaction.options.getBoolean('preview') !== false;

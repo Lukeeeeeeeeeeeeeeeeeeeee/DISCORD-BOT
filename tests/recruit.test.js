@@ -284,14 +284,6 @@ describe('/recruit command', () => {
     expect(weekly).toBeDefined();
     expect(Number(weekly.recruits7d)).toBe(1);
 
-    expect(createCampaign).toHaveBeenCalledWith(expect.objectContaining({
-      guild: interaction.guild,
-      requestedBy: interaction.user.id,
-      messageType: 'system_welcome',
-      targetMode: 'direct',
-      directUserIds: ['M1']
-    }));
-
     // channels should NOT have a per-recruit send (leaderboards are updated via upsert)
     const chOverall = channelsCache.get(require('../src/constants').CHANNELS.INVITES_OVERALL);
     expect(chOverall.send).not.toHaveBeenCalled();

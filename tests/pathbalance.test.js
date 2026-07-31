@@ -107,6 +107,19 @@ function makeInteraction({
 
   const interaction = {
     user: { id: 'owner-1' },
+    member: {
+      id: 'owner-1',
+      roles: {
+        cache: new Collection([
+          ['1412808626136940575', makeRole('1412808626136940575')],
+          ['1412808626099323003', makeRole('1412808626099323003')],
+          ['1412808626099323004', makeRole('1412808626099323004')]
+        ])
+      },
+      permissions: {
+        has: jest.fn(() => false)
+      }
+    },
     guild,
     options: {
       getBoolean: jest.fn((name) => {
