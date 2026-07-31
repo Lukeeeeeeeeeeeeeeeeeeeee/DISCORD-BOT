@@ -1,102 +1,25 @@
-name: Deploy to Bot Hosts
+name: Deploy to Pterodactyl
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
-    inputs:
-      target:
-        description: "Deploy target"
-        required: true
-        default: both
-        type: choice
-        options:
-          - both
-          - clan_a
-          - clan_b
+    branches: [ main, rescue_v3_indestructible ]
 
 jobs:
-  predeploy:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v3
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          node-version: "18"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run predeploy stability checks
-        run: npm run stability:check
-
-  deploy_clan_a:
-    runs-on: ubuntu-latest
-    needs: predeploy
-    if: ${{ github.event_name == 'push' || github.event.inputs.target == 'both' || github.event.inputs.target == 'clan_a' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build deploy payload
-        run: |
-          rm -rf deploy_payload
-          mkdir -p deploy_payload
-          rsync -a \
-            --exclude '.git/' \
-            --exclude '.github/' \
-            --exclude '.idea/' \
-            --exclude '.env' \
-            --exclude '.env.*' \
-            --exclude 'data/' \
-            --exclude 'configs/' \
-            --exclude 'backups/' \
-            --exclude 'node_modules/' \
-            ./ deploy_payload/
-
-      - name: Upload to Clan A host
-        uses: appleboy/scp-action@v0.1.5
-        with:
-          host: ${{ secrets.CLAN_A_SFTP_HOST }}
-          username: ${{ secrets.CLAN_A_SFTP_USER }}
-          password: ${{ secrets.CLAN_A_SFTP_PASSWORD }}
-          port: ${{ secrets.CLAN_A_SFTP_PORT }}
-          source: "deploy_payload/*"
-          target: "/home/container"
-
-  deploy_clan_b:
-    runs-on: ubuntu-latest
-    needs: predeploy
-    if: ${{ github.event_name == 'push' || github.event.inputs.target == 'both' || github.event.inputs.target == 'clan_b' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build deploy payload
-        run: |
-          rm -rf deploy_payload
-          mkdir -p deploy_payload
-          rsync -a \
-            --exclude '.git/' \
-            --exclude '.github/' \
-            --exclude '.idea/' \
-            --exclude '.env' \
-            --exclude '.env.*' \
-            --exclude 'data/' \
-            --exclude 'configs/' \
-            --exclude 'backups/' \
-            --exclude 'node_modules/' \
-            ./ deploy_payload/
-
-      - name: Upload to Clan B host
-        uses: appleboy/scp-action@v0.1.5
-        with:
-          host: ${{ secrets.CLAN_B_SFTP_HOST }}
-          username: ${{ secrets.CLAN_B_SFTP_USER }}
-          key: ${{ secrets.CLAN_B_SFTP_KEY }}
-          port: ${{ secrets.CLAN_B_SFTP_PORT }}
-          source: "deploy_payload/*"
-          target: "/home/container"
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            cd /home/container
+            git fetch origin
+            git reset --hard origin/rescue_v3_indestructible
+            npm install --production
+            echo "Deployment complete"
