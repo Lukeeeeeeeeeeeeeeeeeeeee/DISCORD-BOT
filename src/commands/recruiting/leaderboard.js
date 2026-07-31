@@ -12,7 +12,7 @@ const { logUnexpectedError } = require('../../lib/logger');
 
 const FULL_FETCH_MAX = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_MAX || '5000', 10);
 const FULL_FETCH_COOLDOWN_MS = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_COOLDOWN_MS || '600000', 10);
-const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
+const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'false').toLowerCase() === 'true';
 let lastFullFetchAt = 0;
 
 function reportLeaderboardCommandError(scope, error, meta = {}) {
@@ -30,7 +30,8 @@ async function warmMemberCacheIfNeeded(guild, totalRoleMembers, reason, options 
   const memberCount = Number(guild.memberCount || 0);
   const canAutoFetch = Number.isFinite(memberCount) && memberCount > 0 && memberCount <= FULL_FETCH_MAX;
   if (force && !FORCE_FULL_FETCH_ON_EMPTY) return false;
-  if (!force && !allowEnv && !canAutoFetch) return false;
+  if (!canAutoFetch) return false;
+  if (!force && !allowEnv) return false;
   const now = Date.now();
   if (now - lastFullFetchAt < FULL_FETCH_COOLDOWN_MS) return false;
   lastFullFetchAt = now;

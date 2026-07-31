@@ -11,7 +11,7 @@ const { makeLeaderboardText } = require('../../lib/messages');
 const { logUnexpectedError } = require('../../lib/logger');
 
 const FULL_FETCH_COOLDOWN_MS = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_COOLDOWN_MS || '600000', 10);
-const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
+const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'false').toLowerCase() === 'true';
 const LEADERBOARD_ROW_CONCURRENCY = Number.parseInt(process.env.LEADERBOARD_ROW_CONCURRENCY || '4', 10);
 let lastFullFetchAt = 0;
 
