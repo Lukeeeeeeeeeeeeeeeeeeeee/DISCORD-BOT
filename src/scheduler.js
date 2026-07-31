@@ -87,7 +87,8 @@ async function primeMemberCache(guild, contextLabel, options = {}) {
   if (force && !FORCE_FULL_FETCH_ON_EMPTY) return false;
   const memberCount = Number(guild.memberCount || 0);
   const allowAuto = Number.isFinite(memberCount) && memberCount > 0 && memberCount <= FULL_FETCH_MAX;
-  if (!force && !ALLOW_FULL_MEMBER_FETCH && !allowAuto) return false;
+  if (!allowAuto) return false;
+  if (!force && !ALLOW_FULL_MEMBER_FETCH) return false;
   const now = Date.now();
   if (now - lastMemberCacheWarmAt < MEMBER_CACHE_WARM_COOLDOWN_MS) return false;
   lastMemberCacheWarmAt = now;
