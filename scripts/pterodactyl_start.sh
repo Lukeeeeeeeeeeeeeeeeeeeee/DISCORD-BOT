@@ -7,6 +7,8 @@ git -c core.logallrefupdates=false pull --no-tags --ff-only origin rescue_v3_ind
 
 echo "HEAD=$(git rev-parse --short HEAD)"
 
+if [ -f package.json ]; then npm install --no-fund --no-audit; fi
+
 export ENABLE_INTERNAL_WORKER=false
 export SCHEDULER_FORCE_FULL_FETCH_ON_EMPTY=false
 export SCHEDULER_ALLOW_FULL_MEMBER_FETCH=false
