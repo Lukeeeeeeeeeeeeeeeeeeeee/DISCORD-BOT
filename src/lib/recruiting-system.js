@@ -7,6 +7,7 @@ const { ensureRecruiter } = require('../repos/recruiters-repo');
 
 // Role hierarchy for permissions
 const ROLE_HIERARCHY = {
+  [ROLE_IDS.HELPER_MINUS]: 1,
   [ROLE_IDS.HELPER]: 1,
   [ROLE_IDS.HELPER_PLUS]: 1,
   [ROLE_IDS.MOD]: 2,
@@ -21,6 +22,7 @@ const ROLE_HIERARCHY = {
 
 // Base requirements by role
 const ROLE_BASE_REQUIREMENTS = {
+  [ROLE_IDS.HELPER_MINUS]: 4,
   [ROLE_IDS.HELPER]: 4,
   [ROLE_IDS.HELPER_PLUS]: 4,
   [ROLE_IDS.MOD]: 5,

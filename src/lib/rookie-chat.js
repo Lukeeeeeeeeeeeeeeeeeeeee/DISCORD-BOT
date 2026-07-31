@@ -1,5 +1,4 @@
-const { CHANNELS, ROLE_IDS } = require('../constants');
-const { addRookiePoints, formatPoints } = require('./rookie-points');
+const { ROLE_IDS } = require('../constants');
 const { getWeekStartUtcTs } = require('./week');
 
 const CHAT_MESSAGES_PER_BLOCK = 105;
@@ -85,24 +84,9 @@ async function trackRookieChatMessage({ db, member, guild, client }) {
     console.error('Failed to update rookie chat activity:', e);
   }
 
-  if (newChunks <= awardedChunks) return;
-
-  const deltaChunks = newChunks - awardedChunks;
-  const pointsToAdd = deltaChunks * CHAT_POINTS_PER_BLOCK;
-
-  const verifierId = client && client.user ? client.user.id : member.id;
-  const result = await addRookiePoints({ db, member, delta: pointsToAdd, guild, verifierId });
-
-  const logChannelId = CHANNELS && CHANNELS.ROOKIE_LOGS;
-  if (logChannelId && guild.channels && guild.channels.cache) {
-    const logChannel = guild.channels.cache.get(logChannelId);
-    if (logChannel && logChannel.send) {
-      const totalPoints = Number.isFinite(result.points) ? formatPoints(result.points) : '0';
-      const msg = `💬 <@${member.id}> earned **${formatPoints(pointsToAdd)}** chat points (${messageCount} msgs this week). Total: **${totalPoints}/10**.`;
-      logChannel.send(msg).catch(err => {
-        console.error('Failed to post rookie chat log:', err);
-      });
-    }
+  if (newChunks > awardedChunks) {
+    // We still track it in DB, but we no longer automatically award points.
+    // Points can only be added manually via command.
   }
 }
 

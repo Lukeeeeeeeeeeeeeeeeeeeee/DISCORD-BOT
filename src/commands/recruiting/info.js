@@ -107,8 +107,8 @@ module.exports = {
       { name: 'Region', value: String(recruit.region || 'Unknown'), inline: true },
       { name: 'IGN', value: String(recruit.ign || 'Unknown'), inline: true },
       { name: 'Verified', value: verification ? 'Yes' : 'No', inline: true },
-      { name: 'Points', value: points != null ? `${formatPoints(points)}/10` : 'N/A', inline: true },
-      { name: 'Points updated', value: pointsUpdatedAt ? `<t:${toUnixSeconds(pointsUpdatedAt)}:R>` : 'Unknown', inline: true }
+      { name: 'Events', value: points != null ? `${formatPoints(points)}/2` : 'N/A', inline: true },
+      { name: 'Events updated', value: pointsUpdatedAt ? `<t:${toUnixSeconds(pointsUpdatedAt)}:R>` : 'Unknown', inline: true }
     );
 
     if (verification && verification.verified_at) {

@@ -3,7 +3,8 @@ jest.mock('../src/db_async', () => ({
 }));
 
 jest.mock('../src/lib/recruiting-system', () => ({
-  hasModPlusPermissions: jest.fn()
+  hasModPlusPermissions: jest.fn(),
+  getRoleLevel: jest.fn(() => 2)
 }));
 
 jest.mock('../src/lib/permissions', () => ({

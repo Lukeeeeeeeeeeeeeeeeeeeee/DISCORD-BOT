@@ -1,7 +1,6 @@
 const { CHANNELS, ROLE_IDS } = require('../constants');
-const { addRookiePoints, formatPoints } = require('./rookie-points');
 
-const WAR_GANK_POINTS = 5;
+const WAR_GANK_POINTS = 1;
 const WAR_GANK_WINDOW_DAYS = 14;
 const WAR_GANK_MAX_PER_WINDOW = 2;
 const WAR_KEYWORD_RE = /\b(war|wars|gank|ganks|ganked)\b/i;
@@ -69,13 +68,7 @@ async function handleRookieWarLogMessage({ db, message, member, guild, client })
     return;
   }
 
-  const verifierId = client && client.user ? client.user.id : member.id;
-  const result = await addRookiePoints({ db, member, delta: WAR_GANK_POINTS, guild, verifierId });
-
-  const totalPoints = Number.isFinite(result.points) ? formatPoints(result.points) : '0';
-  const response = result.promoted
-    ? `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: 10/10. Promoted to ${result.teamName}.`
-    : `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints}/10.`;
+  const response = `Logged war/gank for <@${member.id}>. (Auto-points are disabled; please use the command to add points).`;
 
   if (message.channel && message.channel.send) {
     message.channel.send(response).catch(err => {

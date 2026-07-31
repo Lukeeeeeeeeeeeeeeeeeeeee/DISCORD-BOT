@@ -76,13 +76,13 @@ module.exports = {
                     actorId: interaction.user ? interaction.user.id : null
                 });
                 return interaction.editReply({
-                    content: `Failed to reset inactive points.${dispatchResult && dispatchResult.supportId ? ` Support ID: ${dispatchResult.supportId}.` : ''}`
+                    content: `Failed to reset inactive events.${dispatchResult && dispatchResult.supportId ? ` Support ID: ${dispatchResult.supportId}.` : ''}`
                 });
             }
 
             const updatedRows = Number(result && Number.isFinite(result.changes) ? result.changes : 0);
             return interaction.editReply({
-                content: `Reset inactive points to 0 for ${updatedRows} record(s).`
+                content: `Reset inactive events to 0 for ${updatedRows} record(s).`
             });
         }
 
@@ -159,7 +159,7 @@ module.exports = {
                 delta
             });
             return interaction.editReply({
-                content: `Failed to update inactive points.${dispatchResult && dispatchResult.supportId ? ` Support ID: ${dispatchResult.supportId}.` : ''}`
+                content: `Failed to update inactive events.${dispatchResult && dispatchResult.supportId ? ` Support ID: ${dispatchResult.supportId}.` : ''}`
             });
         }
 
@@ -170,7 +170,7 @@ module.exports = {
         }
 
         return interaction.editReply({
-            content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/2 inactive points.`
+            content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/2 inactive events.`
         });
     }
 };

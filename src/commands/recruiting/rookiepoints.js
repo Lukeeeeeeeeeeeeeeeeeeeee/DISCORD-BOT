@@ -1,7 +1,7 @@
 const db = require('../../db_async');
 const { ROLE_IDS } = require('../../constants');
 const { PermissionsBitField } = require('discord.js');
-const { hasModPlusPermissions } = require('../../lib/recruiting-system');
+const { getRoleLevel } = require('../../lib/recruiting-system');
 const { addRookiePoints, formatPoints } = require('../../lib/rookie-points');
 const { replyError } = require('../../lib/embeds');
 const { hasAdministrator } = require('../../lib/permissions');
@@ -32,8 +32,8 @@ module.exports = {
         .setDescription('Reset all rookie points to 0 (admin only)')
     ),
   async execute(interaction) {
-    if (!hasModPlusPermissions(interaction.member)) {
-      return replyError(interaction, 'MOD+ only.', { flags: 64 });
+    if (getRoleLevel(interaction.member) < 1 && !hasAdministrator(interaction.member)) {
+      return replyError(interaction, 'Helper+ only.', { flags: 64 });
     }
 
     const sub = interaction.options && typeof interaction.options.getSubcommand === 'function'
@@ -123,12 +123,12 @@ module.exports = {
 
     if (result.promoted) {
       return interaction.editReply({
-        content: `Updated ${targetUser.tag} to 10/10 points. Promoted to ${result.teamName}.`
+        content: `Updated ${targetUser.tag} to 2/2 events. Promoted to ${result.teamName}.`
       });
     }
 
     return interaction.editReply({
-      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/10 points.`
+      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/2 events.`
     });
   }
 };

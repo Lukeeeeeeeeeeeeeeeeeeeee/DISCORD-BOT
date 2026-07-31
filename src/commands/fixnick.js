@@ -1,10 +1,13 @@
 const { AttachmentBuilder } = require('discord.js');
 const { GUILD_ID, ROLE_IDS, REGION_ROLE_IDS, ACTIVITY_CHECK, TESTING_USER_ID } = require('../constants');
 const { replyError } = require('../lib/embeds');
+const db = require('../db_async');
+const { getInactivePoints } = require('../lib/inactive-points');
+const { getLinkedPoints, formatPoints } = require('../lib/rookie-points');
 
 
 // ── Target roles ────────────────────────────────────────────────────
-const ROOKIE_ROLE_ID = ROLE_IDS.ROOKIE;           // 0/10 | IGN
+const ROOKIE_ROLE_ID = ROLE_IDS.ROOKIE;           // 0/2 | IGN
 const MEMBER_ROLE_ID = ROLE_IDS.AUTO_PROMOTE_ROLE; // REGION | IGN
 
 // ── Region lookup (role-id → abbreviation) ──────────────────────────
@@ -138,7 +141,7 @@ function getSourceName(member) {
  * Build the ideal nickname string for a member.
  * Returns { newNick, prefix, ign, skipReason } or skipReason if skipped.
  */
-function computeNickname(member) {
+async function computeNickname(member) {
     const isMember = hasRole(member, MEMBER_ROLE_ID);
     const isRookie = hasRole(member, ROOKIE_ROLE_ID);
 
@@ -169,7 +172,9 @@ function computeNickname(member) {
         if (!ign) {
             return { skipReason: 'Could not determine IGN' };
         }
-        const prefix = '0/2';
+        const record = await getInactivePoints({ db, member, guild: member.guild });
+        const pts = record && Number.isFinite(record.points) ? record.points : 0;
+        const prefix = `${formatPoints(pts)}/2`;
         let newNick = `${prefix} | ${ign}`;
         if (newNick.length > 32) {
             const maxIgn = 32 - prefix.length - 3;
@@ -183,7 +188,9 @@ function computeNickname(member) {
         if (!ign) {
             return { skipReason: 'Could not determine IGN' };
         }
-        const prefix = '0/10';
+        const record = await getLinkedPoints({ db, member, guild: member.guild });
+        const pts = record && Number.isFinite(record.points) ? record.points : 0;
+        const prefix = `${formatPoints(pts)}/2`;
         let newNick = `${prefix} | ${ign}`;
         if (newNick.length > 32) {
             const maxIgn = 32 - prefix.length - 3;
@@ -232,7 +239,7 @@ module.exports = {
         const unchanged = [];  // { member, nick }
 
         for (const member of members) {
-            const result = computeNickname(member);
+            const result = await computeNickname(member);
 
             if (result.skipReason) {
                 skipped.push({ member, reason: result.skipReason });

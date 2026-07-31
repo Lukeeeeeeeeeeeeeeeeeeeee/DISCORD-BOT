@@ -9,7 +9,7 @@ function parseRookieNickname(rawName) {
   const trimmed = capped.trim();
   if (!trimmed) return { base: null, points: null };
 
-  const pointsMatch = trimmed.match(/(?:^|\s)(-?\d+(?:\.\d+)?)\s*\/\s*10\s*$/);
+  const pointsMatch = trimmed.match(/(?:^|\s)(-?\d+(?:\.\d+)?)\s*\/\s*2\s*$/);
   if (!pointsMatch) {
     return { base: sanitizeRookieBase(trimmed), points: null };
   }
@@ -103,7 +103,7 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
     return { points: 0, promoted: false, skipped: true };
   }
 
-  const clamped = Math.max(0, Math.min(10, points));
+  const clamped = Math.max(0, Math.min(2, points));
   const now = Date.now();
 
   try {
@@ -122,7 +122,7 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
     console.error('Failed to persist rookie points:', e);
   }
 
-  if (clamped >= 10) {
+  if (clamped >= 2) {
     const promotion = await promoteMember({ member, db, guild, verifierId });
     return { points: clamped, promoted: true, teamName: promotion.teamName };
   }
@@ -132,7 +132,7 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
   }
 
   const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-  const nickname = `${baseName} ${formatPoints(clamped)}/10`;
+  const nickname = `${baseName} ${formatPoints(clamped)}/2`;
   const nicknameUpdated = await retrySetNickname(member, nickname);
 
   return { points: clamped, promoted: false, nicknameUpdated };
@@ -147,7 +147,7 @@ async function addRookiePoints({ db, member, delta, guild, verifierId }) {
     return { points: current.points || 0, promoted: false, previousPoints: current.points || 0 };
   }
 
-  const seedPoints = Math.max(0, Math.min(10, numericDelta));
+  const seedPoints = Math.max(0, Math.min(2, numericDelta));
   const now = Date.now();
 
   try {
@@ -155,7 +155,7 @@ async function addRookiePoints({ db, member, delta, guild, verifierId }) {
       `INSERT INTO rookie_points (guild_id, member_id, points, updated_at)
        VALUES (?, ?, ?, ?)
        ON CONFLICT(guild_id, member_id) DO UPDATE SET
-         points = MIN(10, MAX(0, rookie_points.points + excluded.points)),
+         points = MIN(2, MAX(0, rookie_points.points + excluded.points)),
          updated_at = excluded.updated_at`,
       resolvedGuildId,
       member.id,
@@ -176,16 +176,16 @@ async function addRookiePoints({ db, member, delta, guild, verifierId }) {
   const points = row && Number.isFinite(Number(row.points))
     ? Number(row.points)
     : 0;
-  const previousPoints = Math.max(0, Math.min(10, points - numericDelta));
+  const previousPoints = Math.max(0, Math.min(2, points - numericDelta));
 
-  if (points >= 10) {
+  if (points >= 2) {
     const promotion = await promoteMember({ member, db, guild, verifierId });
-    return { points: 10, promoted: true, teamName: promotion.teamName, previousPoints };
+    return { points: 2, promoted: true, teamName: promotion.teamName, previousPoints };
   }
 
   if (member.manageable) {
     const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-    const nickname = `${baseName} ${formatPoints(points)}/10`;
+    const nickname = `${baseName} ${formatPoints(points)}/2`;
     await retrySetNickname(member, nickname);
   }
 

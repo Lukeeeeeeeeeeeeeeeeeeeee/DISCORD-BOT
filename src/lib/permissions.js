@@ -52,6 +52,7 @@ function getStaffRoleIds() {
   const configured = ROLE_IDS && Array.isArray(ROLE_IDS.STAFF) ? ROLE_IDS.STAFF.filter(Boolean) : [];
   if (configured.length) return configured;
   return [
+    ROLE_IDS.HELPER_MINUS,
     ROLE_IDS.HELPER,
     ROLE_IDS.HELPER_PLUS,
     ROLE_IDS.HIGH_STAFF,

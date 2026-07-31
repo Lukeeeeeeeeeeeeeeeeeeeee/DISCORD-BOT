@@ -722,12 +722,6 @@ client.on('guildMemberAdd', async (member) => {
 
     if (!inviteSystem) return;
 
-    /**
- * AECS Discord Bot Engine - v3.0-INDESTRUCTIBLE-PRODUCTION-VERIFIED
- * 
- * Optimized for high-concurrency recruitment fleets.
- */
-'use strict';
     logRuntimeEvent('info', 'event.guildMemberAdd', `Member ${member.user.tag} joined the server`, { userId: member.id, guildId: member.guild.id });
     void withGuildJoinLock(member.guild.id, async () => {
       await trackInviteUsage(member.guild, inviteSystem, member.id).catch(err => {

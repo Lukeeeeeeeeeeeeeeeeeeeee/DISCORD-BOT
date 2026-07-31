@@ -17,6 +17,7 @@ const BASE_ROLES = {
   MEMBER: '1412808625747132501',
   RECRUITER: '1412808626040733738',
   TRIAL_RECRUITER: '1421549298033627156',
+  HELPER_MINUS: '1516075715500703885',
   HELPER: '1412808626099323003',
   HELPER_PLUS: '1412808626099323004',
   MOD: '1412808626136940575'
@@ -54,7 +55,7 @@ const PATH_BUCKETS = [
       AIR: '1473773084430307390',
       WATER: '1473773094429655124'
     },
-    isEligible: (member) => hasRole(member, BASE_ROLES.HELPER)
+    isEligible: (member) => hasRole(member, BASE_ROLES.HELPER) || hasRole(member, BASE_ROLES.HELPER_MINUS)
   },
   {
     tier: 'RECRUITER',
@@ -68,6 +69,7 @@ const PATH_BUCKETS = [
     isEligible: (member) => (
       hasRole(member, BASE_ROLES.RECRUITER)
       || hasRole(member, BASE_ROLES.TRIAL_RECRUITER)
+      || hasRole(member, BASE_ROLES.HELPER_MINUS)
       || hasRole(member, BASE_ROLES.HELPER)
       || hasRole(member, BASE_ROLES.HELPER_PLUS)
       || hasRole(member, BASE_ROLES.MOD)
@@ -315,10 +317,10 @@ module.exports = {
 
     const missingRoleIds = Array.from(collectAllPathRoleIds())
       .filter((roleId) => !interaction.guild.roles.cache.has(roleId));
+    
+    let missingRolesWarning = '';
     if (missingRoleIds.length) {
-      return interaction.editReply({
-        content: `Missing configured path roles in guild: ${missingRoleIds.map((id) => `<@&${id}>`).join(', ')}`
-      });
+      missingRolesWarning = `\n⚠️ **Warning:** Missing configured path roles in guild: ${missingRoleIds.map((id) => `<@&${id}>`).join(', ')}`;
     }
 
     let members = [];
@@ -465,6 +467,10 @@ module.exports = {
         .map((item) => `- ${item.member} [${item.tier}/${item.path}]: ${item.error}`)
         .join('\n');
       lines.push(`Failure sample:\n${sample}`);
+    }
+    
+    if (missingRolesWarning) {
+      lines.push(missingRolesWarning);
     }
 
     return interaction.editReply({ content: lines.join('\n') });

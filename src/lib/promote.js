@@ -51,8 +51,34 @@ function inferTeamFromRegionTag(member) {
 
 function stripRookiePoints(nickname) {
     if (!nickname) return null;
-    const trimmed = nickname.replace(/\s*\d+(?:\.\d+)?\s*\/\s*10\s*$/i, '').trim();
+    const trimmed = nickname.replace(/\s*\d+(?:\.\d+)?\s*\/\s*(?:2|10)\s*$/i, '').trim();
     return trimmed.length ? trimmed : null;
+}
+
+function collectCurrentRoleIds(cache) {
+    if (!cache) return [];
+    if (typeof cache.map === 'function') {
+        try {
+            const mapped = cache.map(r => r && r.id);
+            if (Array.isArray(mapped)) return mapped.filter(Boolean);
+        } catch (e) { void e; }
+    }
+    const out = [];
+    if (Symbol && Symbol.iterator && cache[Symbol.iterator]) {
+        try {
+            for (const r of cache) if (r && r.id) out.push(r.id);
+            return out;
+        } catch (e) { void e; }
+    }
+    if (typeof cache.forEach === 'function') {
+        try {
+            cache.forEach(r => { if (r && r.id) out.push(r.id); });
+            return out;
+        } catch (e) { void e; }
+    }
+    const vals = Object.values(cache);
+    for (const r of vals) if (r && r.id) out.push(r.id);
+    return out;
 }
 
 async function promoteMember({ member, db, guild, verifierId }) {
@@ -107,7 +133,7 @@ async function promoteMember({ member, db, guild, verifierId }) {
             }
         } else {
             // Fallback for partial mocks/legacy wrappers that do not expose add/remove.
-            const currentRoleIds = new Set(member.roles.cache.map(r => r.id));
+            const currentRoleIds = new Set(collectCurrentRoleIds(member.roles.cache));
             for (const roleId of uniqueRolesToRemove) currentRoleIds.delete(roleId);
             for (const roleId of targetRoleIds) currentRoleIds.add(roleId);
             const finalRoleIds = Array.from(currentRoleIds).filter(id => id !== member.guild.id);

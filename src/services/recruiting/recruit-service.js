@@ -9,7 +9,7 @@ const { PermissionsBitField } = require('discord.js');
 const { getRegionInfo, getTeamLabel } = require('../../lib/regions');
 const { replyError } = require('../../lib/embeds');
 const defaultDb = require('../../db_async');
-const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
+
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
@@ -283,194 +283,79 @@ async function refreshCurrentWeekCalculationAfterRecruit(dbHandle, guild, recrui
   }
 }
 
-async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedId) {
+async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedId, interactionUserId) {
   if (!recruiterMember || !recruiterMember.roles || !recruiterMember.roles.cache) return { promoted: false };
   if (!recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) return { promoted: false };
-  if (recruiterMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE)) return { promoted: false };
+  if (!recruiterMember.roles.cache.has(ROLE_IDS.ROOKIE)) return { promoted: false };
 
-  const now = Date.now();
-  const windowMs = 9 * 24 * 60 * 60 * 1000;
-  const guildId = resolveGuildId(guild);
-
-  let row = await trialFastTrackRepo.getByRecruiter(dbHandle, guildId, recruiterMember.id);
-  const needsResetByTime = !row || (now - row.started_at) > windowMs;
-
-  if (needsResetByTime) {
-    await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
-      startedAt: now,
-      recruit1Id: null,
-      recruit2Id: null,
-      recruit3Id: null,
-      count: 0,
-      updatedAt: now
-    });
-    row = await trialFastTrackRepo.getByRecruiter(dbHandle, guildId, recruiterMember.id);
-  }
-
-  const trackedIds = [row.recruit1_id, row.recruit2_id, row.recruit3_id].filter(Boolean);
-  
-  // Strategy: Memoize member results for this cohort to prevent Discord API spam.
-  let memoizedMemberMap = new Map();
-
-  if (trackedIds.length) {
-    memoizedMemberMap = await fetchMembersByIds(guild, trackedIds).catch(() => new Map());
-    const missing = trackedIds.find(id => !memoizedMemberMap.has(id));
-    if (missing) {
-      await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
-        startedAt: now,
-        recruit1Id: null,
-        recruit2Id: null,
-        recruit3Id: null,
-        count: 0,
-        updatedAt: now
-      });
-      row = await trialFastTrackRepo.getByRecruiter(dbHandle, guildId, recruiterMember.id);
-    }
-  }
-
-  if ([row.recruit1_id, row.recruit2_id, row.recruit3_id].includes(recruitedId)) {
-    return { promoted: false };
-  }
-
-  let count = row.count || 0;
-  const updates = {
-    recruit1Id: row.recruit1_id,
-    recruit2Id: row.recruit2_id,
-    recruit3Id: row.recruit3_id
-  };
-  if (!updates.recruit1Id) updates.recruit1Id = recruitedId;
-  else if (!updates.recruit2Id) updates.recruit2Id = recruitedId;
-  else if (!updates.recruit3Id) updates.recruit3Id = recruitedId;
-  else {
-    await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
-      startedAt: row.started_at,
-      recruit1Id: row.recruit1_id,
-      recruit2Id: row.recruit2_id,
-      recruit3Id: row.recruit3_id,
-      count,
-      updatedAt: now
-    });
-    return { promoted: false };
-  }
-
-  count = Math.min(3, count + 1);
-  await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
-    startedAt: row.started_at,
-    recruit1Id: updates.recruit1Id,
-    recruit2Id: updates.recruit2Id,
-    recruit3Id: updates.recruit3Id,
-    count,
-    updatedAt: now
+  // 1 recruit = 1 rookie point
+  const { addRookiePoints } = require('../../lib/rookie-points');
+  const result = await addRookiePoints({
+    db: dbHandle,
+    member: recruiterMember,
+    delta: 1,
+    guild,
+    verifierId: interactionUserId
   });
 
-  const windowStart = Math.max(row.started_at || now, now - windowMs);
-  const recent = await dbHandle.all(
-    'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND valid = 1 AND created_at >= ? ORDER BY created_at DESC LIMIT 3',
-    guildId,
-    recruiterMember.id,
-    windowStart
-  );
-
-  const shouldPromote = (count >= 3) || (recent && recent.length >= 3);
-  if (!shouldPromote) return { promoted: false };
-
-  const idsToCheck = (recent && recent.length >= 3)
-    ? recent.map(r => r.recruited_id)
-    : [updates.recruit1Id, updates.recruit2Id, updates.recruit3Id].filter(Boolean);
-
-  if (idsToCheck.length) {
-    // Reuse memoized results if available, otherwise fetch.
-    const missingInMemo = idsToCheck.find(id => !memoizedMemberMap.has(id));
-    const finalMemberMap = missingInMemo 
-      ? await fetchMembersByIds(guild, idsToCheck).catch(() => new Map())
-      : memoizedMemberMap;
-
-    const missing = idsToCheck.find(id => !finalMemberMap.has(id));
-    if (missing) {
-      await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
-        startedAt: now,
-        recruit1Id: null,
-        recruit2Id: null,
-        recruit3Id: null,
-        count: 0,
-        updatedAt: now
-      });
-      return { promoted: false };
+  if (result.promoted) {
+    // Already promoted to Member by addRookiePoints (via promoteMember).
+    // Now add RECRUITER role and remove TRIAL_RECRUITER role.
+    const botMember = await resolveBotMember(guild, recruiterMember.client);
+    
+    // Determine which recruiter role to give based on region
+    let recruiterRoleId = null;
+    try {
+      const guildId = resolveGuildId(guild);
+      const rows = await dbHandle.all(
+        'SELECT region, COUNT(*) as c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND valid = 1 GROUP BY region ORDER BY c DESC',
+        guildId,
+        recruiterMember.id
+      );
+      const topRegion = rows && rows.length ? rows[0].region : null;
+      recruiterRoleId = topRegion ? RECRUITER_ROLE_IDS[topRegion] : null;
+    } catch (e) {
+      recruiterRoleId = null;
     }
-  }
 
-  // VULN-02: Total Unification (Atomic Promotion + Metadata + State Clear)
-  // This merged transaction eliminates the double-spend window.
-  const finalizePromotion = await withTransaction(dbHandle, async (tx) => {
-    // 1. Re-check lock status under mutex
-    const fresh = await tx.get('SELECT promoted FROM recruiters WHERE guild_id = ? AND id = ?', guildId, recruiterMember.id);
-    if (!fresh || fresh.promoted === 1) return false;
-    
-    // 2. Perform atomic bit-flip
-    await tx.run('UPDATE recruiters SET promoted = 1 WHERE guild_id = ? AND id = ?', guildId, recruiterMember.id);
-    
-    // 3. Move metadata storage into SAME transaction boundary
-    await storeMinReqSnapshotAfterPromotion(tx, guild, recruiterMember);
-    
-    // 4. Clear trial fast-track slots into SAME transaction boundary
-    await trialFastTrackRepo.clear(tx, guildId, recruiterMember.id);
-    
-    return true;
-  });
+    const rolesToAdd = [ROLE_IDS.RECRUITER, recruiterRoleId]
+      .filter(Boolean)
+      .filter(roleId => !recruiterMember.roles.cache.has(roleId));
 
-  if (!finalizePromotion) return { promoted: false }; 
-
-  let recruiterRoleId = null;
-  try {
-    const rows = await dbHandle.all(
-      'SELECT region, COUNT(*) as c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND valid = 1 GROUP BY region ORDER BY c DESC',
-      guildId,
-      recruiterMember.id,
-      windowStart
-    );
-    const topRegion = rows && rows.length ? rows[0].region : null;
-    recruiterRoleId = topRegion ? RECRUITER_ROLE_IDS[topRegion] : null;
-  } catch (e) {
-    recruiterRoleId = null;
-  }
-
-  const botMember = await resolveBotMember(guild, recruiterMember.client);
-  const rolesToAdd = [ROLE_IDS.AUTO_PROMOTE_ROLE, ROLE_IDS.RECRUITER, recruiterRoleId]
-    .filter(Boolean)
-    .filter(roleId => !recruiterMember.roles.cache.has(roleId));
-
-  // VULN-11: Hierarchy Guard for Staff Promotion
-  const safeRolesToAdd = [];
-  for (const rid of rolesToAdd) {
-    const role = guild.roles.cache.get(rid);
-    if (role && roleIsManageable(botMember, role)) {
-      safeRolesToAdd.push(rid);
-    } else if (role) {
-      logRuntimeEvent('warn', 'service.recruit.promotion.hierarchy', 'Skipping role grant: Bot too low in hierarchy', { 
-        recruiterId: recruiterMember.id, roleName: role.name 
-      });
-    }
-  }
-
-  try {
-    if (safeRolesToAdd.length) {
-      await recruiterMember.roles.add(safeRolesToAdd, 'Trial recruiter auto-promotion');
-    }
-    if (ROLE_IDS.TRIAL_RECRUITER && recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
-      const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
-      if (trialRole && roleIsManageable(botMember, trialRole)) {
-        await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER, 'Trial recruiter auto-promotion');
+    const safeRolesToAdd = [];
+    for (const rid of rolesToAdd) {
+      const role = guild.roles.cache.get(rid);
+      if (role && roleIsManageable(botMember, role)) {
+        safeRolesToAdd.push(rid);
+      } else if (role) {
+        logRuntimeEvent('warn', 'service.recruit.promotion.hierarchy', 'Skipping role grant: Bot too low in hierarchy', { 
+          recruiterId: recruiterMember.id, roleName: role.name 
+        });
       }
     }
-  } catch (err) {
-    reportRecruitServiceError('service.recruit.trialPromotion.applyRoles', err, { recruiterId: recruiterMember.id });
-  }
-    
-  void logRuntimeEvent('info', 'service.recruit.promotion.success', 'Trial recruiter auto-promoted successfully', {
-    recruiterId: recruiterMember.id, roles: safeRolesToAdd
-  });
 
-  return { promoted: true };
+    try {
+      if (safeRolesToAdd.length) {
+        await recruiterMember.roles.add(safeRolesToAdd, 'Trial recruiter reached 2/2 rookie points');
+      }
+      if (ROLE_IDS.TRIAL_RECRUITER && recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
+        const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
+        if (trialRole && roleIsManageable(botMember, trialRole)) {
+          await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER, 'Trial recruiter auto-promotion');
+        }
+      }
+    } catch (err) {
+      reportRecruitServiceError('service.recruit.trialPromotion.applyRoles', err, { recruiterId: recruiterMember.id });
+    }
+    
+    void logRuntimeEvent('info', 'service.recruit.promotion.success', 'Trial recruiter auto-promoted successfully', {
+      recruiterId: recruiterMember.id, roles: safeRolesToAdd
+    });
+    
+    return { promoted: true };
+  }
+
+  return { promoted: false };
 }
 
 async function execute(interaction, _client, dbHandle = null) {
@@ -749,7 +634,7 @@ async function execute(interaction, _client, dbHandle = null) {
 
       try {
         if (recruiterMember) {
-          const trialResult = await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id);
+          const trialResult = await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id, interaction.user.id);
           if (trialResult && trialResult.error) {
             reportRecruitServiceError('service.recruit.trialFastTrack.warning', trialResult.error, { recruiterId: interaction.user.id, recruitedId: member.id });
           }
@@ -797,18 +682,7 @@ async function execute(interaction, _client, dbHandle = null) {
         reportRecruitServiceError('service.recruit.recomputeLeaderboards', e, { guildId, recruiterId: interaction.user.id });
       }
 
-      try {
-        await campaignService.createCampaign({
-          guild: interaction.guild,
-          requestedBy: interaction.user.id,
-          messageType: 'system_welcome',
-          messageBody: buildRecruitWelcomeMessage(teamName),
-          targetMode: 'direct',
-          directUserIds: [member.id]
-        });
-      } catch (e) {
-        reportRecruitServiceError('service.recruit.welcomeDm.queue', e, { guildId, recruitedId: member.id });
-      }
+
 
       const totalRecruits = await recruitsRepo.countValidByRecruiter(db, guildId, creditedRecruiterId);
       const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';

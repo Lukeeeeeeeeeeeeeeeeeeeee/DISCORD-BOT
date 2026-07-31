@@ -273,6 +273,7 @@ function applyDerivedRoleIds(config) {
   if (roleIds.AUTO_PROMOTE_ROLE) roleIds.SOLACE = roleIds.AUTO_PROMOTE_ROLE;
   if (!Array.isArray(roleIds.STAFF) || roleIds.STAFF.length === 0) {
     roleIds.STAFF = [
+      roleIds.HELPER_MINUS,
       roleIds.HELPER,
       roleIds.HELPER_PLUS,
       roleIds.HIGH_STAFF,
