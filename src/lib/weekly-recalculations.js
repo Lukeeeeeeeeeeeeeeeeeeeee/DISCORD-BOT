@@ -16,7 +16,6 @@ const { loadRecruiterMeta } = require('../lib/leaderboard-utils');
 const { logUnexpectedError, logRuntimeEvent } = require('../lib/logger');
 
 const WEEK_ROLLOVER_OFFSET_MS = 5 * 60 * 1000;
-const DM_CONCURRENCY = 5; // [HARDENED] Concurrency limit for weekly report delivery
 const CALC_CONCURRENCY = Number.parseInt(process.env.RECALC_CONCURRENCY || '4', 10);
 
 const { runWithConcurrency } = require('../lib/concurrency');
@@ -217,67 +216,6 @@ async function performWeeklyRecalculations(guild) {
   } catch (error) {
     console.error('Weekly recalculation failed:', error);
     throw error;
-  }
-}
-
-/**
- * Post retention and minReq information to invite channels.
- *
- * A-04: DEAD CODE — This function is exported but has zero callers anywhere in the codebase.
- * It posts per-recruiter retention embeds to regional invite channels. If channel posting
- * is desired, wire this into performWeeklyRecalculations() above. Otherwise, delete it.
- * Do NOT call this in a loop per-recruiter — it would spam channels with N embeds per Monday.
- */
-async function postRetentionToInviteChannels(guild, result) {
-  const { staffMember, stats7d, newMinReq } = result;
-  const guildId = resolveGuildId(guild);
-
-  try {
-    const embed = new EmbedBuilder()
-      .setTitle('📊 Weekly Recruiter Update')
-      .setDescription(`**${staffMember.user.tag}** - 7 Day Performance`)
-      .addFields(
-        { name: 'Recruits This Week', value: `${stats7d.recruits7d}`, inline: true },
-        { name: 'Min Required', value: `${newMinReq}`, inline: true },
-        { name: '7-Day Retention', value: `${Math.round(stats7d.retention * 100)}%`, inline: true },
-        { name: 'Date', value: formatUtcDateOnly(), inline: true }
-      )
-      .setColor(stats7d.retention >= 0.8 ? 0x51CF66 : stats7d.retention >= 0.6 ? 0xFFAA00 : 0xFF6B6B)
-      .setTimestamp();
-
-    // Post to overall invites channel
-    const overallChannel = guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
-    if (overallChannel) {
-      await overallChannel.send({ embeds: [embed] }).catch(err => {
-        console.error('Failed to post retention summary to overall channel:', err);
-      });
-    }
-
-    // Post to regional invite channels based on staff member's recent recruits
-    const recentRecruits = await db.all(
-      'SELECT DISTINCT region FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND valid = 1 LIMIT 3',
-      guildId,
-      staffMember.id,
-      Date.now() - (7 * 24 * 60 * 60 * 1000)
-    );
-
-    for (const recruit of recentRecruits) {
-      const channelId = recruit.region === 'EU' ? CHANNELS.INVITES_EU :
-        recruit.region === 'NA' ? CHANNELS.INVITES_NA :
-          recruit.region === 'AS' ? CHANNELS.INVITES_AS : null;
-
-      if (channelId) {
-        const regionalChannel = guild.channels.cache.get(channelId);
-        if (regionalChannel) {
-          await regionalChannel.send({ embeds: [embed] }).catch(err => {
-            console.error('Failed to post retention summary to regional channel:', err);
-          });
-        }
-      }
-    }
-
-  } catch (error) {
-    console.error(`Error posting retention to channels for ${staffMember.id}:`, error);
   }
 }
 
