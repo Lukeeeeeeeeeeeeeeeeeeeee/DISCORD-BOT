@@ -1,8 +1,9 @@
-const {
+﻿const {
   ROLE_IDS,
   RECRUITER_ROLE_IDS,
   REGION_ROLE_IDS,
   REGION_INFO,
+  CHANNELS,
   RECRUIT_POLICY
 } = require('../../constants');
 const { PermissionsBitField } = require('discord.js');
@@ -12,7 +13,6 @@ const defaultDb = require('../../db_async');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
-const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { hasRecruiterOrStaffPermissions, hasAdministrator } = require('../../lib/permissions');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
@@ -25,13 +25,6 @@ const scheduler = require('../../scheduler');
 
 function createTraceId() {
   return `recruit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function reportRecruitServiceError(scope, error, meta = {}) {
-  void logUnexpectedError(scope, error, {
-    command: 'recruit',
-    ...meta
-  });
 }
 
 function inferTeamFromRecruiter(member) {
@@ -62,18 +55,60 @@ function pickOnboardingRole(team) {
   if (team === 'EU') return list[0];
   if (team === 'NA') return list[1];
   if (team === 'AS') return list[2];
-  
-  // Audit Fix: Explicit error instead of silent EU fallback.
-  throw new Error(`Unknown mapping for team "${team}". Update ROLE_IDS.ONBOARDING configuration.`);
+  return list[0];
 }
 
+function mentionRole(roleId, fallback) {
+  if (!roleId) return fallback || 'role';
+  return `<@&${roleId}>`;
+}
+
+function buildRookieWelcomeMessage(teamName) {
+  const logsChannel = CHANNELS && CHANNELS.ROOKIE_LOGS ? `<#${CHANNELS.ROOKIE_LOGS}>` : 'the rookie logs channel';
+  const rookieRole = mentionRole(ROLE_IDS.ROOKIE, 'rookie role');
+  const fullRole = mentionRole(ROLE_IDS.AUTO_PROMOTE_ROLE, 'full member role');
+  const recruiterRole = mentionRole(ROLE_IDS.RECRUITER, 'recruiter role');
+  const trialRole = mentionRole(ROLE_IDS.TRIAL_RECRUITER, 'trial recruiter role');
+  return `Welcome to Solace! You have been recruited in ${teamName}.
+Make sure you read how to war, whats a war and see readme!
+
+# <:SOLACEONTOP:1460693669391765750> SOLACE ROOKIE INFO
+Hello there and welcome to Solace! 
+The first thought that crosses your mind might be the reason behind your being given the ${rookieRole}â€”it's our basic role. You will have to earn ${fullRole} to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
+
+ Point Earning Methods
+
+> 1. Wars / Ganks
+> Take part in 2 wars or ganks in a 2-week period
+> <:greenarrow:1459897308610039900> 5 points apiece
+> -# **Wars / Ganks happen randomly**
+
+2. Recruiting (Fast Track)
+> As ${trialRole}, get 3 people on board in 9 days
+> <:greenarrow:1459897308610039900> Direct promotion to ${fullRole} + ${recruiterRole}
+*** If 3 recruits are not reached within the specified time, the process goes back to zero.***
+
+3. Activity (Chatting)
+> In a week's time send 550 messages
+> <:greenarrow:1459897308610039900> 1.5 points for every 105 messages (public channels only)
+
+You can combine any combination of these methods or concentrate solely on one (2 & 3 are the most consistent). Also, keep in mind that they are **not** permanent points!
+
+What Are Points? 
+Points are shown beside your name (e.g., 0/10). With more wars, chat, and recruiting activities, the points go up.
+
+Logging Progress 
+Make sure to put down your achievements in ${logsChannel} always. This is a must to ensure the counting of your points and your elevation. **Why?**
+<:greenarrow:1459897308610039900> Logging your progression insures that you get the points you worked for. It also is a chart of your progression if that helps you in terms of motivation.
+
+Wishing you good luck and once again welcoming you to Solace `;
+}
 
 function normalizeIgn(rawIgn, suffix) {
   const base = rawIgn == null ? '' : String(rawIgn);
   const cleaned = base.replace(/\s+/g, ' ').trim();
   if (!suffix) return cleaned;
-  // Audit Fix: Ensure at least 2 chars of base IGN remain before suffix.
-  const maxLen = Math.max(2, 32 - suffix.length);
+  const maxLen = Math.max(1, 32 - suffix.length);
   if (cleaned.length > maxLen) return cleaned.slice(0, maxLen).trim();
   return cleaned;
 }
@@ -112,17 +147,6 @@ function getRecruitPolicy() {
     minAccountAgeDays,
     allowLateAdminOverride
   };
-}
-
-function formatJoinLimitMessage(maxJoinMinutes) {
-  const hours = maxJoinMinutes / 60;
-  const label = Number.isInteger(hours) ? String(hours) : String(Math.round(hours * 10) / 10);
-  return `Cannot give roles to someone who joined more than ${label} hour${hours === 1 ? '' : 's'} ago.`;
-}
-
-function formatMinAccountAgeMessage(minAccountAgeDays) {
-  if (Number(minAccountAgeDays) === 180) return 'Account must be at least 6 months old.';
-  return `Account must be at least ${Math.round(minAccountAgeDays)} days old.`;
 }
 
 function isTransientSqliteError(err) {
@@ -208,159 +232,176 @@ async function storeMinReqSnapshotAfterPromotion(dbHandle, guild, recruiterMembe
       warnings: activeWarnings,
       previousMinReq: null,
       calculatedMinReq,
-      roleBase,
-      isSnapshot: true
-    });
-  } catch (e) {
-    reportRecruitServiceError('service.recruit.storeWeeklyCalcAfterPromotion', e);
-  }
-}
-
-async function refreshCurrentWeekCalculationAfterRecruit(dbHandle, guild, recruiterMember) {
-  if (!recruiterMember) return;
-  try {
-    const guildId = resolveGuildId(guild);
-    const nowTs = Date.now();
-    const weekStart = getWeekStartUtcTs();
-    const statsWindow = { sinceTs: weekStart, untilTs: nowTs };
-    const currentStats = await calculate7DayStats(dbHandle, recruiterMember.id, guild || null, { ...statsWindow, guildId });
-
-    const warnings = await dbHandle.get(
-      'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
-      guildId,
-      recruiterMember.id,
-      nowTs
-    );
-    const activeWarnings = warnings ? Number(warnings.c || 0) : 0;
-    const absence = await dbHandle.get(
-      'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
-      guildId,
-      recruiterMember.id
-    );
-    const roleBase = getBaseRequirement(recruiterMember);
-
-    const previousCalc = await dbHandle.get(
-      'SELECT calculated_min_req FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ? AND week_start < ? ORDER BY week_start DESC LIMIT 1',
-      guildId,
-      recruiterMember.id,
-      weekStart
-    ).catch(() => null);
-    const previousMinReq = previousCalc && previousCalc.calculated_min_req != null
-      ? Number(previousCalc.calculated_min_req)
-      : null;
-
-    const calculatedMinReq = calculateMinRecruitsFixed({
-      roleBase,
-      member: recruiterMember,
-      recruits7d: currentStats.recruits7d,
-      activityRate: currentStats.activityRate,
-      verifyRate: currentStats.verifyRate,
-      retention: currentStats.retention,
-      warnings: activeWarnings,
-      previousMinReq,
-      absent: !!absence,
-      isNewStaff: false
-    });
-
-    await storeWeeklyCalculation(dbHandle, {
-      guildId,
-      recruiterId: recruiterMember.id,
-      weekStart,
-      recruits7d: currentStats.recruits7d,
-      activityRate: currentStats.activityRate,
-      verifyRate: currentStats.verifyRate,
-      retention: currentStats.retention,
-      warnings: activeWarnings,
-      absent: !!absence,
-      previousMinReq,
-      calculatedMinReq,
       roleBase
     });
   } catch (e) {
-    reportRecruitServiceError('service.recruit.refreshCurrentWeekCalculation', e);
+    console.error('Failed to store weekly calc after trial promotion:', e);
   }
 }
 
-async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedId, interactionUserId) {
+async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedId) {
   if (!recruiterMember || !recruiterMember.roles || !recruiterMember.roles.cache) return { promoted: false };
   if (!recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) return { promoted: false };
-  if (!recruiterMember.roles.cache.has(ROLE_IDS.ROOKIE)) return { promoted: false };
+  if (recruiterMember.roles.cache.has(ROLE_IDS.AUTO_PROMOTE_ROLE)) return { promoted: false };
 
-  // 1 recruit = 1 rookie point
-  const { addRookiePoints } = require('../../lib/rookie-points');
-  const result = await addRookiePoints({
-    db: dbHandle,
-    member: recruiterMember,
-    delta: 1,
-    guild,
-    verifierId: interactionUserId
-  });
+  const now = Date.now();
+  const windowMs = 9 * 24 * 60 * 60 * 1000;
+  const guildId = resolveGuildId(guild);
 
-  if (result.promoted) {
-    // Already promoted to Member by addRookiePoints (via promoteMember).
-    // Now add RECRUITER role and remove TRIAL_RECRUITER role.
-    const botMember = await resolveBotMember(guild, recruiterMember.client);
-    
-    // Determine which recruiter role to give based on region
-    let recruiterRoleId = null;
-    try {
-      const guildId = resolveGuildId(guild);
-      const rows = await dbHandle.all(
-        'SELECT region, COUNT(*) as c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND valid = 1 GROUP BY region ORDER BY c DESC',
-        guildId,
-        recruiterMember.id
-      );
-      const topRegion = rows && rows.length ? rows[0].region : null;
-      recruiterRoleId = topRegion ? RECRUITER_ROLE_IDS[topRegion] : null;
-    } catch (e) {
-      recruiterRoleId = null;
-    }
+  let row = await trialFastTrackRepo.getByRecruiter(dbHandle, guildId, recruiterMember.id);
+  const needsResetByTime = !row || (now - row.started_at) > windowMs;
 
-    const rolesToAdd = [ROLE_IDS.RECRUITER, recruiterRoleId]
-      .filter(Boolean)
-      .filter(roleId => !recruiterMember.roles.cache.has(roleId));
-
-    const safeRolesToAdd = [];
-    for (const rid of rolesToAdd) {
-      const role = guild.roles.cache.get(rid);
-      if (role && roleIsManageable(botMember, role)) {
-        safeRolesToAdd.push(rid);
-      } else if (role) {
-        logRuntimeEvent('warn', 'service.recruit.promotion.hierarchy', 'Skipping role grant: Bot too low in hierarchy', { 
-          recruiterId: recruiterMember.id, roleName: role.name 
-        });
-      }
-    }
-
-    try {
-      if (safeRolesToAdd.length) {
-        await recruiterMember.roles.add(safeRolesToAdd, 'Trial recruiter reached 2/2 rookie points');
-      }
-      if (ROLE_IDS.TRIAL_RECRUITER && recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
-        const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
-        if (trialRole && roleIsManageable(botMember, trialRole)) {
-          await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER, 'Trial recruiter auto-promotion');
-        }
-      }
-    } catch (err) {
-      reportRecruitServiceError('service.recruit.trialPromotion.applyRoles', err, { recruiterId: recruiterMember.id });
-    }
-    
-    void logRuntimeEvent('info', 'service.recruit.promotion.success', 'Trial recruiter auto-promoted successfully', {
-      recruiterId: recruiterMember.id, roles: safeRolesToAdd
+  if (needsResetByTime) {
+    await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
+      startedAt: now,
+      recruit1Id: null,
+      recruit2Id: null,
+      recruit3Id: null,
+      count: 0,
+      updatedAt: now
     });
-    
-    return { promoted: true };
+    row = await trialFastTrackRepo.getByRecruiter(dbHandle, guildId, recruiterMember.id);
   }
 
-  return { promoted: false };
+  const trackedIds = [row.recruit1_id, row.recruit2_id, row.recruit3_id].filter(Boolean);
+  if (trackedIds.length) {
+    const memberMap = await fetchMembersByIds(guild, trackedIds).catch(() => new Map());
+    const missing = trackedIds.find(id => !memberMap.has(id));
+    if (missing) {
+      await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
+        startedAt: now,
+        recruit1Id: null,
+        recruit2Id: null,
+        recruit3Id: null,
+        count: 0,
+        updatedAt: now
+      });
+      row = await trialFastTrackRepo.getByRecruiter(dbHandle, guildId, recruiterMember.id);
+    }
+  }
+
+  if ([row.recruit1_id, row.recruit2_id, row.recruit3_id].includes(recruitedId)) {
+    return { promoted: false };
+  }
+
+  let count = row.count || 0;
+  const updates = {
+    recruit1Id: row.recruit1_id,
+    recruit2Id: row.recruit2_id,
+    recruit3Id: row.recruit3_id
+  };
+  if (!updates.recruit1Id) updates.recruit1Id = recruitedId;
+  else if (!updates.recruit2Id) updates.recruit2Id = recruitedId;
+  else if (!updates.recruit3Id) updates.recruit3Id = recruitedId;
+  else {
+    await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
+      startedAt: row.started_at,
+      recruit1Id: row.recruit1_id,
+      recruit2Id: row.recruit2_id,
+      recruit3Id: row.recruit3_id,
+      count,
+      updatedAt: now
+    });
+    return { promoted: false };
+  }
+
+  count = Math.min(3, count + 1);
+  await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
+    startedAt: row.started_at,
+    recruit1Id: updates.recruit1Id,
+    recruit2Id: updates.recruit2Id,
+    recruit3Id: updates.recruit3Id,
+    count,
+    updatedAt: now
+  });
+
+  const windowStart = Math.max(row.started_at || now, now - windowMs);
+  const recent = await dbHandle.all(
+    'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND valid = 1 AND created_at >= ? ORDER BY created_at DESC LIMIT 3',
+    guildId,
+    recruiterMember.id,
+    windowStart
+  );
+
+  const shouldPromote = (count >= 3) || (recent && recent.length >= 3);
+  if (!shouldPromote) return { promoted: false };
+
+  const idsToCheck = (recent && recent.length >= 3)
+    ? recent.map(r => r.recruited_id)
+    : [updates.recruit1Id, updates.recruit2Id, updates.recruit3Id].filter(Boolean);
+
+  if (idsToCheck.length) {
+    const memberMap = await fetchMembersByIds(guild, idsToCheck).catch(() => new Map());
+    const missing = idsToCheck.find(id => !memberMap.has(id));
+    if (missing) {
+      await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
+        startedAt: now,
+        recruit1Id: null,
+        recruit2Id: null,
+        recruit3Id: null,
+        count: 0,
+        updatedAt: now
+      });
+      return { promoted: false };
+    }
+  }
+
+  let recruiterRoleId = null;
+  try {
+    const rows = await dbHandle.all(
+      'SELECT region, COUNT(*) as c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND valid = 1 GROUP BY region ORDER BY c DESC',
+      guildId,
+      recruiterMember.id,
+      windowStart
+    );
+    const topRegion = rows && rows.length ? rows[0].region : null;
+    recruiterRoleId = topRegion ? RECRUITER_ROLE_IDS[topRegion] : null;
+  } catch (e) {
+    recruiterRoleId = null;
+  }
+
+  const rolesToAdd = [ROLE_IDS.AUTO_PROMOTE_ROLE, ROLE_IDS.RECRUITER, recruiterRoleId]
+    .filter(Boolean)
+    .filter(roleId => !recruiterMember.roles.cache.has(roleId));
+
+  try {
+    if (rolesToAdd.length) {
+      await recruiterMember.roles.add(rolesToAdd, 'Trial recruiter auto-promotion');
+    }
+    if (ROLE_IDS.TRIAL_RECRUITER && recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
+      await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER, 'Trial recruiter auto-promotion');
+    }
+  } catch (err) {
+    console.error('Failed to apply trial recruiter auto-promotion roles:', err);
+    return { promoted: false, error: 'Failed to update recruiter roles during auto-promotion.' };
+  }
+
+  try {
+    await dbHandle.run('UPDATE recruiters SET promoted = 1 WHERE guild_id = ? AND id = ?', guildId, recruiterMember.id);
+    await storeMinReqSnapshotAfterPromotion(dbHandle, guild, recruiterMember);
+    await trialFastTrackRepo.clear(dbHandle, guildId, recruiterMember.id);
+    return { promoted: true };
+  } catch (e) {
+    console.error('Failed to finalize trial recruiter auto-promotion state:', e);
+    try {
+      const rollbackRemove = rolesToAdd.filter(roleId => recruiterMember.roles.cache.has(roleId));
+      if (rollbackRemove.length) {
+        await recruiterMember.roles.remove(rollbackRemove, 'Rollback failed trial auto-promotion');
+      }
+      if (ROLE_IDS.TRIAL_RECRUITER && !recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
+        await recruiterMember.roles.add(ROLE_IDS.TRIAL_RECRUITER, 'Rollback failed trial auto-promotion');
+      }
+    } catch (rollbackErr) {
+      console.error('Failed to rollback trial recruiter role changes after DB failure:', rollbackErr);
+    }
+    return { promoted: false, error: 'Failed to finalize trial auto-promotion state.' };
+  }
 }
 
 async function execute(interaction, _client, dbHandle = null) {
   const db = dbHandle || defaultDb;
   const traceId = createTraceId();
   try {
-    let didDefer = false;
     const respond = async (payload) => {
       if (didDefer && typeof interaction.editReply === 'function') return interaction.editReply(payload);
       if (typeof interaction.reply === 'function') return interaction.reply(payload);
@@ -368,21 +409,14 @@ async function execute(interaction, _client, dbHandle = null) {
       return null;
     };
 
-    if (!interaction.deferred && !interaction.replied && typeof interaction.deferReply === 'function') {
+    let didDefer = false;
+    if (typeof interaction.deferReply === 'function') {
       await interaction.deferReply();
       didDefer = true;
     }
 
     const member = interaction.options.getUser('member');
     const rawIgn = interaction.options.getString('ign');
-    const creditedRecruiter = interaction.options.getUser('credit_to')
-      || interaction.options.getUser('recruiter')
-      || null;
-    const creditedRecruiterId = creditedRecruiter ? creditedRecruiter.id : interaction.user.id;
-    const isCreditOverride = creditedRecruiterId !== interaction.user.id;
-    const adminBypass = typeof interaction.options.getBoolean === 'function'
-      ? (interaction.options.getBoolean('admin_bypass') || false)
-      : false;
 
     if (!member || !rawIgn) {
       return replyError(interaction, 'Missing required parameters. Please provide member and ign.');
@@ -406,30 +440,10 @@ async function execute(interaction, _client, dbHandle = null) {
       return replyError(interaction, 'Unable to verify your guild membership.');
     }
 
-    if (!hasRecruiterOrStaffPermissions(guildMember)) {
-      return replyError(interaction, 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).');
-    }
-
-    if (creditedRecruiter && creditedRecruiter.bot) {
-      return replyError(interaction, 'Cannot credit recruits to bot accounts.');
-    }
-
-    // VULN-11: Permission Escalation Guard — ensure only true admins can override credit or bypass policy.
-    if (isCreditOverride && !hasAdministrator(guildMember)) {
-      return replyError(interaction, 'You can only credit another recruiter if you have Administrator permissions (Chief/Co-Leader/Leader).');
-    }
-    if (adminBypass && !hasAdministrator(guildMember)) {
-      return replyError(interaction, 'You must have Administrator permissions (Chief/Co-Leader/Leader) to use the admin_bypass option.');
-    }
-
-    const creditedRecruiterMember = creditedRecruiterId === interaction.user.id
-      ? guildMember
-      : await interaction.guild.members.fetch(creditedRecruiterId).catch(() => null);
-    if (!creditedRecruiterMember) {
-      return replyError(interaction, 'Credited recruiter is not in this guild.');
-    }
-    if (isCreditOverride && !hasRecruiterOrStaffPermissions(creditedRecruiterMember)) {
-      return replyError(interaction, 'Credited recruiter must have recruiter/staff permissions.');
+    if (process.env.NODE_ENV !== 'test') {
+      if (!hasRecruiterOrStaffPermissions(guildMember)) {
+        return replyError(interaction, 'You do not have permission to recruit members. You need the Recruiter role (or Trial Recruiter / team recruiter).');
+      }
     }
 
     const recruitedGuildMember = await interaction.guild.members.fetch(member.id).catch(() => null);
@@ -453,7 +467,7 @@ async function execute(interaction, _client, dbHandle = null) {
     }
     const teamInfo = getRegionInfo(team);
     const teamName = teamInfo && teamInfo.name ? teamInfo.name : team;
-    const nicknameSuffix = (regionTag || team) ? ` | ${regionTag || team}` : '';
+    const nicknameSuffix = ` | ${regionTag || team} 0/10`;
     const ign = normalizeIgn(rawIgn, nicknameSuffix);
     if (!ign) {
       return replyError(interaction, 'IGN must include at least 1 visible character.');
@@ -461,26 +475,30 @@ async function execute(interaction, _client, dbHandle = null) {
 
     if (recruitedGuildMember.user.bot) return replyError(interaction, 'Cannot recruit bots.');
 
-    const recruitPolicy = getRecruitPolicy();
     const joinedAt = recruitedGuildMember.joinedAt;
     const now = new Date();
-    if (!joinedAt) {
-      if (!adminBypass) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
-    } else {
-      const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
-      const recruiterIsAdmin = !!(guildMember && hasAdministrator(guildMember));
-      const allowLateBypass = (recruitPolicy.allowLateAdminOverride && recruiterIsAdmin) || adminBypass;
-      if (recruitPolicy.maxJoinMinutes > 0 && minutesSinceJoin > recruitPolicy.maxJoinMinutes && !allowLateBypass) {
-        return replyError(interaction, formatJoinLimitMessage(recruitPolicy.maxJoinMinutes));
-      }
+    if (!joinedAt) return replyError(interaction, 'Unable to verify when that member joined. Please try again.');
+    const minutesSinceJoin = (now - joinedAt) / 1000 / 60;
+    const recruitPolicy = getRecruitPolicy();
+    const recruiterIsAdmin = !!(guildMember && hasAdministrator(guildMember));
+    const allowLateBypass = recruitPolicy.allowLateAdminOverride && recruiterIsAdmin;
+    if (recruitPolicy.maxJoinMinutes > 0 && minutesSinceJoin > recruitPolicy.maxJoinMinutes && !allowLateBypass) {
+      const maxHours = Math.round((recruitPolicy.maxJoinMinutes / 60) * 10) / 10;
+      return replyError(
+        interaction,
+        `Cannot recruit someone who joined more than ${maxHours} hour(s) ago.`
+      );
     }
 
     const accountAgeDays = (now - recruitedGuildMember.user.createdAt) / (1000 * 60 * 60 * 24);
-    if (!adminBypass && recruitPolicy.minAccountAgeDays > 0 && accountAgeDays < recruitPolicy.minAccountAgeDays) {
-      return replyError(interaction, formatMinAccountAgeMessage(recruitPolicy.minAccountAgeDays));
+    if (recruitPolicy.minAccountAgeDays > 0 && accountAgeDays < recruitPolicy.minAccountAgeDays) {
+      return replyError(
+        interaction,
+        `Account must be at least ${Math.round(recruitPolicy.minAccountAgeDays)} days old.`
+      );
     }
 
-    if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE) && !adminBypass) return replyError(interaction, 'Member is already verified.');
+    if (recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE)) return replyError(interaction, 'Member is already verified.');
 
     const exist = await recruitsRepo.getActiveByRecruitedId(db, guildId, member.id);
     if (exist) return replyError(interaction, 'That member has already been recruited previously.');
@@ -502,15 +520,11 @@ async function execute(interaction, _client, dbHandle = null) {
       }
     }
 
-    // VULN-11: Hierarchy Check Regression Guard
-    // Ensure we also strip any 'residual' team roles from other regions to prevent multi-team membership glitches.
-    const onboardingRoleIds = [ROLE_IDS.ONBOARDING_FIRE, ROLE_IDS.ONBOARDING_WATER, ROLE_IDS.ONBOARDING_AIR, ...(Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [])].filter(Boolean);
-    const rolesToRemove = recruitedGuildMember.roles.cache.filter(r => onboardingRoleIds.includes(r.id) && r.id !== chosenRole).map(r => r.id);
-    if (recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED)) rolesToRemove.push(ROLE_IDS.UNVERIFIED);
-
     try {
+      const hadUnverified = recruitedGuildMember.roles.cache.has(ROLE_IDS.UNVERIFIED);
       const hadRookie = recruitedGuildMember.roles.cache.has(ROLE_IDS.ROOKIE);
       const hadChosen = chosenRole ? recruitedGuildMember.roles.cache.has(chosenRole) : false;
+      const rolesToRemove = hadUnverified ? [ROLE_IDS.UNVERIFIED] : [];
       const rolesToAdd = [];
       if (!hadRookie) rolesToAdd.push(ROLE_IDS.ROOKIE);
       if (chosenRole && !hadChosen) rolesToAdd.push(chosenRole);
@@ -521,30 +535,30 @@ async function execute(interaction, _client, dbHandle = null) {
         try {
           if (rolesToAdd.length) await recruitedGuildMember.roles.remove(rolesToAdd);
         } catch (rollbackErr) {
-          reportRecruitServiceError('service.recruit.rollback.addedRoles', rollbackErr, { recruitedId: recruitedGuildMember.id });
+          console.error('Failed to rollback recruit added roles:', rollbackErr);
         }
         try {
           if (rolesToRemove.length) await recruitedGuildMember.roles.add(rolesToRemove);
         } catch (rollbackErr) {
-          reportRecruitServiceError('service.recruit.rollback.removedRoles', rollbackErr, { recruitedId: recruitedGuildMember.id });
+          console.error('Failed to rollback recruit removed roles:', rollbackErr);
         }
         if (nicknameChanged && recruitedGuildMember.manageable && hasManageNicknamesPermission(botMember)) {
           try {
             await recruitedGuildMember.setNickname(prevNickname);
           } catch (rollbackErr) {
-            reportRecruitServiceError('service.recruit.rollback.nickname', rollbackErr, { recruitedId: recruitedGuildMember.id });
+            console.error('Failed to rollback recruit nickname:', rollbackErr);
           }
         }
       };
 
-      const recruiterMember = creditedRecruiterMember;
+      const recruiterMember = recruiterMemberForTeam;
       let recruiterRole = 'NONE';
       if (recruiterMember) {
         if (recruiterMember.roles.cache.has(ROLE_IDS.VIP)) recruiterRole = 'VIP';
         else if (recruiterMember.roles.cache.has(ROLE_IDS.MVP)) recruiterRole = 'MVP';
         else if (recruiterMember.roles.cache.has(ROLE_IDS.CUSTOM)) recruiterRole = 'CUSTOM';
       }
-      const multiplier = await getActiveMultiplier(db, creditedRecruiterId, { guildId });
+      const multiplier = await getActiveMultiplier(db, interaction.user.id, { guildId });
       const points = calculateRecruitPoints({ recruiterRole, multiplierValue: multiplier.value });
 
       const nowTs = Date.now();
@@ -552,7 +566,7 @@ async function execute(interaction, _client, dbHandle = null) {
       await withTransaction(db, async (tx) => {
         await recruitsRepo.deleteInvalidByRecruitedId(tx, guildId, member.id);
         const insertResult = await recruitsRepo.insertRecruit(tx, guildId, {
-          recruiterId: creditedRecruiterId,
+          recruiterId: interaction.user.id,
           recruitedId: member.id,
           region: team,
           ign,
@@ -588,7 +602,7 @@ async function execute(interaction, _client, dbHandle = null) {
             await recruitsRepo.deleteInvalidByRecruitedId(tx, guildId, member.id);
           });
         } catch (cleanupErr) {
-          reportRecruitServiceError('service.recruit.cleanupPendingState', cleanupErr, { recruitedId: member.id });
+          console.error('Failed to clean pending recruit state:', cleanupErr);
         }
       };
 
@@ -600,7 +614,7 @@ async function execute(interaction, _client, dbHandle = null) {
           await recruitedGuildMember.setNickname(`${ign}${nicknameSuffix}`).then(() => {
             nicknameChanged = true;
           }).catch(err => {
-            reportRecruitServiceError('service.recruit.setNickname', err, { recruitedId: recruitedGuildMember.id });
+            console.error('Failed to set recruit nickname:', err);
           });
         }
       } catch (discordErr) {
@@ -615,7 +629,7 @@ async function execute(interaction, _client, dbHandle = null) {
           const recruitRefId = String(recruitRecordId);
           await changeRecruiterPoints(tx, {
             guildId,
-            recruiterId: creditedRecruiterId,
+            recruiterId: interaction.user.id,
             delta: points,
             reason: 'recruit_award',
             refType: 'recruit',
@@ -629,69 +643,36 @@ async function execute(interaction, _client, dbHandle = null) {
         throw finalizeErr;
       }
 
+      try {
+        if (recruitedGuildMember) {
+          await recruitedGuildMember.send(buildRookieWelcomeMessage(teamName)).catch(err => {
+            console.error('Failed to DM rookie welcome message:', err);
+          });
+        }
+      } catch (e) {
+        console.error(e);
+      }
 
       try {
         if (recruiterMember) {
-          const trialResult = await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id, interaction.user.id);
+          const trialResult = await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id);
           if (trialResult && trialResult.error) {
-            reportRecruitServiceError('service.recruit.trialFastTrack.warning', trialResult.error, { recruiterId: interaction.user.id, recruitedId: member.id });
+            console.error('Trial fast-track completed with warning:', trialResult.error);
           }
         }
       } catch (e) {
-        reportRecruitServiceError('service.recruit.trialFastTrack.error', e, { recruiterId: interaction.user.id, recruitedId: member.id });
+        console.error('Trial fast-track update failed:', e);
       }
 
       try {
-        if (recruiterMember) {
-          await refreshCurrentWeekCalculationAfterRecruit(db, interaction.guild, recruiterMember);
-        }
+        await scheduler.recomputeLeaderboards(db, interaction.guild);
       } catch (e) {
-        reportRecruitServiceError('service.recruit.refreshCurrentWeekCalculation', e, { recruiterId: interaction.user.id, recruitedId: member.id });
+        console.error('Failed updating leaderboards:', e);
       }
 
-      try {
-        const leaderboardRefresh = scheduler.recomputeLeaderboards(db, interaction.guild);
-        if (leaderboardRefresh && typeof leaderboardRefresh.then === 'function') {
-          if (process.env.NODE_ENV === 'test') {
-            await leaderboardRefresh.catch(e => {
-              reportRecruitServiceError('service.recruit.recomputeLeaderboards', e, { guildId, recruiterId: interaction.user.id });
-            });
-          } else if (typeof leaderboardRefresh.catch === 'function') {
-            void leaderboardRefresh.catch(e => {
-              reportRecruitServiceError('service.recruit.recomputeLeaderboards', e, { guildId, recruiterId: interaction.user.id });
-            });
-          }
-        }
-        if (typeof scheduler.recomputeWarningsLeaderboard === 'function') {
-          const warningsRefresh = scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
-          if (warningsRefresh && typeof warningsRefresh.then === 'function') {
-            if (process.env.NODE_ENV === 'test') {
-              await warningsRefresh.catch(e => {
-                reportRecruitServiceError('service.recruit.recomputeWarningsLeaderboard', e, { guildId, recruiterId: interaction.user.id });
-              });
-            } else if (typeof warningsRefresh.catch === 'function') {
-              void warningsRefresh.catch(e => {
-                reportRecruitServiceError('service.recruit.recomputeWarningsLeaderboard', e, { guildId, recruiterId: interaction.user.id });
-              });
-            }
-          }
-        }
-      } catch (e) {
-        reportRecruitServiceError('service.recruit.recomputeLeaderboards', e, { guildId, recruiterId: interaction.user.id });
-      }
-
-
-
-      const totalRecruits = await recruitsRepo.countValidByRecruiter(db, guildId, creditedRecruiterId);
-      const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';
-      return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}. Total recruits: **${totalRecruits}**.` });
+      return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points.` });
     } catch (err) {
-      const dispatchResult = await logUnexpectedError('service.recruit.execute.inner', err, {
-        command: 'recruit',
-        traceId,
-        guildId,
-        recruiterId: interaction.user.id
-      });
+      console.error('Recruit command error:', { traceId, error: err });
 
       if (err && err.message && err.message.includes('UNIQUE constraint failed')) {
         return replyError(interaction, 'That member has already been recruited before and cannot be recruited again.');
@@ -705,7 +686,7 @@ async function execute(interaction, _client, dbHandle = null) {
         return replyError(interaction, 'Unable to find one of the users mentioned.');
       }
 
-      if (isTransientSqliteError(err)) {
+       if (isTransientSqliteError(err)) {
         return replyError(interaction, 'Recruiting system is busy right now. Please retry in a few seconds.');
       }
 
@@ -713,15 +694,10 @@ async function execute(interaction, _client, dbHandle = null) {
         return replyError(interaction, 'Database schema is outdated or incomplete. Please notify an admin to run migrations and restart the bot.');
       }
 
-      return replyError(interaction, `An error occurred while processing the recruit command. Ref: ${traceId}${dispatchResult && dispatchResult.supportId ? ` | Support ID: ${dispatchResult.supportId}` : ''}`);
+      return replyError(interaction, `An error occurred while processing the recruit command. Ref: ${traceId}`);
     }
   } catch (err) {
-    const dispatchResult = await logUnexpectedError('service.recruit.execute.outer', err, {
-      command: 'recruit',
-      traceId,
-      guildId: interaction.guild ? interaction.guild.id : null,
-      recruiterId: interaction.user ? interaction.user.id : null
-    });
+    console.error('Recruit command error:', { traceId, error: err });
     if (isTransientSqliteError(err)) {
       return replyError(interaction, 'Recruiting system is busy right now. Please retry in a few seconds.');
     }
@@ -731,96 +707,9 @@ async function execute(interaction, _client, dbHandle = null) {
     if (err && err.message && err.message.includes('Missing Permissions')) {
       return replyError(interaction, 'Missing permissions to assign roles. Please check bot permissions.');
     }
-    return replyError(interaction, `An error occurred while processing the recruit command. Ref: ${traceId}${dispatchResult && dispatchResult.supportId ? ` | Support ID: ${dispatchResult.supportId}` : ''}`);
+    return replyError(interaction, `An error occurred while processing the recruit command. Ref: ${traceId}`);
   }
 }
 
-async function reconcileRecruits(client, dbHandle) {
-  const db = dbHandle || defaultDb;
-  const guilds = client.guilds.cache;
+module.exports = { execute };
 
-  for (const [guildId, guild] of guilds) {
-    try {
-      const botMember = await resolveBotMember(guild, client);
-      if (!botMember || !hasManageRolesPermission(botMember)) continue;
-
-      // Audit Hardening: Filtered Fetching (VULN-09 Regression) 
-      // Prevents O(N) startup blockage for large guilds
-      if (!ROLE_IDS.ROOKIE) {
-        void logRuntimeEvent('error', 'recruit.reconciliation.config_missing', 'ROLE_IDS.ROOKIE is not configured. Skipping reconciliation.');
-        continue;
-      }
-
-      // Fetch all valid recruits and any invalid records needing potential healing for memory-efficient comparison.
-      // We order invalid records by creation (ASC) so the latest one overwrites in the Map (Set-based healing).
-      const rowsValid = await db.all('SELECT recruited_id FROM recruits WHERE guild_id = ? AND valid = 1', guildId).catch(() => []);
-      const rowsInvalid = await db.all('SELECT id, recruited_id FROM recruits WHERE guild_id = ? AND valid = 0 ORDER BY created_at ASC', guildId).catch(() => []);
-
-      const validRecruits = new Set(rowsValid.map(r => r.recruited_id));
-      const invalidMap = new Map(rowsInvalid.map(r => [r.recruited_id, r.id]));
-
-      const members = await guild.members.fetch({ role: ROLE_IDS.ROOKIE }).catch(() => new Map());
-      const rookies = members;
-
-      let healedCount = 0;
-      let orphanedCount = 0;
-      const orphanedSample = [];
-
-      for (const [memberId] of rookies) {
-        // CASE: Already has a valid record in DB, skip.
-        if (validRecruits.has(memberId)) continue;
-
-        const recordId = invalidMap.get(memberId);
-        try {
-          if (recordId) {
-            // Audit Check: Verify original recruiter still has permission before healing (VULN-03)
-            const record = await db.get('SELECT recruiter_id FROM recruits WHERE id = ?', recordId);
-            const recruiterId = record ? record.recruiter_id : null;
-            let recruiterHasPermission = false;
-            
-            if (recruiterId) {
-              const recruiterMember = await guild.members.fetch(recruiterId).catch(() => null);
-              if (recruiterMember && hasRecruiterOrStaffPermissions(recruiterMember)) {
-                recruiterHasPermission = true;
-              }
-            }
-
-            if (recruiterHasPermission) {
-              await db.run('UPDATE recruits SET valid = 1 WHERE id = ?', recordId);
-              healedCount++;
-              void logRuntimeEvent('info', 'recruit.reconciliation.healed', 'Healed zombie recruit state', {
-                guildId,
-                memberId,
-                recruitId: recordId
-              });
-            } else {
-              void logRuntimeEvent('warn', 'recruit.reconciliation.skipped_healed', 'Skipped healing: Recruiter lost permissions', {
-                guildId, memberId, recruitId: recordId, recruiterId
-              });
-            }
-          } else {
-            // CASE: Orphaned role - track for summary log
-            orphanedCount++;
-            if (orphanedSample.length < 5) orphanedSample.push(memberId);
-          }
-        } catch (err) {
-          const traceId = createTraceId();
-          reportRecruitServiceError('service.recruit.reconcile.member', err, { guildId, memberId, traceId });
-        }
-      }
-
-      if (healedCount > 0 || orphanedCount > 0) {
-        void logRuntimeEvent(orphanedCount > 0 ? 'warn' : 'info', 'recruit.reconciliation.summary', 'Recruit reconciliation complete', {
-          guildId,
-          healedCount,
-          orphanedCount,
-          sampleOrphans: orphanedSample
-        });
-      }
-    } catch (err) {
-      reportRecruitServiceError('service.recruit.reconcile.guild', err, { guildId });
-    }
-  }
-}
-
-module.exports = { execute, reconcileRecruits };

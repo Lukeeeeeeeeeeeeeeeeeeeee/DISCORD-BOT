@@ -10,14 +10,9 @@ function walk(dir, out) {
   }
 }
 
-function main({ forceExit = false } = {}) {
-  const os = require('os');
+function main() {
   process.env.NODE_ENV = process.env.NODE_ENV || 'test';
-  // Always isolate require-walk DB/state from caller env so CI/prod paths cannot leak in.
-  process.env.DATABASE_PATH = process.env.REQUIRE_WALK_DATABASE_PATH
-    || path.join(os.tmpdir(), `require-walk-${Date.now()}.db`);
-  process.env.ANTINUKE_DATA_FILE = process.env.REQUIRE_WALK_ANTINUKE_DATA_FILE
-    || path.join(os.tmpdir(), `antinuke-state-${Date.now()}.json`);
+  process.env.DATABASE_PATH = process.env.DATABASE_PATH || path.join(require('os').tmpdir(), `require-walk-${Date.now()}.db`);
 
   const root = path.join(process.cwd(), 'src');
   const skip = new Set([
@@ -50,17 +45,12 @@ function main({ forceExit = false } = {}) {
     for (const x of failed) {
       console.error(`\n--- ${x.file} ---\n${x.err}`);
     }
-    if (forceExit) process.exit(1);
-    throw new Error(`Require-walk failures: ${failed.length}`);
+    process.exit(1);
   }
 
   console.log(`Require-walk OK: ${ok}`);
-  if (forceExit) process.exit(0);
-  return { ok, failedCount: 0 };
 }
 
-if (require.main === module) {
-  main({ forceExit: true });
-}
+if (require.main === module) main();
 
 module.exports = { main };

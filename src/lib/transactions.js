@@ -50,25 +50,19 @@ async function executeTransaction(db, fn, opts = {}) {
 async function withTransaction(db, fn, opts = {}) {
   if (!db) throw new Error('Database handle is required');
 
-  // Unified Handle Authority: detect db_async wrapper or similar
-  const handle = (typeof db.getInternalHandle === 'function') ? await db.getInternalHandle() : db;
+  const prev = txQueueByDb.get(db) || Promise.resolve();
+  const run = prev
+    .catch((queueErr) => {
+      console.error('Previous queued transaction failed', queueErr);
+    })
+    .then(() => executeTransaction(db, fn, opts));
 
-  const prev = txQueueByDb.get(handle) || Promise.resolve();
-  const run = (async () => {
-    try {
-      await prev;
-    } catch (e) {
-      console.error('Previous queued transaction failed', e);
-    }
-    return executeTransaction(handle, fn, opts);
-  })();
-
-  txQueueByDb.set(handle, run);
+  txQueueByDb.set(db, run);
   try {
     return await run;
   } finally {
-    if (txQueueByDb.get(handle) === run) {
-      txQueueByDb.delete(handle);
+    if (txQueueByDb.get(db) === run) {
+      txQueueByDb.delete(db);
     }
   }
 }

@@ -1,18 +1,10 @@
-const db = require('../db_async');
-const { withTransaction } = require('./transactions');
-const { logUnexpectedError } = require('./logger');
+﻿const db = require('../db_async');
+const fs = require('fs').promises;
+const path = require('path');
 
 const FLUSH_INTERVAL_MS = Number.parseInt(process.env.ANALYTICS_FLUSH_MS || '10000', 10);
 const MAX_BUFFER_SIZE = Number.parseInt(process.env.ANALYTICS_BUFFER_MAX || '5000', 10);
-const MAX_REQUEUE_SIZE = Number.parseInt(process.env.ANALYTICS_REQUEUE_MAX || `${MAX_BUFFER_SIZE * 4}`, 10);
-const FLUSH_WARN_MS = Number.parseInt(process.env.ANALYTICS_FLUSH_WARN_MS || '2000', 10);
-const IMMEDIATE_TX_MAX_RETRIES = Number.parseInt(process.env.ANALYTICS_IMMEDIATE_TX_RETRIES || '3', 10);
-const ROLE_CHANGE_FLUSH_MS = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_FLUSH_MS || '2500', 10);
-const ROLE_CHANGE_BATCH_BASE = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_BATCH_BASE || '50', 10);
-const ROLE_CHANGE_BATCH_MAX = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_BATCH_MAX || '500', 10);
-const ROLE_CHANGE_RATE_WINDOW_MS = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_RATE_WINDOW_MS || '10000', 10);
-const ROLE_CHANGE_QUEUE_MAX = Number.parseInt(process.env.ANALYTICS_ROLE_CHANGE_QUEUE_MAX || `${MAX_REQUEUE_SIZE}`, 10);
-const DROP_ON_REQUEUE_CAP = String(process.env.ANALYTICS_DROP_ON_REQUEUE_CAP || 'true').toLowerCase() !== 'false';
+const ANALYTICS_PENDING_FILE = path.join(__dirname, '../data/analytics_pending.json');
 
 function toDayKey(ts = Date.now()) {
   return new Date(ts).toISOString().slice(0, 10);
@@ -29,35 +21,6 @@ function dayKeyToTs(dayKey) {
   return toDayTs(Date.now());
 }
 
-function isSqliteBusyError(err) {
-  if (!err) return false;
-  const msg = String(err.message || err).toLowerCase();
-  return msg.includes('sqlite_busy')
-    || msg.includes('sqlite_locked')
-    || msg.includes('database is locked');
-}
-
-function capRoleChangeQueue(reason = 'unknown') {
-  if (!Number.isFinite(ROLE_CHANGE_QUEUE_MAX) || ROLE_CHANGE_QUEUE_MAX <= 0) return;
-  if (roleChangeQueue.length <= ROLE_CHANGE_QUEUE_MAX) return;
-
-  const dropCount = roleChangeQueue.length - ROLE_CHANGE_QUEUE_MAX;
-  roleChangeQueue = roleChangeQueue.slice(dropCount);
-  droppedRoleChangeEntries += dropCount;
-
-  if (roleChangeEventTimes.length > ROLE_CHANGE_QUEUE_MAX * 2) {
-    roleChangeEventTimes = roleChangeEventTimes.slice(-ROLE_CHANGE_QUEUE_MAX);
-  }
-
-  console.warn('Analytics role change queue capped', {
-    reason,
-    dropped: dropCount,
-    queued: roleChangeQueue.length,
-    droppedTotal: droppedRoleChangeEntries,
-    cap: ROLE_CHANGE_QUEUE_MAX
-  });
-}
-
 let channelCounts = new Map();
 let channelSpeakers = new Map();
 let guildCounts = new Map();
@@ -70,26 +33,46 @@ let voiceDaily = new Map();
 let pendingWrites = 0;
 let flushTimer = null;
 let flushInFlight = null;
-let roleChangeQueue = [];
-let roleChangeTimer = null;
-let roleChangeFlushInFlight = null;
-let roleChangeEventTimes = [];
-let droppedBufferedEntries = 0;
-let droppedRoleChangeEntries = 0;
+
+const DAILY_GUILD_COUNTER_SQL = {
+  joins: `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+          VALUES (?, ?, ?, 0, 0, 1, 0, 0, 0)
+          ON CONFLICT(day, guild_id) DO UPDATE SET joins = joins + 1`,
+  leaves: `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+           VALUES (?, ?, ?, 0, 0, 0, 1, 0, 0)
+           ON CONFLICT(day, guild_id) DO UPDATE SET leaves = leaves + 1`,
+  invites_created: `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+                    VALUES (?, ?, ?, 0, 0, 0, 0, 1, 0)
+                    ON CONFLICT(day, guild_id) DO UPDATE SET invites_created = invites_created + 1`,
+  invites_used: `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+                 VALUES (?, ?, ?, 0, 0, 0, 0, 0, 1)
+                 ON CONFLICT(day, guild_id) DO UPDATE SET invites_used = invites_used + 1`
+};
+
+async function bumpDailyGuildCounter(guildId, timestamp, field) {
+  const sql = DAILY_GUILD_COUNTER_SQL[field];
+  if (!sql || !guildId) return;
+  const ts = timestamp || Date.now();
+  await db.run(sql, toDayKey(ts), toDayTs(ts), guildId);
+}
 
 function scheduleFlush() {
   if (!FLUSH_INTERVAL_MS || FLUSH_INTERVAL_MS <= 0) return;
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    void flushAll();
+    flushAll().catch(err => {
+      console.error('Analytics flush failed:', err);
+    });
   }, FLUSH_INTERVAL_MS);
 }
 
 function bumpPending(count = 1) {
   pendingWrites += count;
   if (pendingWrites >= MAX_BUFFER_SIZE) {
-    void flushAll();
+    flushAll().catch(err => {
+      console.error('Analytics flush failed:', err);
+    });
   } else {
     scheduleFlush();
   }
@@ -206,270 +189,239 @@ function countSnapshotEntries(snapshot) {
     + snapshot.voiceDaily.size;
 }
 
-function pruneRoleChangeRateWindow(nowTs = Date.now()) {
-  const cutoff = nowTs - ROLE_CHANGE_RATE_WINDOW_MS;
-  roleChangeEventTimes = roleChangeEventTimes.filter(ts => ts >= cutoff);
+function serializeSnapshot(snapshot) {
+  if (!snapshot) return null;
+  return {
+    channelCounts: Array.from(snapshot.channelCounts.entries()),
+    channelSpeakers: Array.from(snapshot.channelSpeakers.entries()).map(([k, speakers]) => [k, Array.from(speakers || [])]),
+    guildCounts: Array.from(snapshot.guildCounts.entries()),
+    guildSpeakers: Array.from(snapshot.guildSpeakers.entries()).map(([k, speakers]) => [k, Array.from(speakers || [])]),
+    userDailyMessages: Array.from(snapshot.userDailyMessages.entries()),
+    userActivity: Array.from(snapshot.userActivity.entries()),
+    commandUsage: Array.from(snapshot.commandUsage.entries()),
+    voiceDaily: Array.from(snapshot.voiceDaily.entries())
+  };
 }
 
-function getRoleChangeBatchSize(nowTs = Date.now()) {
-  pruneRoleChangeRateWindow(nowTs);
-  const windowSeconds = Math.max(1, ROLE_CHANGE_RATE_WINDOW_MS / 1000);
-  const eventRate = roleChangeEventTimes.length / windowSeconds;
-  const scale = Math.floor(eventRate * 5);
-  const target = ROLE_CHANGE_BATCH_BASE + scale;
-  return Math.max(ROLE_CHANGE_BATCH_BASE, Math.min(ROLE_CHANGE_BATCH_MAX, target));
+function deserializeSnapshot(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    channelCounts: new Map(Array.isArray(raw.channelCounts) ? raw.channelCounts : []),
+    channelSpeakers: new Map(
+      Array.isArray(raw.channelSpeakers)
+        ? raw.channelSpeakers.map(([k, speakers]) => [k, new Set(Array.isArray(speakers) ? speakers : [])])
+        : []
+    ),
+    guildCounts: new Map(Array.isArray(raw.guildCounts) ? raw.guildCounts : []),
+    guildSpeakers: new Map(
+      Array.isArray(raw.guildSpeakers)
+        ? raw.guildSpeakers.map(([k, speakers]) => [k, new Set(Array.isArray(speakers) ? speakers : [])])
+        : []
+    ),
+    userDailyMessages: new Map(Array.isArray(raw.userDailyMessages) ? raw.userDailyMessages : []),
+    userActivity: new Map(Array.isArray(raw.userActivity) ? raw.userActivity : []),
+    commandUsage: new Map(Array.isArray(raw.commandUsage) ? raw.commandUsage : []),
+    voiceDaily: new Map(Array.isArray(raw.voiceDaily) ? raw.voiceDaily : [])
+  };
 }
 
-function scheduleRoleChangeFlush() {
-  if (!ROLE_CHANGE_FLUSH_MS || ROLE_CHANGE_FLUSH_MS <= 0) return;
-  if (roleChangeTimer) return;
-  roleChangeTimer = setTimeout(() => {
-    roleChangeTimer = null;
-    void flushRoleChanges();
-  }, ROLE_CHANGE_FLUSH_MS);
-}
-
-async function flushRoleChanges(opts = {}) {
-  if (roleChangeTimer) {
-    clearTimeout(roleChangeTimer);
-    roleChangeTimer = null;
-  }
-  if (roleChangeFlushInFlight) return roleChangeFlushInFlight;
-  roleChangeFlushInFlight = (async () => {
-    const forceAll = opts && opts.forceAll === true;
-    while (roleChangeQueue.length) {
-      const batchSize = forceAll ? roleChangeQueue.length : getRoleChangeBatchSize();
-      const batch = roleChangeQueue.splice(0, batchSize);
-      if (!batch.length) break;
-      try {
-        await withTransaction(db, async (tx) => {
-          for (const entry of batch) {
-            await tx.run(
-              'INSERT INTO analytics_role_changes (guild_id, user_id, role_id, role_name, action, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-              entry.guildId,
-              entry.userId,
-              entry.roleId,
-              entry.roleName || null,
-              entry.action,
-              entry.timestamp
-            );
-          }
-        }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
-      } catch (e) {
-        console.error('Role change analytics flush failed:', e);
-        roleChangeQueue = batch.concat(roleChangeQueue);
-        capRoleChangeQueue(isSqliteBusyError(e) ? 'flush-sqlite-busy' : 'flush-failed');
-        break;
-      }
-      if (!forceAll) break;
-    }
-  })();
-
+async function spillPendingToDisk() {
+  const snapshot = drainBuffers();
+  if (!hasPending(snapshot)) return false;
   try {
-    return await roleChangeFlushInFlight;
-  } finally {
-    roleChangeFlushInFlight = null;
-    if (roleChangeQueue.length > 0) {
-      scheduleRoleChangeFlush();
+    await fs.mkdir(path.dirname(ANALYTICS_PENDING_FILE), { recursive: true });
+    const tmpPath = `${ANALYTICS_PENDING_FILE}.tmp`;
+    await fs.writeFile(tmpPath, JSON.stringify({
+      createdAt: Date.now(),
+      snapshot: serializeSnapshot(snapshot)
+    }), 'utf8');
+    await fs.rename(tmpPath, ANALYTICS_PENDING_FILE);
+    return true;
+  } catch (e) {
+    console.error('Failed to spill analytics pending buffer to disk:', e);
+    mergeSnapshot(snapshot);
+    pendingWrites = Math.min(MAX_BUFFER_SIZE, pendingWrites + countSnapshotEntries(snapshot));
+    scheduleFlush();
+    return false;
+  }
+}
+
+async function restorePendingFromDisk() {
+  try {
+    const content = await fs.readFile(ANALYTICS_PENDING_FILE, 'utf8');
+    const parsed = JSON.parse(content);
+    const snapshot = deserializeSnapshot(parsed && parsed.snapshot ? parsed.snapshot : parsed);
+    if (!snapshot || !hasPending(snapshot)) {
+      try { await fs.unlink(ANALYTICS_PENDING_FILE); } catch (e) { console.error(e); }
+      return 0;
     }
+    const entryCount = countSnapshotEntries(snapshot);
+    mergeSnapshot(snapshot);
+    pendingWrites = Math.min(MAX_BUFFER_SIZE, pendingWrites + entryCount);
+    try { await fs.unlink(ANALYTICS_PENDING_FILE); } catch (e) { console.error(e); }
+    scheduleFlush();
+    return entryCount;
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return 0;
+    console.error('Failed to restore analytics pending buffer:', e);
+    return 0;
   }
 }
 
 async function flushAll() {
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
   if (flushInFlight) return flushInFlight;
   flushInFlight = (async () => {
-    await flushRoleChanges({ forceAll: true });
-    const startedAt = Date.now();
     const snapshot = drainBuffers();
-    const snapshotEntries = countSnapshotEntries(snapshot);
     if (!hasPending(snapshot)) return;
 
     try {
-      await withTransaction(db, async (tx) => {
-        for (const entry of snapshot.channelCounts.values()) {
-          await tx.run(
-            `INSERT INTO analytics_daily_channels (day, day_ts, guild_id, channel_id, message_count, unique_speakers, last_message_at)
-             VALUES (?, ?, ?, ?, ?, 0, ?)
-             ON CONFLICT(day, guild_id, channel_id) DO UPDATE SET
-               message_count = message_count + excluded.message_count,
-               last_message_at = MAX(last_message_at, excluded.last_message_at),
-               day_ts = excluded.day_ts`,
-            entry.day,
-            entry.dayTs,
-            entry.guildId,
-            entry.channelId,
-            entry.count,
-            entry.lastMessageAt
-          );
-        }
+      await db.exec('BEGIN');
 
-        for (const [key, speakers] of snapshot.channelSpeakers.entries()) {
-          if (!speakers || speakers.size === 0) continue;
-          const [day, guildId, channelId] = key.split(':');
-          const dayTs = dayKeyToTs(day);
-          for (const userId of speakers.values()) {
-            await tx.run(
-              'INSERT OR IGNORE INTO analytics_daily_channel_speakers (day, day_ts, guild_id, channel_id, user_id) VALUES (?, ?, ?, ?, ?)',
-              day,
-              dayTs,
-              guildId,
-              channelId,
-              userId
-            );
-          }
-        }
-
-        for (const entry of snapshot.guildCounts.values()) {
-          await tx.run(
-            `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
-             VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0)
-             ON CONFLICT(day, guild_id) DO UPDATE SET
-               message_count = message_count + excluded.message_count,
-               day_ts = excluded.day_ts`,
-            entry.day,
-            entry.dayTs,
-            entry.guildId,
-            entry.messageCount
-          );
-        }
-
-        for (const [key, speakers] of snapshot.guildSpeakers.entries()) {
-          if (!speakers || speakers.size === 0) continue;
-          const [day, guildId] = key.split(':');
-          const dayTs = dayKeyToTs(day);
-          for (const userId of speakers.values()) {
-            await tx.run(
-              'INSERT OR IGNORE INTO analytics_daily_guild_speakers (day, day_ts, guild_id, user_id) VALUES (?, ?, ?, ?)',
-              day,
-              dayTs,
-              guildId,
-              userId
-            );
-          }
-        }
-
-        for (const entry of snapshot.userDailyMessages.values()) {
-          await tx.run(
-            `INSERT INTO analytics_user_daily_messages (day, day_ts, guild_id, user_id, message_count)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(day, guild_id, user_id) DO UPDATE SET
-               message_count = message_count + excluded.message_count,
-               day_ts = excluded.day_ts`,
-            entry.day,
-            entry.dayTs,
-            entry.guildId,
-            entry.userId,
-            entry.count
-          );
-        }
-
-        for (const entry of snapshot.commandUsage.values()) {
-          await tx.run(
-            `INSERT INTO analytics_command_usage (day, day_ts, guild_id, command_name, count)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(day, guild_id, command_name) DO UPDATE SET
-               count = count + excluded.count,
-               day_ts = excluded.day_ts`,
-            entry.day,
-            entry.dayTs,
-            entry.guildId,
-            entry.commandName,
-            entry.count
-          );
-        }
-
-        for (const entry of snapshot.voiceDaily.values()) {
-          await tx.run(
-            `INSERT INTO analytics_voice_daily (day, day_ts, guild_id, user_id, minutes)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(day, guild_id, user_id) DO UPDATE SET
-               minutes = minutes + excluded.minutes,
-               day_ts = excluded.day_ts`,
-            entry.day,
-            entry.dayTs,
-            entry.guildId,
-            entry.userId,
-            entry.minutes
-          );
-        }
-
-        for (const entry of snapshot.userActivity.values()) {
-          await tx.run(
-            `INSERT INTO analytics_user_activity (guild_id, user_id, last_message_at, last_voice_at, last_active_at)
-             VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT(guild_id, user_id) DO UPDATE SET
-               last_message_at = CASE
-                 WHEN excluded.last_message_at IS NULL THEN last_message_at
-                 WHEN last_message_at IS NULL OR excluded.last_message_at > last_message_at THEN excluded.last_message_at
-                 ELSE last_message_at
-               END,
-               last_voice_at = CASE
-                 WHEN excluded.last_voice_at IS NULL THEN last_voice_at
-                 WHEN last_voice_at IS NULL OR excluded.last_voice_at > last_voice_at THEN excluded.last_voice_at
-                 ELSE last_voice_at
-               END,
-               last_active_at = CASE
-                 WHEN excluded.last_active_at IS NULL THEN last_active_at
-                 WHEN last_active_at IS NULL OR excluded.last_active_at > last_active_at THEN excluded.last_active_at
-                 ELSE last_active_at
-               END`,
-            entry.guildId,
-            entry.userId,
-            entry.lastMessageAt,
-            entry.lastVoiceAt,
-            entry.lastActiveAt
-          );
-        }
-      }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
-
-      const durationMs = Date.now() - startedAt;
-      if (durationMs >= FLUSH_WARN_MS) {
-        console.warn('Analytics flush completed slowly', {
-          durationMs,
-          snapshotEntries
-        });
+      for (const entry of snapshot.channelCounts.values()) {
+        await db.run(
+          `INSERT INTO analytics_daily_channels (day, day_ts, guild_id, channel_id, message_count, unique_speakers, last_message_at)
+           VALUES (?, ?, ?, ?, ?, 0, ?)
+           ON CONFLICT(day, guild_id, channel_id) DO UPDATE SET
+             message_count = message_count + excluded.message_count,
+             last_message_at = MAX(last_message_at, excluded.last_message_at),
+             day_ts = excluded.day_ts`,
+          entry.day,
+          entry.dayTs,
+          entry.guildId,
+          entry.channelId,
+          entry.count,
+          entry.lastMessageAt
+        );
       }
+
+      for (const [key, speakers] of snapshot.channelSpeakers.entries()) {
+        if (!speakers || speakers.size === 0) continue;
+        const [day, guildId, channelId] = key.split(':');
+        const dayTs = dayKeyToTs(day);
+        for (const userId of speakers.values()) {
+          await db.run(
+            'INSERT OR IGNORE INTO analytics_daily_channel_speakers (day, day_ts, guild_id, channel_id, user_id) VALUES (?, ?, ?, ?, ?)',
+            day,
+            dayTs,
+            guildId,
+            channelId,
+            userId
+          );
+        }
+      }
+
+      for (const entry of snapshot.guildCounts.values()) {
+        await db.run(
+          `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
+           VALUES (?, ?, ?, ?, 0, 0, 0, 0, 0)
+           ON CONFLICT(day, guild_id) DO UPDATE SET
+             message_count = message_count + excluded.message_count,
+             day_ts = excluded.day_ts`,
+          entry.day,
+          entry.dayTs,
+          entry.guildId,
+          entry.messageCount
+        );
+      }
+
+      for (const [key, speakers] of snapshot.guildSpeakers.entries()) {
+        if (!speakers || speakers.size === 0) continue;
+        const [day, guildId] = key.split(':');
+        const dayTs = dayKeyToTs(day);
+        for (const userId of speakers.values()) {
+          await db.run(
+            'INSERT OR IGNORE INTO analytics_daily_guild_speakers (day, day_ts, guild_id, user_id) VALUES (?, ?, ?, ?)',
+            day,
+            dayTs,
+            guildId,
+            userId
+          );
+        }
+      }
+
+      for (const entry of snapshot.userDailyMessages.values()) {
+        await db.run(
+          `INSERT INTO analytics_user_daily_messages (day, day_ts, guild_id, user_id, message_count)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(day, guild_id, user_id) DO UPDATE SET
+             message_count = message_count + excluded.message_count,
+             day_ts = excluded.day_ts`,
+          entry.day,
+          entry.dayTs,
+          entry.guildId,
+          entry.userId,
+          entry.count
+        );
+      }
+
+      for (const entry of snapshot.commandUsage.values()) {
+        await db.run(
+          `INSERT INTO analytics_command_usage (day, day_ts, guild_id, command_name, count)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(day, guild_id, command_name) DO UPDATE SET
+             count = count + excluded.count,
+             day_ts = excluded.day_ts`,
+          entry.day,
+          entry.dayTs,
+          entry.guildId,
+          entry.commandName,
+          entry.count
+        );
+      }
+
+      for (const entry of snapshot.voiceDaily.values()) {
+        await db.run(
+          `INSERT INTO analytics_voice_daily (day, day_ts, guild_id, user_id, minutes)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(day, guild_id, user_id) DO UPDATE SET
+             minutes = minutes + excluded.minutes,
+             day_ts = excluded.day_ts`,
+          entry.day,
+          entry.dayTs,
+          entry.guildId,
+          entry.userId,
+          entry.minutes
+        );
+      }
+
+      for (const entry of snapshot.userActivity.values()) {
+        await db.run(
+          `INSERT INTO analytics_user_activity (guild_id, user_id, last_message_at, last_voice_at, last_active_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(guild_id, user_id) DO UPDATE SET
+             last_message_at = CASE
+               WHEN excluded.last_message_at IS NULL THEN last_message_at
+               WHEN last_message_at IS NULL OR excluded.last_message_at > last_message_at THEN excluded.last_message_at
+               ELSE last_message_at
+             END,
+             last_voice_at = CASE
+               WHEN excluded.last_voice_at IS NULL THEN last_voice_at
+               WHEN last_voice_at IS NULL OR excluded.last_voice_at > last_voice_at THEN excluded.last_voice_at
+               ELSE last_voice_at
+             END,
+             last_active_at = CASE
+               WHEN excluded.last_active_at IS NULL THEN last_active_at
+               WHEN last_active_at IS NULL OR excluded.last_active_at > last_active_at THEN excluded.last_active_at
+               ELSE last_active_at
+             END`,
+          entry.guildId,
+          entry.userId,
+          entry.lastMessageAt,
+          entry.lastVoiceAt,
+          entry.lastActiveAt
+        );
+      }
+
+      await db.exec('COMMIT');
     } catch (e) {
-      console.error('Analytics flush failed:', e);
-      const mergedPending = pendingWrites + snapshotEntries;
-      const capped = mergedPending > MAX_REQUEUE_SIZE;
-
-      if (capped && DROP_ON_REQUEUE_CAP) {
-        droppedBufferedEntries += snapshotEntries;
-        pendingWrites = Math.min(MAX_REQUEUE_SIZE, pendingWrites);
-        
-        // Audit Fix: Dispatch to AECS so data loss is visible in telemetry.
-        void logUnexpectedError('analytics.flush.dataloss', e, {
-          mergedPending,
-          cap: MAX_REQUEUE_SIZE,
-          snapshotEntries,
-          droppedTotal: droppedBufferedEntries,
-          sqliteBusy: isSqliteBusyError(e)
-        });
-
-        console.warn('Analytics snapshot dropped after flush failure to prevent unbounded memory growth', {
-          mergedPending,
-          cap: MAX_REQUEUE_SIZE,
-          snapshotEntries,
-          droppedBufferedEntries,
-          sqliteBusy: isSqliteBusyError(e)
-        });
-      } else {
-        mergeSnapshot(snapshot);
-        if (capped) {
-          console.warn('Analytics pending queue capped after flush failure', {
-            mergedPending,
-            cap: MAX_REQUEUE_SIZE,
-            snapshotEntries,
-            sqliteBusy: isSqliteBusyError(e)
-          });
-        }
-        pendingWrites = Math.min(MAX_REQUEUE_SIZE, mergedPending);
+      try {
+        await db.exec('ROLLBACK');
+      } catch (rollbackErr) {
+        console.error('Analytics rollback failed:', rollbackErr);
       }
+      console.error('Analytics flush failed:', e);
+      mergeSnapshot(snapshot);
+      pendingWrites = Math.min(MAX_BUFFER_SIZE, pendingWrites + countSnapshotEntries(snapshot));
     }
   })();
 
@@ -485,22 +437,15 @@ async function flushAll() {
 
 async function recordRoleChange({ guildId, userId, roleId, roleName, action, timestamp = Date.now() }) {
   if (!guildId || !userId || !roleId || !action) return;
-  roleChangeQueue.push({
+  await db.run(
+    'INSERT INTO analytics_role_changes (guild_id, user_id, role_id, role_name, action, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     guildId,
     userId,
     roleId,
-    roleName: roleName || null,
+    roleName || null,
     action,
     timestamp
-  });
-  capRoleChangeQueue('enqueue');
-  roleChangeEventTimes.push(timestamp);
-  pruneRoleChangeRateWindow(timestamp);
-  if (roleChangeQueue.length >= getRoleChangeBatchSize(timestamp)) {
-    void flushRoleChanges();
-    return;
-  }
-  scheduleRoleChangeFlush();
+  );
 }
 
 async function recordMessage({ guildId, channelId, userId, timestamp = Date.now() }) {
@@ -585,97 +530,37 @@ async function recordCommand({ guildId, commandName, timestamp = Date.now() }) {
 async function recordJoin({ guildId, userId, joinedAt }) {
   if (!guildId || !userId) return;
   const ts = joinedAt || Date.now();
-  const day = toDayKey(ts);
-  const dayTs = toDayTs(ts);
-
-  await withTransaction(db, async (tx) => {
-    await tx.run(
-      `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
-       VALUES (?, ?, ?, 0, 0, 1, 0, 0, 0)
-       ON CONFLICT(day, guild_id) DO UPDATE SET
-         joins = joins + 1,
-         day_ts = excluded.day_ts`,
-      day,
-      dayTs,
-      guildId
-    );
-    await tx.run(
-      'INSERT OR REPLACE INTO analytics_members (guild_id, user_id, joined_at, left_at) VALUES (?, ?, ?, NULL)',
-      guildId,
-      userId,
-      ts
-    );
-  }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
+  await bumpDailyGuildCounter(guildId, ts, 'joins');
+  await db.run(
+    'INSERT OR REPLACE INTO analytics_members (guild_id, user_id, joined_at, left_at) VALUES (?, ?, ?, NULL)',
+    guildId,
+    userId,
+    ts
+  );
 }
 
 async function recordLeave({ guildId, userId, leftAt }) {
   if (!guildId || !userId) return;
   const ts = leftAt || Date.now();
-  const day = toDayKey(ts);
-  const dayTs = toDayTs(ts);
-
-  await withTransaction(db, async (tx) => {
-    await tx.run(
-      `INSERT INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used)
-       VALUES (?, ?, ?, 0, 0, 0, 1, 0, 0)
-       ON CONFLICT(day, guild_id) DO UPDATE SET
-         leaves = leaves + 1,
-         day_ts = excluded.day_ts`,
-      day,
-      dayTs,
-      guildId
-    );
-    await tx.run(
-      'INSERT OR REPLACE INTO analytics_members (guild_id, user_id, joined_at, left_at) VALUES (?, ?, COALESCE((SELECT joined_at FROM analytics_members WHERE guild_id = ? AND user_id = ?), NULL), ?)',
-      guildId,
-      userId,
-      guildId,
-      userId,
-      ts
-    );
-  }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
+  await bumpDailyGuildCounter(guildId, ts, 'leaves');
+  await db.run(
+    'INSERT OR REPLACE INTO analytics_members (guild_id, user_id, joined_at, left_at) VALUES (?, ?, COALESCE((SELECT joined_at FROM analytics_members WHERE guild_id = ? AND user_id = ?), NULL), ?)',
+    guildId,
+    userId,
+    guildId,
+    userId,
+    ts
+  );
 }
 
 async function recordInviteCreated({ guildId, timestamp = Date.now() }) {
   if (!guildId) return;
-  const day = toDayKey(timestamp);
-  const dayTs = toDayTs(timestamp);
-
-  // Audit Fix: Wrap in withTransaction to ensure atomic update of invite counts.
-  await withTransaction(db, async (tx) => {
-    await tx.run(
-      'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
-      day,
-      dayTs,
-      guildId
-    );
-    await tx.run(
-      'UPDATE analytics_daily_guild SET invites_created = invites_created + 1 WHERE day = ? AND guild_id = ?',
-      day,
-      guildId
-    );
-  }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
+  await bumpDailyGuildCounter(guildId, timestamp, 'invites_created');
 }
 
 async function recordInviteUsed({ guildId, timestamp = Date.now() }) {
   if (!guildId) return;
-  const day = toDayKey(timestamp);
-  const dayTs = toDayTs(timestamp);
-
-  // Audit Fix: Wrap in withTransaction to ensure atomic update of invite counts.
-  await withTransaction(db, async (tx) => {
-    await tx.run(
-      'INSERT OR IGNORE INTO analytics_daily_guild (day, day_ts, guild_id, message_count, unique_speakers, joins, leaves, invites_created, invites_used) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0)',
-      day,
-      dayTs,
-      guildId
-    );
-    await tx.run(
-      'UPDATE analytics_daily_guild SET invites_used = invites_used + 1 WHERE day = ? AND guild_id = ?',
-      day,
-      guildId
-    );
-  }, { maxRetries: IMMEDIATE_TX_MAX_RETRIES });
+  await bumpDailyGuildCounter(guildId, timestamp, 'invites_used');
 }
 
 async function recordVoiceMinutes({ guildId, userId, minutes, timestamp = Date.now() }) {
@@ -707,21 +592,6 @@ async function recordVoiceMinutes({ guildId, userId, minutes, timestamp = Date.n
   bumpPending();
 }
 
-function getMetrics() {
-  return {
-    analytics: {
-      pendingWrites,
-      flushScheduled: Boolean(flushTimer),
-      flushInFlight: Boolean(flushInFlight),
-      roleChangeQueued: roleChangeQueue.length,
-      roleChangeFlushScheduled: Boolean(roleChangeTimer),
-      roleChangeFlushInFlight: Boolean(roleChangeFlushInFlight),
-      droppedBufferedEntries,
-      droppedRoleChangeEntries
-    }
-  };
-}
-
 module.exports = {
   toDayKey,
   toDayTs,
@@ -734,6 +604,7 @@ module.exports = {
   recordVoiceMinutes,
   recordRoleChange,
   flushAll,
-  flushRoleChanges,
-  getMetrics
+  spillPendingToDisk,
+  restorePendingFromDisk
 };
+

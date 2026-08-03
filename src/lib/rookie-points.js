@@ -1,44 +1,37 @@
 const { ROLE_IDS } = require('../constants');
 const { promoteMember } = require('./promote');
 const { resolveGuildId } = require('./guild');
+const { withTransaction } = require('./transactions');
 
 function parseRookieNickname(rawName) {
   if (!rawName) return { base: null, points: null };
-  const source = String(rawName);
-  const capped = source.length > 128 ? source.slice(0, 128) : source;
-  const trimmed = capped.trim();
-  if (!trimmed) return { base: null, points: null };
+  const s = String(rawName);
+  const trimmed = s.length > 128 ? s.slice(0, 128) : s;
+  const idx = trimmed.lastIndexOf('/');
+  if (idx === -1) return { base: trimmed.trim() || trimmed, points: null };
 
-  const pointsMatch = trimmed.match(/(?:^|\s)(-?\d+(?:\.\d+)?)\s*\/\s*2\s*$/);
-  if (!pointsMatch) {
-    return { base: sanitizeRookieBase(trimmed), points: null };
-  }
+  const right = trimmed.slice(idx + 1).trim();
+  if (right !== '10') return { base: trimmed.trim() || trimmed, points: null };
 
-  const points = Number(pointsMatch[1]);
-  if (!Number.isFinite(points)) {
-    return { base: sanitizeRookieBase(trimmed), points: null };
-  }
-
-  const left = trimmed.slice(0, pointsMatch.index).trim();
-  const base = sanitizeRookieBase(left || trimmed);
-  return { base: base || sanitizeRookieBase(trimmed), points };
+  const left = trimmed.slice(0, idx).trim();
+  const parts = left.split(/\s+/);
+  if (!parts.length) return { base: trimmed.trim() || trimmed, points: null };
+  const maybePoints = parts[parts.length - 1];
+  const points = parseStrictPointToken(maybePoints);
+  if (!Number.isFinite(points)) return { base: trimmed.trim() || trimmed, points: null };
+  const base = parts.slice(0, -1).join(' ').trim();
+  return { base: base || trimmed.trim() || trimmed, points: points };
 }
 
-function sanitizeRookieBase(rawBase) {
-  const source = rawBase == null ? '' : String(rawBase);
-  let cleaned = source.replace(/\s+/g, ' ').trim();
-  if (!cleaned) return '';
-
-  // Strip legacy status prefixes from mixed nicknames.
-  cleaned = cleaned.replace(/^(?:\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?\s*[|:-]\s*)+/g, '');
-  // Strip trailing legacy progress fragments left by previous systems.
-  cleaned = cleaned.replace(/(?:\s*[|:-]\s*\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?)+$/g, '');
-  cleaned = cleaned.replace(/\s+\d+(?:\.\d+)?\s*\/\s*\d+(?:\.\d+)?$/g, '');
-  // Trim separators at boundaries and normalize pipe spacing.
-  cleaned = cleaned.replace(/^\s*[|:-]+\s*/, '').replace(/\s*[|:-]+\s*$/, '');
-  cleaned = cleaned.replace(/\s*\|\s*/g, ' | ').replace(/\s{2,}/g, ' ').trim();
-
-  return cleaned || source.replace(/\s+/g, ' ').trim();
+function parseStrictPointToken(token) {
+  if (!token) return null;
+  const raw = String(token).trim();
+  // Accept only plain decimal forms (e.g. 9, 9.5, 10) and reject scientific notation.
+  if (!/^\d{1,2}(?:\.\d{1,2})?$/.test(raw)) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return null;
+  if (value < 0 || value > 10) return null;
+  return value;
 }
 
 function formatPoints(value) {
@@ -96,35 +89,17 @@ async function getLinkedPoints({ db, member, guild, guildId }) {
   return { points: 0, updatedAt: null, baseName: parsed.base || member.user.username, source: 'none' };
 }
 
-async function setLinkedPoints({ db, member, points, guild, verifierId }) {
-  if (!db || !member) return { points: 0, promoted: false };
-  const resolvedGuildId = resolveGuildId(guild || member.guild);
-  if (!member.roles || !member.roles.cache || !member.roles.cache.has(ROLE_IDS.ROOKIE)) {
-    return { points: 0, promoted: false, skipped: true };
-  }
-
-  const clamped = Math.max(0, Math.min(2, points));
-  const now = Date.now();
-
-  try {
-    await db.run(
-      `INSERT INTO rookie_points (guild_id, member_id, points, updated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(guild_id, member_id) DO UPDATE SET
-         points = excluded.points,
-         updated_at = excluded.updated_at`,
-      resolvedGuildId,
-      member.id,
-      clamped,
-      now
-    );
-  } catch (e) {
-    console.error('Failed to persist rookie points:', e);
-  }
-
-  if (clamped >= 2) {
+async function applyPostPointEffects({ db, member, guild, verifierId, points }) {
+  const clamped = Math.max(0, Math.min(10, points));
+  if (clamped >= 10) {
     const promotion = await promoteMember({ member, db, guild, verifierId });
-    return { points: clamped, promoted: true, teamName: promotion.teamName };
+    return {
+      points: clamped,
+      promoted: !!(promotion && promotion.promoted),
+      teamName: promotion ? promotion.teamName : undefined,
+      teamEmoji: promotion ? promotion.teamEmoji : undefined,
+      promotionError: promotion && promotion.promoted === false ? promotion.error : null
+    };
   }
 
   if (!member.manageable) {
@@ -132,64 +107,81 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
   }
 
   const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-  const nickname = `${baseName} ${formatPoints(clamped)}/2`;
+  const nickname = `${baseName} ${formatPoints(clamped)}/10`;
   const nicknameUpdated = await retrySetNickname(member, nickname);
 
   return { points: clamped, promoted: false, nicknameUpdated };
 }
 
+async function setLinkedPoints({ db, member, points, guild, verifierId }) {
+  if (!db || !member) return { points: 0, promoted: false };
+  const resolvedGuildId = resolveGuildId(guild || member.guild);
+  if (!member.roles || !member.roles.cache || !member.roles.cache.has(ROLE_IDS.ROOKIE)) {
+    return { points: 0, promoted: false, skipped: true };
+  }
+
+  const clamped = Math.max(0, Math.min(10, points));
+  const now = Date.now();
+
+  await withTransaction(db, async (tx) => {
+    await tx.run(
+      'INSERT OR IGNORE INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, 0, ?)',
+      resolvedGuildId,
+      member.id,
+      now
+    );
+    await tx.run(
+      'UPDATE rookie_points SET points = ?, updated_at = ? WHERE guild_id = ? AND member_id = ?',
+      clamped,
+      now,
+      resolvedGuildId,
+      member.id
+    );
+  });
+
+  return applyPostPointEffects({ db, member, guild, verifierId, points: clamped });
+}
+
 async function addRookiePoints({ db, member, delta, guild, verifierId }) {
   if (!db || !member) return { points: 0, promoted: false, previousPoints: 0 };
   const resolvedGuildId = resolveGuildId(guild || member.guild);
-  const numericDelta = Number(delta);
-  if (!Number.isFinite(numericDelta) || numericDelta === 0) {
-    const current = await getLinkedPoints({ db, member, guild: resolvedGuildId });
-    return { points: current.points || 0, promoted: false, previousPoints: current.points || 0 };
-  }
-
-  const seedPoints = Math.max(0, Math.min(2, numericDelta));
-  const now = Date.now();
-
-  try {
-    await db.run(
-      `INSERT INTO rookie_points (guild_id, member_id, points, updated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(guild_id, member_id) DO UPDATE SET
-         points = MIN(2, MAX(0, rookie_points.points + excluded.points)),
-         updated_at = excluded.updated_at`,
+  const safeDelta = Number.isFinite(delta) ? delta : 0;
+  let previousPoints = 0;
+  let nextPoints = 0;
+  await withTransaction(db, async (tx) => {
+    const now = Date.now();
+    await tx.run(
+      'INSERT OR IGNORE INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, 0, ?)',
       resolvedGuildId,
       member.id,
-      seedPoints,
       now
     );
-  } catch (e) {
-    console.error('Failed to atomically update rookie points:', e);
-    const current = await getLinkedPoints({ db, member, guild: resolvedGuildId });
-    return { points: current.points || 0, promoted: false, previousPoints: current.points || 0 };
-  }
 
-  const row = await db.get(
-    'SELECT points FROM rookie_points WHERE guild_id = ? AND member_id = ?',
-    resolvedGuildId,
-    member.id
-  ).catch(() => null);
-  const points = row && Number.isFinite(Number(row.points))
-    ? Number(row.points)
-    : 0;
-  const previousPoints = Math.max(0, Math.min(2, points - numericDelta));
+    const prevRow = await tx.get(
+      'SELECT points FROM rookie_points WHERE guild_id = ? AND member_id = ?',
+      resolvedGuildId,
+      member.id
+    );
+    previousPoints = prevRow && Number.isFinite(Number(prevRow.points)) ? Number(prevRow.points) : 0;
 
-  if (points >= 2) {
-    const promotion = await promoteMember({ member, db, guild, verifierId });
-    return { points: 2, promoted: true, teamName: promotion.teamName, previousPoints };
-  }
+    await tx.run(
+      'UPDATE rookie_points SET points = MIN(10, MAX(0, points + ?)), updated_at = ? WHERE guild_id = ? AND member_id = ?',
+      safeDelta,
+      now,
+      resolvedGuildId,
+      member.id
+    );
 
-  if (member.manageable) {
-    const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-    const nickname = `${baseName} ${formatPoints(points)}/2`;
-    await retrySetNickname(member, nickname);
-  }
+    const nextRow = await tx.get(
+      'SELECT points FROM rookie_points WHERE guild_id = ? AND member_id = ?',
+      resolvedGuildId,
+      member.id
+    );
+    nextPoints = nextRow && Number.isFinite(Number(nextRow.points)) ? Number(nextRow.points) : 0;
+  });
 
-  return { points, promoted: false, previousPoints };
+  const result = await applyPostPointEffects({ db, member, guild, verifierId, points: nextPoints });
+  return { ...result, previousPoints };
 }
 
 module.exports = {

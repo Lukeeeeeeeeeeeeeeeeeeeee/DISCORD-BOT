@@ -1,8 +1,8 @@
 const { EmbedBuilder } = require('discord.js');
-const { ensureCommandAccess } = require('../lib/command-auth');
+const { hasAdministrator } = require('../lib/permissions');
 const { replyError } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
-const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -10,30 +10,24 @@ module.exports = {
     description: 'Create manual backup of server (Admin only)'
   },
   async execute(interaction) {
-    const allowed = await ensureCommandAccess(interaction, {
-      allowStaff: false,
-      deniedMessage: 'Administrator permission required.',
-      flags: 64
-    });
-    if (!allowed) return null;
+    if (!hasAdministrator(interaction.member)) {
+      return replyError(interaction, 'Administrator permission required.', { flags: 64 });
+    }
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
       return replyError(interaction, 'Anti-nuke system not initialized.', { flags: 64 });
     }
 
-    try {
-      await interaction.deferReply({ flags: 64 });
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
+    try {
       const backup = await antiNuke.createBackup(interaction.guild, {
         type: 'full',
         manual: true,
         executorId: interaction.user.id
       });
-
-      const snapshotCounts = backup && backup.counts
-        ? `${backup.counts.roles || 0} roles, ${backup.counts.channels || 0} channels, ${backup.counts.threads || 0} threads, ${backup.counts.emojis || 0} emojis, ${backup.counts.stickers || 0} stickers, ${backup.counts.bans || 0} bans`
-        : 'Unknown';
 
       const embed = new EmbedBuilder()
         .setColor('#00FF00')
@@ -43,20 +37,15 @@ module.exports = {
           { name: 'Server', value: interaction.guild.name, inline: true },
           { name: 'Created By', value: interaction.user.tag, inline: true },
           { name: 'Backup Time', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: true },
-          { name: 'Backup ID', value: backup ? backup.id : 'Unknown', inline: true },
-          { name: 'Snapshot Counts', value: snapshotCounts, inline: false }
+          { name: 'Backup ID', value: backup ? backup.id : 'Unknown', inline: true }
         )
-        .addFields({
-          name: 'What Was Backed Up',
-          value: [
-            '- Server metadata (name/settings/icon/banner)',
-            '- Roles/channels/permission overwrites',
-            '- Active threads and forum metadata',
-            '- Emojis and stickers',
-            '- Ban list and onboarding config'
-          ].join('\n'),
-          inline: false
-        })
+        .addFields(
+          {
+            name: 'What Was Backed Up',
+            value: '- All role data (permissions, colors, positions)\n- All channel data (names, types, categories)\n- Channel permission overwrites\n- Server settings and metadata',
+            inline: false
+          }
+        )
         .setFooter({ text: 'This backup can be used for emergency recovery' })
         .setTimestamp();
 
@@ -65,25 +54,17 @@ module.exports = {
         executorId: interaction.user.id
       });
 
-      await interaction.editReply({ embeds: [embed] });
+      return respond({ embeds: [embed] });
     } catch (error) {
-      const dispatchResult = await logUnexpectedError('command.forceBackup.execute', error, {
-        command: 'force_backup',
-        guildId: interaction.guild ? interaction.guild.id : null,
-        actorId: interaction.user ? interaction.user.id : null
-      });
+      console.error('Force backup error:', error);
 
       const embed = new EmbedBuilder()
         .setColor('#FF0000')
         .setTitle('Backup Creation Failed')
-        .setDescription(`Failed to create backup: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`)
+        .setDescription(`Failed to create backup: ${error.message}`)
         .setTimestamp();
 
-      if (interaction.replied || interaction.deferred) {
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.reply({ embeds: [embed], flags: 64 });
-      }
+      return respond({ embeds: [embed] });
     }
   }
 };

@@ -1,4 +1,4 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
@@ -37,17 +37,15 @@ async function main() {
   let db;
   try {
     db = require('../src/db_async');
-    const { runReferentialPreflight } = require('../src/lib/db-referential-preflight');
-    const preflight = await runReferentialPreflight(db, { fix: true, log: true });
     const result = await db.checkIntegrity('migration-dry-run');
     const ok = result && result.ok !== false;
-    console.log('Migration dry-run complete', { ok, dbPath: tempPath, preflight });
+    console.log('Migration dry-run complete', { ok, dbPath: tempPath });
     await db.close();
     try {
       fs.rmSync(tempPath, { force: true });
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch (e) {
-      void e;
+      console.error(e);
     }
     process.exit(ok ? 0 : 2);
   } catch (err) {
@@ -55,16 +53,17 @@ async function main() {
     try {
       if (db && typeof db.close === 'function') await db.close();
     } catch (e) {
-      void e;
+      console.error(e);
     }
     try {
       fs.rmSync(tempPath, { force: true });
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch (e) {
-      void e;
+      console.error(e);
     }
     process.exit(1);
   }
 }
 
 main();
+

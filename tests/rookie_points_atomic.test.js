@@ -1,4 +1,4 @@
-const sqlite3 = require('sqlite3');
+﻿const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
 const fs = require('fs');
@@ -15,14 +15,10 @@ function makeMember(id = 'rookie-1') {
     user: { username: 'RookieUser' },
     nickname: 'RookieUser',
     manageable: false,
-    guild: { id: 'guild-role-id' },
     roles: {
       cache: {
         has: (roleId) => roleId === ROLE_IDS.ROOKIE
-      },
-      remove: jest.fn().mockResolvedValue(undefined),
-      add: jest.fn().mockResolvedValue(undefined),
-      set: jest.fn().mockResolvedValue(undefined)
+      }
     },
     setNickname: jest.fn().mockResolvedValue(true)
   };
@@ -48,7 +44,7 @@ describe('rookie points atomic updates', () => {
 
   afterEach(async () => {
     if (db) await db.close();
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('concurrent addRookiePoints does not lose increments', async () => {
@@ -60,18 +56,18 @@ describe('rookie points atomic updates', () => {
       db,
       member,
       guild,
-      delta: 0.1,
+      delta: 0.5,
       verifierId: 'verifier'
     })));
 
     const row = await db.get('SELECT points FROM rookie_points WHERE guild_id = ? AND member_id = ?', 'G1', member.id);
-    expect(Number(row.points)).toBeCloseTo(1, 5);
+    expect(Number(row.points)).toBe(5);
   });
 
   test('getLinkedPoints does not seed points from nickname', async () => {
     const { getLinkedPoints } = require('../src/lib/rookie-points');
     const member = makeMember('rookie-seed');
-    member.nickname = 'SeededUser 1/2';
+    member.nickname = 'SeededUser 9/10';
 
     const info = await getLinkedPoints({ db, member, guild: { id: 'G1' } });
     expect(info.points).toBe(0);
@@ -82,41 +78,8 @@ describe('rookie points atomic updates', () => {
 
   test('parseRookieNickname rejects scientific notation point tokens', () => {
     const { parseRookieNickname } = require('../src/lib/rookie-points');
-    const parsed = parseRookieNickname('SeededUser 1e5/2');
+    const parsed = parseRookieNickname('SeededUser 1e5/10');
     expect(parsed.points).toBeNull();
   });
-
-  test('parseRookieNickname strips legacy prefix collisions from base', () => {
-    const { parseRookieNickname } = require('../src/lib/rookie-points');
-    const parsed = parseRookieNickname('0/10 | wapberry 1/2');
-    expect(parsed.points).toBe(1);
-    expect(parsed.base).toBe('wapberry');
-  });
-
-  test('addRookiePoints rewrites broken mixed nickname into canonical format', async () => {
-    const { addRookiePoints } = require('../src/lib/rookie-points');
-    const member = makeMember('rookie-mixed');
-    member.manageable = true;
-    member.nickname = '0/2 | wapberry 2/10';
-    const guild = { id: 'G1' };
-
-    await db.run(
-      'INSERT INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
-      'G1',
-      member.id,
-      1,
-      Date.now()
-    );
-
-    const result = await addRookiePoints({
-      db,
-      member,
-      guild,
-      delta: 1,
-      verifierId: 'verifier'
-    });
-
-    expect(result.points).toBe(2);
-    expect(member.setNickname).toHaveBeenCalledWith('0/2 | wapberry');
-  });
 });
+

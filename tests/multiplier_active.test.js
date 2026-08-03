@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -21,13 +21,11 @@ describe('multiplier-active admin', () => {
       CREATE TABLE IF NOT EXISTS multipliers ( id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT, created_at INTEGER, expires_at INTEGER );
     `);
     // seed an active multiplier
-    await db.run('INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'A', 1.75, 'm1.75_14d', Date.now(), Date.now() + (14 * 24 * 60 * 60 * 1000));
+    await db.run('INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'A', 1.25, 'm1.25_14d', Date.now(), Date.now() + (14 * 24 * 60 * 60 * 1000));
   });
   afterEach(async () => {
-    try { await require('../src/db_async').close(); } catch (e) { void e; }
-    try { delete require.cache[require.resolve('../src/db_async.js')]; } catch (e) { void e; }
-    try { await db.close(); } catch (e) { void e; }
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { await db.close(); } catch (e) { console.error(e); }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
   test('multiplier-active returns embed with list', async () => {
     const { interaction } = makeInteraction('multiplier-active');
@@ -38,3 +36,4 @@ describe('multiplier-active admin', () => {
     expect(arg.embeds[0].data.title).toMatch(/Active Multipliers/);
   });
 });
+

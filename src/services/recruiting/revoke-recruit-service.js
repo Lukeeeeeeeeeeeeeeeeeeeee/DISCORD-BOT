@@ -5,33 +5,13 @@ const recruitsRepo = require('../../repos/recruits-repo');
 const { withTransaction } = require('../../lib/transactions');
 const { changeRecruiterPoints } = require('./ledger-service');
 const scheduler = require('../../scheduler');
-const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
-
-function roleIsManageable(botMember, role) {
-  if (!role || !botMember || !botMember.roles || !botMember.roles.highest) return false;
-  return botMember.roles.highest.position > role.position;
-}
-
-function resolveBotMemberSync(guild, client) {
-  if (!guild) return null;
-  if (guild.members && guild.members.me) return guild.members.me;
-  if (client && client.user && guild.members && guild.members.cache) {
-    return guild.members.cache.get(client.user.id);
-  }
-  return null;
-}
-
-function reportRevokeRecruitServiceError(scope, error, meta = {}) {
-  void logUnexpectedError(scope, error, {
-    command: 'revoke-recruit',
-    ...meta
-  });
-}
 
 async function revokeRecruit({ interaction, db, guildId, member, reason }) {
-  // Validate member existence (Allow graceful cleanup if member has already left)
+  // Validate member exists
   const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-  const memberExists = !!targetMember;
+  if (!targetMember) {
+    return replyError(interaction, 'Member not found in this guild.');
+  }
 
   // Get the recruit record to find region and recruiter info
   const recruit = await recruitsRepo.getActiveByRecruitedId(db, guildId, member.id);
@@ -55,68 +35,45 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
     });
   });
 
-  // Remove roles from the member (only if they are still in the guild)
-  if (memberExists) {
-    try {
-      const onboarding = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
-      const roleIdsToRemove = Array.from(new Set([
-        ROLE_IDS.ROOKIE,
-        ROLE_IDS.UNVERIFIED,
-        ...onboarding
-      ].filter(Boolean)));
-      
-      const botMember = resolveBotMemberSync(interaction.guild, interaction.client);
-      const safeRemovableRoleIds = [];
-      for (const rid of roleIdsToRemove) {
-        if (targetMember.roles.cache.has(rid)) {
-          const role = interaction.guild.roles.cache.get(rid);
-          if (role && roleIsManageable(botMember, role)) {
-            safeRemovableRoleIds.push(rid);
-          } else if (role) {
-            logRuntimeEvent('warn', 'service.revokeRecruit.hierarchy', 'Skipping role removal: Bot too low in hierarchy', { 
-              recruitedId: member.id, roleName: role.name 
-            });
-          }
-        }
-      }
+  // Remove roles from the member
+  try {
+    const onboarding = Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [];
+    const roleIdsToRemove = Array.from(new Set([
+      ROLE_IDS.ROOKIE,
+      ROLE_IDS.UNVERIFIED,
+      ...onboarding
+    ].filter(Boolean)));
+    const removableRoleIds = roleIdsToRemove.filter(roleId => targetMember.roles.cache.has(roleId));
+    if (removableRoleIds.length) {
+      await targetMember.roles.remove(removableRoleIds, 'Recruit revoked');
+    }
 
-      if (safeRemovableRoleIds.length) {
-        await targetMember.roles.remove(safeRemovableRoleIds, 'Recruit status revoked');
-      }
-
-      const canManageNicknames = !!(
-        botMember &&
-        botMember.permissions &&
-        botMember.permissions.has(PermissionsBitField.Flags.ManageNicknames)
-      );
-
-      if (targetMember.manageable && canManageNicknames) {
-        await targetMember.setNickname(null).catch(err => {
-          reportRevokeRecruitServiceError('service.revokeRecruit.clearNickname', err, {
-            guildId,
-            recruitedId: member.id
-          });
-        });
-      }
-    } catch (roleError) {
-      reportRevokeRecruitServiceError('service.revokeRecruit.removeRoles', roleError, {
-        guildId,
-        recruitedId: member.id
+    const botMember = interaction.guild && interaction.guild.members
+      ? (interaction.guild.members.me
+        || (typeof interaction.guild.members.fetch === 'function'
+          ? await interaction.guild.members.fetch(interaction.client.user.id).catch(() => null)
+          : null))
+      : null;
+    const canManageNicknames = !!(
+      botMember
+      && botMember.permissions
+      && typeof botMember.permissions.has === 'function'
+      && botMember.permissions.has(PermissionsBitField.Flags.ManageNicknames)
+    );
+    if (targetMember.manageable && canManageNicknames) {
+      await targetMember.setNickname(null).catch(err => {
+        console.error('Failed to clear recruit nickname:', err);
       });
     }
+  } catch (roleError) {
+    console.error('Failed to remove roles:', roleError);
   }
 
   // Update leaderboards to reflect the change
   try {
     await scheduler.recomputeLeaderboards(db, interaction.guild);
-    if (typeof scheduler.recomputeWarningsLeaderboard === 'function') {
-      await scheduler.recomputeWarningsLeaderboard(db, interaction.guild);
-    }
   } catch (e) {
-    reportRevokeRecruitServiceError('service.revokeRecruit.recomputeLeaderboards', e, {
-      guildId,
-      recruitedId: member.id
-    });
+    console.error('Failed to update leaderboards after recruit revocation:', e);
   }
 
   // Post notification to invite channels
@@ -135,24 +92,37 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
   const logChannel = interaction.guild.channels.cache.get(CHANNELS.ECONOMY_NOTIFICATIONS);
   if (logChannel) {
     await logChannel.send({ embeds: [embed] }).catch(err => {
-      reportRevokeRecruitServiceError('service.revokeRecruit.logChannel', err, {
-        guildId,
-        recruitedId: member.id,
-        channelId: CHANNELS.ECONOMY_NOTIFICATIONS
-      });
+      console.error('Failed to log recruit revocation:', err);
     });
   }
 
-  void logRuntimeEvent('info', 'service.revokeRecruit.completed', 'Recruit revoked', {
+  // DM the revoked member
+  try {
+    const dmEmbed = new EmbedBuilder()
+      .setTitle('🚫 Your Recruit Status Has Been Revoked')
+      .setDescription(`Your recruit status in **${recruit.region}** has been revoked.`)
+      .addFields(
+        { name: 'Reason', value: reason, inline: false },
+        { name: 'Revoked By', value: `<@${interaction.user.id}>`, inline: true }
+      )
+      .setColor(0xFF4444)
+      .setTimestamp();
+    await targetMember.send({ embeds: [dmEmbed] }).catch(err => {
+      console.error('Failed to DM recruit revocation:', err);
+    });
+  } catch (dmError) {
+    console.error('Failed to DM revoked member:', dmError);
+  }
+
+  console.info('Recruit revoked', {
     recruitedId: member.id,
     recruiterId: recruit.recruiter_id,
     region: recruit.region,
     by: interaction.user.id,
-    reason,
-    guildId
+    reason
   });
 
-  return { success: true, message: `Successfully revoked recruit status for ${member.tag}. ✅` };
+  return null;
 }
 
 module.exports = { revokeRecruit };

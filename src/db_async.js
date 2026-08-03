@@ -1,63 +1,180 @@
-const sqlite3 = require('sqlite3');
+﻿const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
+const fs = require('fs');
+const path = require('path');
 const { GUILD_ID } = require('./constants');
-const { withTransaction } = require('./lib/transactions');
-const {
-  ensureDatabaseFile,
-  applyConnectionPragmas,
-  runIntegrityChecks
-} = require('./lib/db-bootstrap');
 
-const DB_PATH = process.env.DATABASE_PATH || './data/recruiter.db';
 const DEFAULT_GUILD_ID = process.env.GUILD_ID || GUILD_ID || 'GLOBAL';
 
-// Synchronously ensure DB path exists and touch file (compatibility for tests)
-ensureDatabaseFile(DB_PATH);
+function getConfiguredDbPath() {
+  return process.env.DATABASE_PATH || './data/recruiter.db';
+}
 
-async function init() {
-  const db = await open({ filename: DB_PATH, driver: sqlite3.Database });
-  // Reduce "database is locked" errors under concurrent access.
-  await applyConnectionPragmas(db, process.env);
+function ensureDbPath(dbPath) {
+  const dir = path.dirname(dbPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  try {
+    fs.closeSync(fs.openSync(dbPath, 'a'));
+  } catch (e) {
+    // ignore
+  }
+}
 
-  // Hardening (v3.0): Coordinated Fleet Infrastructure
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS dm_global_backoff (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      backoff_until INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    
-    -- Initialize the global clock if missing
-    INSERT OR IGNORE INTO dm_global_backoff (id, backoff_until, updated_at) VALUES (1, 0, ?);
-  `, Date.now());
+async function acquireSchemaLock(dbPath) {
+  const lockPath = `${dbPath}.schema.lock`;
+  const timeoutMs = Number.parseInt(process.env.SCHEMA_LOCK_TIMEOUT_MS || '60000', 10);
+  const staleMs = Number.parseInt(process.env.SCHEMA_LOCK_STALE_MS || '120000', 10);
+  const pollMs = Number.parseInt(process.env.SCHEMA_LOCK_POLL_MS || '250', 10);
+  const startedAt = Date.now();
 
-  const getTableInfo = async (table) => {
+  await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
+
+  let done = false;
+  while (!done) {
+    let handle = null;
     try {
-      return await db.all(`PRAGMA table_info(${table})`);
+      handle = await fs.promises.open(lockPath, 'wx');
+      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+      done = true;
+      return async () => {
+        try { await handle.close(); } catch (e) { console.error(e); }
+        try { await fs.promises.unlink(lockPath); } catch (e) { if (!e || e.code !== 'ENOENT') console.error('Failed to release schema lock:', e); }
+      };
     } catch (e) {
-      return [];
+      if (handle) {
+        try { await handle.close(); } catch (closeErr) { console.error('Failed to close schema lock handle:', closeErr); }
+      }
+      if (!e || e.code !== 'EEXIST') throw e;
+
+      try {
+        const stat = await fs.promises.stat(lockPath);
+        if ((Date.now() - stat.mtimeMs) > staleMs) {
+          await fs.promises.unlink(lockPath);
+          continue;
+        }
+      } catch (statErr) {
+        if (!statErr || statErr.code !== 'ENOENT') {
+          console.error('Failed checking schema lock file state:', statErr);
+        }
+      }
+
+      if ((Date.now() - startedAt) >= timeoutMs) {
+        throw new Error(`Timed out waiting for schema lock (${lockPath})`);
+      }
+      await new Promise(resolve => setTimeout(resolve, pollMs));
     }
-  };
+  }
+}
 
-  const hasColumn = async (table, column) => {
-    const info = await getTableInfo(table);
-    return info.some(row => row && row.name === column);
-  };
+function readPragmaValues(rows) {
+  if (!rows || !rows.length) return [];
+  const values = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const val = Object.values(row)[0];
+    values.push(val);
+  }
+  return values;
+}
 
-  const hasCompositePk = async (table, columns) => {
-    const info = await getTableInfo(table);
-    const pkCols = info
-      .filter(row => row && row.pk)
-      .sort((a, b) => a.pk - b.pk)
-      .map(row => row.name);
-    return columns.length === pkCols.length && columns.every((col, idx) => pkCols[idx] === col);
-  };
+async function runIntegrityChecks(db, label = 'startup') {
+  if (!db || typeof db.all !== 'function') return { ok: true, skipped: true };
+  const enabled = (process.env.DB_INTEGRITY_CHECK || 'true').toLowerCase() === 'true';
+  if (!enabled) return { ok: true, skipped: true };
+  const mode = (process.env.DB_INTEGRITY_MODE || 'quick').toLowerCase();
+  if (mode === 'off' || mode === 'none' || mode === 'skip') {
+    return { ok: true, skipped: true };
+  }
 
-  // Create schema if not exists
-  await db.exec(`
+  let integrityValues = [];
+  try {
+    if (mode === 'full') {
+      integrityValues = readPragmaValues(await db.all('PRAGMA integrity_check'));
+    } else {
+      integrityValues = readPragmaValues(await db.all('PRAGMA quick_check'));
+    }
+  } catch (e) {
+    console.error('DB integrity check failed to run', { label, mode, error: e });
+    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') throw e;
+    return { ok: false, error: e };
+  }
+
+  const integrityOk = integrityValues.length === 0
+    ? true
+    : integrityValues.every(val => String(val).toLowerCase() === 'ok');
+
+  let fkRows = [];
+  try {
+    fkRows = await db.all('PRAGMA foreign_key_check');
+  } catch (e) {
+    console.error('DB foreign_key_check failed to run', { label, error: e });
+    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') throw e;
+    return { ok: false, error: e };
+  }
+
+  const fkOk = !fkRows || fkRows.length === 0;
+  const ok = integrityOk && fkOk;
+
+  if (!ok) {
+    console.error('DB integrity check failed', {
+      label,
+      mode,
+      integrity: integrityValues,
+      foreignKeyViolations: fkRows
+    });
+    if ((process.env.DB_INTEGRITY_STRICT || '').toLowerCase() === 'true') {
+      throw new Error('Database integrity check failed');
+    }
+  } else if ((process.env.DB_INTEGRITY_LOG_OK || '').toLowerCase() === 'true') {
+    console.log('DB integrity check OK', { label, mode });
+  }
+
+  return { ok, integrityOk, fkOk, integrityValues, fkRows };
+}
+
+async function init(dbPath = getConfiguredDbPath()) {
+  ensureDbPath(dbPath);
+  const db = await open({ filename: dbPath, driver: sqlite3.Database });
+  // Reduce "database is locked" errors under concurrent access.
+  try { await db.exec('PRAGMA foreign_keys = ON'); } catch (e) { console.error(e); }
+  const disableWal = (process.env.SQLITE_DISABLE_WAL || '').toLowerCase() === 'true';
+  const journalModeRaw = (process.env.SQLITE_JOURNAL_MODE || 'WAL').toUpperCase();
+  const allowedModes = new Set(['WAL', 'DELETE', 'TRUNCATE', 'PERSIST', 'MEMORY', 'OFF']);
+  if (!disableWal) {
+    if (allowedModes.has(journalModeRaw)) {
+      try { await db.exec(`PRAGMA journal_mode = ${journalModeRaw}`); } catch (e) { console.error(e); }
+    } else {
+      console.warn(`Invalid SQLITE_JOURNAL_MODE "${journalModeRaw}" - skipping journal_mode PRAGMA.`);
+    }
+  }
+  const busyTimeoutRaw = Number.parseInt(process.env.SQLITE_BUSY_TIMEOUT_MS || '15000', 10);
+  const busyTimeoutMs = Number.isFinite(busyTimeoutRaw) && busyTimeoutRaw > 0 ? busyTimeoutRaw : 15000;
+  try { await db.exec('PRAGMA synchronous = NORMAL'); } catch (e) { console.error(e); }
+  try { await db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`); } catch (e) { console.error(e); }
+
+  const releaseSchemaLock = await acquireSchemaLock(dbPath);
+  const strictMigrations = (() => {
+    const configured = process.env.DB_MIGRATION_STRICT;
+    if (configured === undefined || configured === null || String(configured).trim() === '') {
+      return process.env.NODE_ENV !== 'test';
+    }
+    return String(configured).toLowerCase() === 'true';
+  })();
+
+  try {
+    // Create schema if not exists
+    await db.exec(`
   CREATE TABLE IF NOT EXISTS schema_migrations (
     id TEXT PRIMARY KEY,
     applied_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS schema_version (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL DEFAULT 0,
+    migration_count INTEGER NOT NULL DEFAULT 0,
+    last_migration_id TEXT,
+    updated_at INTEGER NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS recruits (
@@ -146,17 +263,6 @@ async function init() {
     previous_min_req INTEGER,
     calculated_min_req INTEGER NOT NULL,
     role_base INTEGER NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS weekly_recruit_overrides (
-    guild_id TEXT NOT NULL,
-    recruiter_id TEXT NOT NULL,
-    week_start INTEGER NOT NULL,
-    total INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    updated_by TEXT NOT NULL,
-    note TEXT,
-    PRIMARY KEY (guild_id, recruiter_id, week_start)
   );
 
   CREATE TABLE IF NOT EXISTS verifications (
@@ -337,240 +443,145 @@ async function init() {
     PRIMARY KEY (guild_id, recruiter_id)
   );
 
-  CREATE TABLE IF NOT EXISTS dm_workers (
-    worker_id TEXT PRIMARY KEY,
-    display_name TEXT,
-    enabled INTEGER DEFAULT 1,
-    weight INTEGER DEFAULT 1,
-    started_at INTEGER NOT NULL,
-    last_seen_at INTEGER NOT NULL,
-    status TEXT DEFAULT 'online',
-    meta_json TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS dm_campaigns (
+  CREATE TABLE IF NOT EXISTS recruiter_points_ledger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id TEXT NOT NULL,
-    requested_by TEXT NOT NULL,
-    message_type TEXT NOT NULL,
-    message_body TEXT NOT NULL,
-    target_mode TEXT NOT NULL,
-    target_role_ids TEXT,
-    status TEXT NOT NULL DEFAULT 'queued',
-    report_channel_id TEXT,
-    requested_channel_id TEXT,
-    total_targets INTEGER DEFAULT 0,
-    total_batches INTEGER DEFAULT 0,
-    total_sent INTEGER DEFAULT 0,
-    total_failed INTEGER DEFAULT 0,
-    total_blocked INTEGER DEFAULT 0,
-    total_undeliverable INTEGER DEFAULT 0,
-    total_retries INTEGER DEFAULT 0,
-    started_at INTEGER,
-    finished_at INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    report_posted INTEGER DEFAULT 0,
-    report_posted_at INTEGER,
-    report_attempts INTEGER DEFAULT 0,
-    message_hash TEXT,
-    last_notified_percentage INTEGER DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS dm_campaign_targets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    campaign_id INTEGER NOT NULL,
-    guild_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    assigned_worker_id TEXT,
-    claim_id TEXT,
-    claim_expires_at INTEGER,
-    batch_no INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    attempts INTEGER DEFAULT 0,
-    retries INTEGER DEFAULT 0,
-    last_attempt_at INTEGER,
-    next_attempt_at INTEGER,
-    last_error_code TEXT,
-    last_error_message TEXT,
-    blocked_by_worker_id TEXT,
-    message_type TEXT,
-    last_worker_id TEXT,
-    worker_switches INTEGER DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    FOREIGN KEY (campaign_id) REFERENCES dm_campaigns(id) ON DELETE CASCADE,
-    UNIQUE (campaign_id, user_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS dm_delivery_attempts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    campaign_id INTEGER NOT NULL,
-    target_id INTEGER NOT NULL,
-    guild_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    worker_id TEXT NOT NULL,
-    attempt_no INTEGER NOT NULL,
-    result TEXT NOT NULL,
-    error_code TEXT,
-    error_message TEXT,
-    created_at INTEGER NOT NULL,
-    FOREIGN KEY (campaign_id) REFERENCES dm_campaigns(id) ON DELETE CASCADE,
-    FOREIGN KEY (target_id) REFERENCES dm_campaign_targets(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS dm_user_affinity (
-    guild_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    preferred_worker_id TEXT,
-    preferred_worker_last_dm_at INTEGER,
-    consecutive_misc_count INTEGER DEFAULT 0,
-    war_worker_id TEXT,
-    war_last_dm_at INTEGER,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY (guild_id, user_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS dm_worker_user_blocks (
-    guild_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    worker_id TEXT NOT NULL,
-    reason TEXT,
-    error_code TEXT,
-    blocked_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    PRIMARY KEY (guild_id, user_id, worker_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS dm_cancellations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    target_worker_id TEXT DEFAULT 'all',
-    mode TEXT NOT NULL,
-    phrase TEXT,
-    campaign_id INTEGER,
+    recruiter_id TEXT NOT NULL,
+    delta REAL NOT NULL,
+    reason TEXT NOT NULL,
+    ref_type TEXT,
+    ref_id TEXT,
+    resulting_points REAL NOT NULL,
     created_at INTEGER NOT NULL
   );
 
-  `);
+    `);
 
   try {
     await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(guild_id, channel_id, region)');
   } catch (e) {
-    void e;
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_created_valid ON recruits(guild_id, recruiter_id, created_at, valid)');
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_region_created_valid ON recruits(guild_id, region, created_at, valid)');
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_warnings_guild_recruiter_active ON warnings(guild_id, recruiter_id, revoked, expired_at)');
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_absences_guild_recruiter_active_end ON absences(guild_id, recruiter_id, active, end_date)');
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_weekly_calcs_guild_week ON weekly_calculations(guild_id, week_start)');
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_guild_recruiter_created ON purchases(guild_id, recruiter_id, created_at)');
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_multipliers_guild_recruiter_expires ON multipliers(guild_id, recruiter_id, expires_at)');
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruiter_points_ledger_guild_user_time ON recruiter_points_ledger(guild_id, recruiter_id, created_at DESC)');
+  } catch (e) {
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_invite_snapshots_guild ON invite_snapshots(guild_id)');
   } catch (e) {
-    void e;
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_daily_channels_guild_channel_dayts ON analytics_daily_channels(guild_id, channel_id, day_ts)');
+  } catch (e) {
+    console.error(e);
+  }
+  try {
+    await db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_daily_guild_guild_dayts ON analytics_daily_guild(guild_id, day_ts)');
+  } catch (e) {
+    console.error(e);
   }
   try {
     await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_rookie_war_message ON rookie_war_logs(message_id)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_rookie_war_member_time ON rookie_war_logs(member_id, created_at)');
   } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_valid_created ON recruits(guild_id, recruiter_id, valid, created_at)');
-  } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_valid_created ON recruits(guild_id, valid, created_at)');
-  } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_recruited_valid ON recruits(recruited_id, valid)');
-  } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_weekly_recruit_overrides_guild_week ON weekly_recruit_overrides(guild_id, week_start)');
-  } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_campaigns_status ON dm_campaigns(status, report_posted, updated_at)');
-  } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_targets_claim ON dm_campaign_targets(status, assigned_worker_id, next_attempt_at, batch_no, id)');
-  } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_targets_campaign_status ON dm_campaign_targets(campaign_id, status)');
-  } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_attempts_campaign_created ON dm_delivery_attempts(campaign_id, created_at)');
-  } catch (e) {
-    void e;
-  }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user_worker ON dm_worker_user_blocks(guild_id, user_id, worker_id)');
-  } catch (e) {
-    void e;
+    console.error(e);
   }
 
-  const attemptCols = await getTableInfo('dm_delivery_attempts');
-  if (!attemptCols.some(c => c.name === 'message_id')) {
-    try {
-      await db.exec('ALTER TABLE dm_delivery_attempts ADD COLUMN message_id TEXT');
-    } catch (e) {
-      if (!e || !String(e.message || '').includes('duplicate column name')) throw e;
-    }
-  }
-  
-  // Hardening: Added missing indices for batched performance (Phase 3)
-  try {
-    await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_weekly_calc_lookup ON weekly_calculations(guild_id, recruiter_id, week_start)');
-  } catch (e) { void e; }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_warnings_recruiter_active ON warnings(guild_id, recruiter_id, revoked, expired_at)');
-  } catch (e) { void e; }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_verifications_bulk ON verifications(guild_id, recruiter_id, recruited_id, verified_at)');
-  } catch (e) { void e; }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_absences_active_lookup ON absences(guild_id, recruiter_id, active, end_date)');
-  } catch (e) { void e; }
-  try {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_role_changes_staff_lookup ON analytics_role_changes(guild_id, user_id, action, role_id, created_at)');
-  } catch (e) { void e; }
-
-  const applyMigration = async (id, fn) => {
+    const applyMigration = async (id, fn) => {
     try {
       const existing = await db.get('SELECT id FROM schema_migrations WHERE id = ?', id);
       if (existing) return;
-
-      await withTransaction(db, async (tx) => {
-        await fn(tx);
-        await tx.run('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)', id, Date.now());
-      }, { immediate: true });
+      await db.exec('BEGIN');
+      try {
+        await fn();
+        await db.run('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)', id, Date.now());
+        await db.exec('COMMIT');
+      } catch (err) {
+        await db.exec('ROLLBACK');
+        throw err;
+      }
     } catch (err) {
       console.error('Schema migration failed', { id, error: err });
-      throw err;
+      if (strictMigrations) throw err;
     }
+  };
+
+  const getTableInfo = async (table) => {
+    try {
+      return await db.all(`PRAGMA table_info(${table})`);
+    } catch (e) {
+      return [];
+    }
+  };
+
+  const hasColumn = async (table, column) => {
+    const info = await getTableInfo(table);
+    return info.some(row => row && row.name === column);
+  };
+
+  const hasTable = async (table) => {
+    try {
+      const row = await db.get('SELECT name FROM sqlite_master WHERE type = ? AND name = ?', 'table', table);
+      return !!row;
+    } catch (e) {
+      return false;
+    }
+  };
+
+  const hasCompositePk = async (table, columns) => {
+    const info = await getTableInfo(table);
+    const pkCols = info
+      .filter(row => row && row.pk)
+      .sort((a, b) => a.pk - b.pk)
+      .map(row => row.name);
+    return columns.length === pkCols.length && columns.every((col, idx) => pkCols[idx] === col);
   };
 
   await applyMigration('2026-02-06-recruiter-triggers', async () => {
     await db.exec(`
       CREATE TRIGGER IF NOT EXISTS trg_recruits_recruiter_row
       AFTER INSERT ON recruits
-      BEGIN
-        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
-        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS trg_warnings_recruiter_row
-      AFTER INSERT ON warnings
       BEGIN
         INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
         VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
@@ -653,7 +664,8 @@ async function init() {
       try {
         await db.exec(sql);
       } catch (e) {
-        void e;
+        if (e && String(e.message || '').includes('duplicate column name')) return;
+        console.warn('Migration alter failed', { sql, error: e && e.message ? e.message : String(e) });
       }
     };
 
@@ -698,6 +710,7 @@ async function init() {
     await db.exec(`
       CREATE VIEW IF NOT EXISTS recruits_normalized AS
       SELECT
+        guild_id,
         id,
         recruiter_id,
         recruited_id AS member_id,
@@ -711,6 +724,7 @@ async function init() {
 
       CREATE VIEW IF NOT EXISTS verifications_normalized AS
       SELECT
+        guild_id,
         id,
         recruited_id AS member_id,
         recruited_id AS user_id,
@@ -721,6 +735,7 @@ async function init() {
 
       CREATE VIEW IF NOT EXISTS rookie_points_normalized AS
       SELECT
+        guild_id,
         member_id AS user_id,
         points,
         updated_at
@@ -728,6 +743,7 @@ async function init() {
 
       CREATE VIEW IF NOT EXISTS rookie_chat_activity_normalized AS
       SELECT
+        guild_id,
         member_id AS user_id,
         week_start,
         message_count,
@@ -737,6 +753,7 @@ async function init() {
 
       CREATE VIEW IF NOT EXISTS rookie_war_logs_normalized AS
       SELECT
+        guild_id,
         member_id AS user_id,
         message_id,
         created_at,
@@ -756,8 +773,31 @@ async function init() {
   });
 
   await applyMigration('2026-02-07-guild-columns', async () => {
+    // Drop normalized views to avoid schema validation errors while rebuilding tables.
+    await db.exec(`
+      DROP VIEW IF EXISTS recruits_normalized;
+      DROP VIEW IF EXISTS verifications_normalized;
+      DROP VIEW IF EXISTS rookie_points_normalized;
+      DROP VIEW IF EXISTS rookie_chat_activity_normalized;
+      DROP VIEW IF EXISTS rookie_war_logs_normalized;
+    `);
+
+    // Drop triggers that depend on recruiters before we drop/rename it
+    await db.exec(`
+      DROP TRIGGER IF EXISTS trg_recruits_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_warnings_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_flags_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_multipliers_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_purchases_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_absences_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_weekly_calc_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_trial_fast_track_recruiter_row;
+      DROP TRIGGER IF EXISTS trg_verifications_recruiter_row;
+    `);
+
     const defaultGuild = DEFAULT_GUILD_ID;
     const addGuildColumn = async (table) => {
+      if (!(await hasTable(table))) return;
       if (!(await hasColumn(table, 'guild_id'))) {
         await db.exec(`ALTER TABLE ${table} ADD COLUMN guild_id TEXT`);
       }
@@ -769,6 +809,8 @@ async function init() {
     await addGuildColumn('warnings');
     await addGuildColumn('multipliers');
     await addGuildColumn('purchases');
+    await addGuildColumn('recruiter_invites');
+    await addGuildColumn('invite_snapshots');
     await addGuildColumn('leaderboard_messages');
     await addGuildColumn('weekly_calculations');
     await addGuildColumn('verifications');
@@ -909,7 +951,288 @@ async function init() {
       await db.exec('DROP TABLE system_events');
       await db.exec('ALTER TABLE system_events_new RENAME TO system_events');
     }
+
+    await db.exec(`
+      CREATE VIEW IF NOT EXISTS recruits_normalized AS
+      SELECT
+        guild_id,
+        id,
+        recruiter_id,
+        recruited_id AS member_id,
+        recruited_id AS user_id,
+        region,
+        ign,
+        created_at,
+        valid,
+        points
+      FROM recruits;
+
+      CREATE VIEW IF NOT EXISTS verifications_normalized AS
+      SELECT
+        guild_id,
+        id,
+        recruited_id AS member_id,
+        recruited_id AS user_id,
+        recruiter_id,
+        verified_at,
+        verified_by
+      FROM verifications;
+
+      CREATE VIEW IF NOT EXISTS rookie_points_normalized AS
+      SELECT
+        guild_id,
+        member_id AS user_id,
+        points,
+        updated_at
+      FROM rookie_points;
+
+      CREATE VIEW IF NOT EXISTS rookie_chat_activity_normalized AS
+      SELECT
+        guild_id,
+        member_id AS user_id,
+        week_start,
+        message_count,
+        awarded_chunks,
+        updated_at
+      FROM rookie_chat_activity;
+
+      CREATE VIEW IF NOT EXISTS rookie_war_logs_normalized AS
+      SELECT
+        guild_id,
+        member_id AS user_id,
+        message_id,
+        created_at,
+        type
+      FROM rookie_war_logs;
+    `);
   });
+
+  await applyMigration('2026-02-12-normalized-views-guild', async () => {
+    await db.exec(`
+      DROP VIEW IF EXISTS recruits_normalized;
+      DROP VIEW IF EXISTS verifications_normalized;
+      DROP VIEW IF EXISTS rookie_points_normalized;
+      DROP VIEW IF EXISTS rookie_chat_activity_normalized;
+      DROP VIEW IF EXISTS rookie_war_logs_normalized;
+
+      CREATE VIEW IF NOT EXISTS recruits_normalized AS
+      SELECT
+        guild_id,
+        id,
+        recruiter_id,
+        recruited_id AS member_id,
+        recruited_id AS user_id,
+        region,
+        ign,
+        created_at,
+        valid,
+        points
+      FROM recruits;
+
+      CREATE VIEW IF NOT EXISTS verifications_normalized AS
+      SELECT
+        guild_id,
+        id,
+        recruited_id AS member_id,
+        recruited_id AS user_id,
+        recruiter_id,
+        verified_at,
+        verified_by
+      FROM verifications;
+
+      CREATE VIEW IF NOT EXISTS rookie_points_normalized AS
+      SELECT
+        guild_id,
+        member_id AS user_id,
+        points,
+        updated_at
+      FROM rookie_points;
+
+      CREATE VIEW IF NOT EXISTS rookie_chat_activity_normalized AS
+      SELECT
+        guild_id,
+        member_id AS user_id,
+        week_start,
+        message_count,
+        awarded_chunks,
+        updated_at
+      FROM rookie_chat_activity;
+
+      CREATE VIEW IF NOT EXISTS rookie_war_logs_normalized AS
+      SELECT
+        guild_id,
+        member_id AS user_id,
+        message_id,
+        created_at,
+        type
+      FROM rookie_war_logs;
+    `);
+  });
+
+  const ensureNormalizedViews = async () => {
+    const viewSql = async (name) => {
+      try {
+        const row = await db.get('SELECT sql FROM sqlite_master WHERE type = ? AND name = ?', 'view', name);
+        return row && row.sql ? String(row.sql).toLowerCase() : '';
+      } catch (e) {
+        return '';
+      }
+    };
+    const views = [
+      'recruits_normalized',
+      'verifications_normalized',
+      'rookie_points_normalized',
+      'rookie_chat_activity_normalized',
+      'rookie_war_logs_normalized'
+    ];
+    let needsRebuild = false;
+    for (const v of views) {
+      const sql = await viewSql(v);
+      if (!sql || !sql.includes('guild_id')) {
+        needsRebuild = true;
+        break;
+      }
+    }
+    if (!needsRebuild) return;
+    try {
+      await db.exec(`
+        DROP VIEW IF EXISTS recruits_normalized;
+        DROP VIEW IF EXISTS verifications_normalized;
+        DROP VIEW IF EXISTS rookie_points_normalized;
+        DROP VIEW IF EXISTS rookie_chat_activity_normalized;
+        DROP VIEW IF EXISTS rookie_war_logs_normalized;
+
+        CREATE VIEW IF NOT EXISTS recruits_normalized AS
+        SELECT
+          guild_id,
+          id,
+          recruiter_id,
+          recruited_id AS member_id,
+          recruited_id AS user_id,
+          region,
+          ign,
+          created_at,
+          valid,
+          points
+        FROM recruits;
+
+        CREATE VIEW IF NOT EXISTS verifications_normalized AS
+        SELECT
+          guild_id,
+          id,
+          recruited_id AS member_id,
+          recruited_id AS user_id,
+          recruiter_id,
+          verified_at,
+          verified_by
+        FROM verifications;
+
+        CREATE VIEW IF NOT EXISTS rookie_points_normalized AS
+        SELECT
+          guild_id,
+          member_id AS user_id,
+          points,
+          updated_at
+        FROM rookie_points;
+
+        CREATE VIEW IF NOT EXISTS rookie_chat_activity_normalized AS
+        SELECT
+          guild_id,
+          member_id AS user_id,
+          week_start,
+          message_count,
+          awarded_chunks,
+          updated_at
+        FROM rookie_chat_activity;
+
+        CREATE VIEW IF NOT EXISTS rookie_war_logs_normalized AS
+        SELECT
+          guild_id,
+          member_id AS user_id,
+          message_id,
+          created_at,
+          type
+        FROM rookie_war_logs;
+      `);
+    } catch (e) {
+      console.error('Failed to ensure normalized views:', e);
+    }
+  };
+
+  const ensureRecruiterInsertTriggers = async () => {
+    try {
+      await db.exec(`
+        DROP TRIGGER IF EXISTS trg_recruits_recruiter_row;
+        DROP TRIGGER IF EXISTS trg_warnings_recruiter_row;
+        DROP TRIGGER IF EXISTS trg_flags_recruiter_row;
+        DROP TRIGGER IF EXISTS trg_multipliers_recruiter_row;
+        DROP TRIGGER IF EXISTS trg_purchases_recruiter_row;
+        DROP TRIGGER IF EXISTS trg_absences_recruiter_row;
+        DROP TRIGGER IF EXISTS trg_weekly_calc_recruiter_row;
+        DROP TRIGGER IF EXISTS trg_trial_fast_track_recruiter_row;
+        DROP TRIGGER IF EXISTS trg_verifications_recruiter_row;
+
+        CREATE TRIGGER IF NOT EXISTS trg_recruits_recruiter_row
+        AFTER INSERT ON recruits
+        BEGIN
+          INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+          VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_flags_recruiter_row
+        AFTER INSERT ON flags
+        BEGIN
+          INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+          VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_multipliers_recruiter_row
+        AFTER INSERT ON multipliers
+        BEGIN
+          INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+          VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_purchases_recruiter_row
+        AFTER INSERT ON purchases
+        BEGIN
+          INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+          VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_absences_recruiter_row
+        AFTER INSERT ON absences
+        BEGIN
+          INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+          VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_weekly_calc_recruiter_row
+        AFTER INSERT ON weekly_calculations
+        BEGIN
+          INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+          VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_trial_fast_track_recruiter_row
+        AFTER INSERT ON trial_fast_track
+        BEGIN
+          INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+          VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_verifications_recruiter_row
+        AFTER INSERT ON verifications
+        WHEN NEW.recruiter_id IS NOT NULL
+        BEGIN
+          INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
+          VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
+        END;
+      `);
+    } catch (e) {
+      console.error('Failed to ensure recruiter insert triggers:', e);
+    }
+  };
 
   await applyMigration('2026-02-07-recruiter-triggers-guild', async () => {
     await db.exec(`
@@ -925,13 +1248,6 @@ async function init() {
 
       CREATE TRIGGER IF NOT EXISTS trg_recruits_recruiter_row
       AFTER INSERT ON recruits
-      BEGIN
-        INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
-        VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS trg_warnings_recruiter_row
-      AFTER INSERT ON warnings
       BEGIN
         INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base)
         VALUES (NEW.guild_id, NEW.recruiter_id, 0, 0, 0, 4);
@@ -989,288 +1305,97 @@ async function init() {
     `);
   });
 
-  await applyMigration('2026-02-14-recruits-performance-indexes', async () => {
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_valid_created ON recruits(guild_id, recruiter_id, valid, created_at)');
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_valid_created ON recruits(guild_id, valid, created_at)');
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_recruited_valid ON recruits(recruited_id, valid)');
-  });
+  // Add columns if missing (best-effort)
+  try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE flags ADD COLUMN dismissed INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE recruits ADD COLUMN points INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE warnings ADD COLUMN expired_at INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE warnings ADD COLUMN revoked INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN week_start INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { console.error(e); }
+  try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_daily_guild ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
 
-  await applyMigration('2026-02-26-recruits-unique-index-scope', async () => {
-    // Unify recruit uniqueness to guild scope and remove legacy index variants.
-    await db.exec('DROP INDEX IF EXISTS uniq_recruit');
-    await db.exec('DROP INDEX IF EXISTS uniq_recruit_guild');
-    await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_recruit ON recruits(guild_id, recruited_id)');
-  });
+  await ensureNormalizedViews();
+  await ensureRecruiterInsertTriggers();
 
-  await applyMigration('2026-03-02-dm-worker-queue', async () => {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS dm_workers (
-        worker_id TEXT PRIMARY KEY,
-        display_name TEXT,
-        enabled INTEGER DEFAULT 1,
-        weight INTEGER DEFAULT 1,
-        started_at INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL,
-        status TEXT DEFAULT 'online',
-        meta_json TEXT
+  const refreshSchemaVersion = async () => {
+    try {
+      const countRow = await db.get('SELECT COUNT(*) AS c FROM schema_migrations');
+      const lastRow = await db.get('SELECT id FROM schema_migrations ORDER BY applied_at DESC, id DESC LIMIT 1');
+      const migrationCount = countRow && Number.isFinite(Number(countRow.c)) ? Number(countRow.c) : 0;
+      const version = migrationCount;
+      const lastMigrationId = lastRow && lastRow.id ? String(lastRow.id) : null;
+      await db.run(
+        `INSERT INTO schema_version (id, version, migration_count, last_migration_id, updated_at)
+         VALUES (1, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           version = excluded.version,
+           migration_count = excluded.migration_count,
+           last_migration_id = excluded.last_migration_id,
+           updated_at = excluded.updated_at`,
+        version,
+        migrationCount,
+        lastMigrationId,
+        Date.now()
       );
-
-      CREATE TABLE IF NOT EXISTS dm_campaigns (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id TEXT NOT NULL,
-        requested_by TEXT NOT NULL,
-        message_type TEXT NOT NULL,
-        message_body TEXT NOT NULL,
-        target_mode TEXT NOT NULL,
-        target_role_ids TEXT,
-        status TEXT NOT NULL DEFAULT 'queued',
-        report_channel_id TEXT,
-        requested_channel_id TEXT,
-        total_targets INTEGER DEFAULT 0,
-        total_batches INTEGER DEFAULT 0,
-        total_sent INTEGER DEFAULT 0,
-        total_failed INTEGER DEFAULT 0,
-        total_blocked INTEGER DEFAULT 0,
-        total_undeliverable INTEGER DEFAULT 0,
-        total_retries INTEGER DEFAULT 0,
-        started_at INTEGER,
-        finished_at INTEGER,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        report_posted INTEGER DEFAULT 0,
-        report_posted_at INTEGER
-      );
-
-      CREATE TABLE IF NOT EXISTS dm_campaign_targets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        campaign_id INTEGER NOT NULL,
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        assigned_worker_id TEXT,
-        batch_no INTEGER NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        attempts INTEGER DEFAULT 0,
-        retries INTEGER DEFAULT 0,
-        last_attempt_at INTEGER,
-        next_attempt_at INTEGER,
-        last_error_code TEXT,
-        last_error_message TEXT,
-        blocked_by_worker_id TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        FOREIGN KEY (campaign_id) REFERENCES dm_campaigns(id) ON DELETE CASCADE,
-        UNIQUE (campaign_id, user_id)
-      );
-
-      CREATE TABLE IF NOT EXISTS dm_delivery_attempts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        campaign_id INTEGER NOT NULL,
-        target_id INTEGER NOT NULL,
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        worker_id TEXT NOT NULL,
-        attempt_no INTEGER NOT NULL,
-        result TEXT NOT NULL,
-        error_code TEXT,
-        error_message TEXT,
-        created_at INTEGER NOT NULL,
-        FOREIGN KEY (campaign_id) REFERENCES dm_campaigns(id) ON DELETE CASCADE,
-        FOREIGN KEY (target_id) REFERENCES dm_campaign_targets(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS dm_user_affinity (
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        preferred_worker_id TEXT,
-        preferred_worker_last_dm_at INTEGER,
-        consecutive_misc_count INTEGER DEFAULT 0,
-        war_worker_id TEXT,
-        war_last_dm_at INTEGER,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (guild_id, user_id)
-      );
-
-      CREATE TABLE IF NOT EXISTS dm_worker_user_blocks (
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        worker_id TEXT NOT NULL,
-        reason TEXT,
-        error_code TEXT,
-        blocked_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY (guild_id, user_id, worker_id)
-      );
-    `);
-
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_campaigns_status ON dm_campaigns(status, report_posted, updated_at)');
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_targets_claim ON dm_campaign_targets(status, assigned_worker_id, next_attempt_at, batch_no, id)');
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_targets_campaign_status ON dm_campaign_targets(campaign_id, status)');
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_attempts_campaign_created ON dm_delivery_attempts(campaign_id, created_at)');
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_blocks_user_worker ON dm_worker_user_blocks(guild_id, user_id, worker_id)');
-  });
-
-  await applyMigration('2026-03-02-dm-queue-columns', async () => {
-    const alter = async (sql) => { try { await db.exec(sql); } catch (e) { void e; } };
-
-    // dm_campaign_targets: claim lease + worker tracking
-    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN message_type TEXT');
-    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN claim_expires_at INTEGER');
-    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN last_worker_id TEXT');
-    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN worker_switches INTEGER DEFAULT 0');
-
-    // dm_user_affinity: extra tracking
-    await alter('ALTER TABLE dm_user_affinity ADD COLUMN last_message_type TEXT');
-    await alter('ALTER TABLE dm_user_affinity ADD COLUMN last_dm_at INTEGER');
-
-    // dm_campaigns: config overrides
-    await alter('ALTER TABLE dm_campaigns ADD COLUMN created_by_bot_id TEXT');
-    await alter('ALTER TABLE dm_campaigns ADD COLUMN strict_war_sticky INTEGER DEFAULT 1');
-    await alter('ALTER TABLE dm_campaigns ADD COLUMN max_misc_streak INTEGER DEFAULT 4');
-    await alter('ALTER TABLE dm_campaigns ADD COLUMN sticky_window_hours INTEGER DEFAULT 24');
-
-    // Optimized indexes
-    await alter('CREATE INDEX IF NOT EXISTS idx_dm_targets_pending_claim ON dm_campaign_targets(status, next_attempt_at, claim_expires_at, id)');
-    await alter('CREATE INDEX IF NOT EXISTS idx_dm_affinity_lookup ON dm_user_affinity(guild_id, user_id)');
-  });
-
-  await applyMigration('2026-03-31-dm-claim-id', async () => {
-    const alter = async (sql) => { try { await db.exec(sql); } catch (e) { void e; } };
-    // claim_id column used by dm-worker.js for atomic batch claiming
-    await alter('ALTER TABLE dm_campaign_targets ADD COLUMN claim_id TEXT');
-    await alter('CREATE INDEX IF NOT EXISTS idx_dm_targets_claim_id ON dm_campaign_targets(claim_id)');
-  });
-
-  // Component 10 — dm_queue defensive migration
-  // The committed HEAD of recruit.js had 'INSERT INTO dm_queue' (scope: command.recruit.queueWelcomeDm)
-  // which caused CMD-500 AECS errors on every /recruit invocation because the table was never created.
-  // The working tree already sends welcome DMs directly via member.send() — this migration is defensive:
-  // it ensures the table exists so any old-code-path deployments don't crash before the new code lands.
-  await applyMigration('2026-04-01-dm-queue', async () => {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS dm_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id TEXT NOT NULL,
-        user_id TEXT NOT NULL,
-        message TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at INTEGER NOT NULL,
-        processed_at INTEGER,
-        error TEXT
-      )
-    `);
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_queue_status ON dm_queue(status, created_at)');
-    await db.exec('CREATE INDEX IF NOT EXISTS idx_dm_queue_guild_user ON dm_queue(guild_id, user_id)');
-  });
-
-  // R-02: Only retry on transient SQLite busy/lock errors. Any other error (table not found, syntax)
-  // should rethrow immediately — retrying 10×1s delays startup and masks the real misconfiguration.
-  async function ensureColumnWithRetry(table, colDef) {
-    for (let i = 0; i < 3; i++) {
-      try {
-        await db.exec(`ALTER TABLE ${table} ADD COLUMN ${colDef}`);
-        return;
-      } catch (e) {
-        if (e && e.message && e.message.includes('duplicate column name')) return; // already added, done
-        const isTransient = e && e.message && (
-          e.message.includes('database is locked') ||
-          e.message.includes('SQLITE_BUSY')
-        );
-        if (!isTransient) {
-          // Non-transient error — rethrow immediately instead of retrying 10×1s.
-          console.error(`[ensureColumnWithRetry] Non-retryable error on ${table}.${colDef}:`, e.message);
-          throw e;
-        }
-        if (i === 2) throw e; // exhausted retries
-        await new Promise(r => setTimeout(r, 500));
-      }
+    } catch (e) {
+      console.error('Failed to refresh schema_version metadata', e);
     }
+  };
+
+    await refreshSchemaVersion();
+    await runIntegrityChecks(db, 'startup');
+  } finally {
+    await releaseSchemaLock();
   }
-
-  await ensureColumnWithRetry('recruiters', 'promoted INTEGER DEFAULT 0');
-  await ensureColumnWithRetry('recruiters', 'channel_base INTEGER DEFAULT 4');
-  await ensureColumnWithRetry('flags', 'dismissed INTEGER DEFAULT 0');
-  await ensureColumnWithRetry('recruits', 'points INTEGER DEFAULT 0');
-  await ensureColumnWithRetry('warnings', 'expired_at INTEGER');
-  await ensureColumnWithRetry('warnings', 'revoked INTEGER DEFAULT 0');
-  await ensureColumnWithRetry('weekly_calculations', 'week_start INTEGER');
-  await ensureColumnWithRetry('weekly_calculations', 'absent INTEGER DEFAULT 0');
-  await ensureColumnWithRetry('weekly_calculations', 'verify_rate REAL DEFAULT 0');
-  await ensureColumnWithRetry('dm_campaigns', 'message_hash TEXT');
-  await ensureColumnWithRetry('dm_campaigns', 'last_notified_percentage INTEGER DEFAULT 0');
-  await ensureColumnWithRetry('dm_campaigns', 'report_attempts INTEGER DEFAULT 0');
-  await ensureColumnWithRetry('dm_cancellations', 'campaign_id INTEGER');
-  
-  // dm_campaign_targets (Atomic Claim Engine v4.5.2)
-  await ensureColumnWithRetry('dm_campaign_targets', 'claim_id TEXT');
-  await ensureColumnWithRetry('dm_campaign_targets', 'claim_expires_at INTEGER');
-  await ensureColumnWithRetry('dm_campaign_targets', 'retries INTEGER DEFAULT 0');
-  await ensureColumnWithRetry('dm_campaign_targets', 'last_attempt_at INTEGER');
-  await ensureColumnWithRetry('dm_campaign_targets', 'next_attempt_at INTEGER');
-  await ensureColumnWithRetry('dm_campaign_targets', 'last_worker_id TEXT');
-  await ensureColumnWithRetry('dm_campaign_targets', 'worker_switches INTEGER DEFAULT 0');
-
-  try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { void e; }
-  try { await db.exec('CREATE TABLE IF NOT EXISTS weekly_recruit_overrides (guild_id TEXT NOT NULL, recruiter_id TEXT NOT NULL, week_start INTEGER NOT NULL, total INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, note TEXT, PRIMARY KEY (guild_id, recruiter_id, week_start))'); } catch (e) { void e; }
-  try { await db.exec('CREATE INDEX IF NOT EXISTS idx_weekly_recruit_overrides_guild_week ON weekly_recruit_overrides(guild_id, week_start)'); } catch (e) { void e; }
-  try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { void e; }
-  await ensureColumnWithRetry('analytics_daily_channels', 'day_ts INTEGER');
-  await ensureColumnWithRetry('analytics_daily_channel_speakers', 'day_ts INTEGER');
-  await ensureColumnWithRetry('analytics_daily_guild', 'day_ts INTEGER');
-  await ensureColumnWithRetry('analytics_daily_guild_speakers', 'day_ts INTEGER');
-  await ensureColumnWithRetry('analytics_voice_daily', 'day_ts INTEGER');
-  await ensureColumnWithRetry('analytics_user_daily_messages', 'day_ts INTEGER');
-
-  // Z-02: This migration has an empty body — it exists purely as a schema version marker.
-  // It signals that the "protect points reset" migration was applied, preventing older code
-  // from running a destructive data reset on startup. Do not remove this entry.
-  await applyMigration('2026-03-03-protect-points-reset', async () => { });
-
-  await runIntegrityChecks(db, 'startup', process.env);
 
   return db;
 }
 
-let dbPromise = null;
-let dbInitError = null;
+let currentDbPath = getConfiguredDbPath();
+let dbPromise = init(currentDbPath);
 
-function ensureDbPromise() {
-  if (!dbPromise) {
-    dbPromise = init().catch((err) => {
-      dbInitError = err instanceof Error ? err : new Error(String(err));
-      console.error('Database initialization failed', { dbPath: DB_PATH, error: dbInitError });
-      throw dbInitError;
-    });
+async function getDb() {
+  const desiredPath = getConfiguredDbPath();
+  if (desiredPath !== currentDbPath) {
+    const previousPromise = dbPromise;
+    currentDbPath = desiredPath;
+    dbPromise = init(currentDbPath);
+    try {
+      const previousDb = await previousPromise;
+      await previousDb.close();
+    } catch (e) {
+      console.error(e);
+    }
   }
   return dbPromise;
 }
 
-async function getDbOrThrow() {
-  const db = await ensureDbPromise();
-  if (db) return db;
-  throw (dbInitError || new Error('Database initialization failed'));
-}
-
 module.exports = {
-  DB_PATH,
-  get: async (sql, ...params) => (await getDbOrThrow()).get(sql, ...params),
-  all: async (sql, ...params) => (await getDbOrThrow()).all(sql, ...params),
-  run: async (sql, ...params) => (await getDbOrThrow()).run(sql, ...params),
-  exec: async (sql) => (await getDbOrThrow()).exec(sql),
-  close: async () => {
-    if (!dbPromise) return;
-    const db = await dbPromise;
-    if (db && typeof db.close === 'function') {
-      await db.close();
-    }
-    dbPromise = null;
-    dbInitError = null;
+  get DB_PATH() {
+    return currentDbPath;
   },
-  checkIntegrity: async (label) => runIntegrityChecks(await getDbOrThrow(), label || 'manual', process.env),
-  getInternalHandle: async () => getDbOrThrow(),
+  get: async (sql, ...params) => (await getDb()).get(sql, ...params),
+  all: async (sql, ...params) => (await getDb()).all(sql, ...params),
+  run: async (sql, ...params) => (await getDb()).run(sql, ...params),
+  exec: async (sql) => (await getDb()).exec(sql),
+  close: async () => { const d = await getDb(); return d.close(); },
+  checkIntegrity: async (label) => runIntegrityChecks(await getDb(), label || 'manual'),
   // prepare returns object with async helpers to ease migration
   prepare: (sql) => ({
-    get: async (...params) => (await getDbOrThrow()).get(sql, ...params),
-    all: async (...params) => (await getDbOrThrow()).all(sql, ...params),
-    run: async (...params) => (await getDbOrThrow()).run(sql, ...params),
+    get: async (...params) => (await getDb()).get(sql, ...params),
+    all: async (...params) => (await getDb()).all(sql, ...params),
+    run: async (...params) => (await getDb()).run(sql, ...params),
   })
 };
+

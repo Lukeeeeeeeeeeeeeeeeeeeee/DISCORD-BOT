@@ -1,5 +1,3 @@
-const { ensureRecruiter } = require('./recruiters-repo');
-
 function toDateKey(value) {
   if (!value) return null;
   const raw = String(value).trim();
@@ -38,8 +36,6 @@ async function getActive(db, guildId, recruiterId) {
 async function upsertActive(db, guildId, recruiterId, { startDate, endDate, createdBy }) {
   const normalizedStart = toDateKey(startDate) || startDate;
   const normalizedEnd = toDateKey(endDate) || endDate;
-
-  await ensureRecruiter(db, guildId, recruiterId);
 
   const existing = await db.get(
     'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1',

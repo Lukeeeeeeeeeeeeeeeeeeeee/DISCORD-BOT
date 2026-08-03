@@ -10,7 +10,7 @@ async function initMember(db, guildId, memberId, opts = {}) {
   const points = Number.isFinite(opts.points) ? opts.points : 0;
   const updatedAt = Number.isFinite(opts.updatedAt) ? opts.updatedAt : Date.now();
   return db.run(
-    'INSERT INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(guild_id, member_id) DO UPDATE SET points = excluded.points, updated_at = excluded.updated_at',
+    'INSERT OR REPLACE INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
     guildId,
     memberId,
     points,

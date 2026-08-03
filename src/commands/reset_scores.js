@@ -1,8 +1,8 @@
 const { EmbedBuilder } = require('discord.js');
-const { ensureCommandAccess } = require('../lib/command-auth');
+const { hasAdministrator } = require('../lib/permissions');
 const { buildErrorEmbed } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
-const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -18,40 +18,27 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    const allowed = await ensureCommandAccess(interaction, {
-      allowStaff: false,
-      deniedMessage: 'Administrator permission required.',
-      flags: 64
-    });
-    if (!allowed) return null;
+    if (!hasAdministrator(interaction.member)) {
+      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
+    }
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
       return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
 
-    if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
-
-    const respond = (payload) => {
-      if (interaction.deferred || interaction.replied) {
-        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
-        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
-      }
-      return interaction.reply(payload);
-    };
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const targetUser = interaction.options.getUser('user');
-    
+
     try {
       if (targetUser) {
-        // Reset specific user
         antiNuke.resetScores(interaction.guild.id, targetUser.id);
-        
+
         const embed = new EmbedBuilder()
           .setColor('#00FF00')
-          .setTitle('✅ Score Reset Successful')
+          .setTitle('Score Reset Successful')
           .setDescription(`Reset beast mode score for ${targetUser.tag}`)
           .addFields(
             { name: 'User', value: `${targetUser.tag} (${targetUser.id})`, inline: true },
@@ -59,7 +46,6 @@ module.exports = {
           )
           .setTimestamp();
 
-        // Log the action
         antiNuke.logAction(interaction.guild.id, {
           type: 'score_reset',
           executorId: interaction.user.id,
@@ -68,43 +54,30 @@ module.exports = {
         });
 
         return respond({ embeds: [embed] });
-
-      } else {
-        // Reset all users
-        antiNuke.resetScores(interaction.guild.id);
-        
-        const embed = new EmbedBuilder()
-          .setColor('#00FF00')
-          .setTitle('✅ All Scores Reset')
-          .setDescription('Reset beast mode scores for all users in this server')
-          .addFields(
-            { name: 'Server', value: interaction.guild.name, inline: true },
-            { name: 'Reset By', value: interaction.user.tag, inline: true }
-          )
-          .setTimestamp();
-
-        // Log the action
-        antiNuke.logAction(interaction.guild.id, {
-          type: 'score_reset',
-          executorId: interaction.user.id,
-          resetType: 'all'
-        });
-
-        return respond({ embeds: [embed] });
       }
 
-    } catch (error) {
-      const dispatchResult = await logUnexpectedError('command.resetScores.execute', error, {
-        command: 'reset_scores',
-        guildId: interaction.guild ? interaction.guild.id : null,
-        actorId: interaction.user ? interaction.user.id : null,
-        targetUserId: targetUser ? targetUser.id : null
+      antiNuke.resetScores(interaction.guild.id);
+
+      const embed = new EmbedBuilder()
+        .setColor('#00FF00')
+        .setTitle('All Scores Reset')
+        .setDescription('Reset beast mode scores for all users in this server')
+        .addFields(
+          { name: 'Server', value: interaction.guild.name, inline: true },
+          { name: 'Reset By', value: interaction.user.tag, inline: true }
+        )
+        .setTimestamp();
+
+      antiNuke.logAction(interaction.guild.id, {
+        type: 'score_reset',
+        executorId: interaction.user.id,
+        resetType: 'all'
       });
 
-      const embed = buildErrorEmbed(
-        `Failed to reset scores: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`,
-        'Score Reset Failed'
-      );
+      return respond({ embeds: [embed] });
+    } catch (error) {
+      console.error('Score reset error:', error);
+      const embed = buildErrorEmbed(`Failed to reset scores: ${error.message}`, 'Score Reset Failed');
       return respond({ embeds: [embed] });
     }
   }

@@ -1,11 +1,13 @@
 const { EmbedBuilder } = require('discord.js');
+const { hasAdministrator } = require('../lib/permissions');
 const { buildErrorEmbed } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
 
 module.exports = {
   data: {
     name: 'toggle_aggressive_ban',
-    description: 'Enable or disable aggressive anti-nuke bans (Owner only)',
+    description: 'Enable or disable aggressive anti-nuke bans (Admin only)',
     options: [
       {
         name: 'enabled',
@@ -16,28 +18,17 @@ module.exports = {
     ]
   },
   async execute(interaction) {
+    if (!hasAdministrator(interaction.member)) {
+      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
+    }
+
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
       return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
-    if (!antiNuke.isOwner || !antiNuke.isOwner(interaction.user.id)) {
-      return interaction.reply({
-        embeds: [buildErrorEmbed('This dangerous anti-nuke command is restricted to the bot owner.')],
-        flags: 64
-      });
-    }
 
-    if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
-
-    const respond = (payload) => {
-      if (interaction.deferred || interaction.replied) {
-        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
-        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
-      }
-      return interaction.reply(payload);
-    };
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const enabled = interaction.options.getBoolean('enabled');
     const config = antiNuke.setAggressiveBan(interaction.guild.id, enabled);
@@ -49,7 +40,7 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setColor(enabled ? '#FF0000' : '#00FF00')
-      .setTitle(enabled ? '⚡ Aggressive Ban Enabled' : '✅ Aggressive Ban Disabled')
+      .setTitle(enabled ? 'Aggressive Ban Enabled' : 'Aggressive Ban Disabled')
       .setDescription(enabled ? 'Aggressive bans are now active for this server.' : 'Aggressive bans have been turned off.')
       .addFields(
         { name: 'Enabled', value: enabled ? 'Yes' : 'No', inline: true },

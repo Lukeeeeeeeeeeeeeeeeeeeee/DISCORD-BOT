@@ -3,7 +3,6 @@ const {
   handleMultiplierView,
   handleMultiplierActive,
   handleMultiplierApply,
-  handleMultiplierEvent,
   handleMultiplierReset
 } = require('../../../services/recruiting/recruiter-multiplier-service');
 
@@ -12,7 +11,6 @@ const handlers = {
   'multiplier-view': handleMultiplierView,
   'multiplier-active': handleMultiplierActive,
   'multiplier-apply': handleMultiplierApply,
-  'multiplier-event': handleMultiplierEvent,
   'multiplier-reset': handleMultiplierReset
 };
 

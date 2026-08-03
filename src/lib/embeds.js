@@ -1,5 +1,4 @@
 const { EmbedBuilder } = require('discord.js');
-const { isInteractionAckError } = require('./interaction-errors');
 
 function buildErrorEmbed(message, title = 'Error') {
   return new EmbedBuilder()
@@ -13,23 +12,14 @@ async function replyError(interaction, message, opts = {}) {
   if (!interaction) return null;
   const title = opts.title || 'Error';
   const embed = buildErrorEmbed(message, title);
-  const payload = { embeds: [embed] };
+  const payload = { embeds: [embed], allowedMentions: { parse: [] } };
   if (opts.flags !== undefined) payload.flags = opts.flags;
 
-  try {
-    if (interaction.deferred || interaction.replied) {
-      if (typeof interaction.editReply === 'function') {
-        const editPayload = { ...payload };
-        delete editPayload.flags;
-        return await interaction.editReply(editPayload);
-      }
-      if (typeof interaction.followUp === 'function') return await interaction.followUp(payload);
-    }
-    return await interaction.reply(payload);
-  } catch (error) {
-    if (isInteractionAckError(error)) return null;
-    throw error;
+  if (interaction.deferred || interaction.replied) {
+    if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
+    if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
   }
+  return interaction.reply(payload);
 }
 
 module.exports = { buildErrorEmbed, replyError };

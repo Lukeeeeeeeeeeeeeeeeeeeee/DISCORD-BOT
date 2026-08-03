@@ -1,13 +1,12 @@
 const { EmbedBuilder } = require('discord.js');
-const { ensureCommandAccess } = require('../lib/command-auth');
+const { hasAdministrator } = require('../lib/permissions');
 const runtime = require('../lib/runtime');
 const { replyError } = require('../lib/embeds');
-const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
     name: 'whitelist',
-    description: 'Manage anti-nuke whitelist (List: Admin, Modify: Owner)',
+    description: 'Manage anti-nuke whitelist (Admin only)',
     options: [
       {
         name: 'action',
@@ -29,12 +28,21 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    const allowed = await ensureCommandAccess(interaction, {
-      allowStaff: false,
-      requireAboveBot: true,
-      deniedMessage: 'Administrator permission required.'
-    });
-    if (!allowed) return null;
+    // Check admin permissions
+    if (!hasAdministrator(interaction.member)) {
+      return replyError(interaction, 'Administrator permission required.', { flags: 64 });
+    }
+
+    const botMember = interaction.guild && interaction.guild.members && interaction.guild.members.me
+      ? interaction.guild.members.me
+      : null;
+    if (botMember && interaction.member && interaction.member.roles && botMember.roles) {
+      const userTop = interaction.member.roles.highest;
+      const botTop = botMember.roles.highest;
+      if (userTop && botTop && userTop.comparePositionTo(botTop) <= 0) {
+        return replyError(interaction, 'You must be above the bot in role hierarchy to use whitelist actions.', { flags: 64 });
+      }
+    }
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
@@ -43,11 +51,6 @@ module.exports = {
 
     const action = interaction.options.getString('action');
     const targetUser = interaction.options.getUser('user');
-    const isOwner = antiNuke.isOwner && antiNuke.isOwner(interaction.user.id);
-
-    if (action !== 'list' && !isOwner) {
-      return replyError(interaction, 'Whitelist modifications are restricted to the bot owner.', { flags: 64 });
-    }
 
     try {
       switch (action) {
@@ -267,18 +270,9 @@ module.exports = {
       }
 
     } catch (error) {
-      const dispatchResult = await logUnexpectedError('command.whitelist.execute', error, {
-        command: 'whitelist',
-        guildId: interaction.guild ? interaction.guild.id : null,
-        actorId: interaction.user ? interaction.user.id : null,
-        action,
-        targetUserId: targetUser ? targetUser.id : null
-      });
-      return replyError(
-        interaction,
-        `Whitelist command failed: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`,
-        { flags: 64, title: 'Whitelist Command Failed' }
-      );
+      console.error('Whitelist command error:', error);
+      return replyError(interaction, `Whitelist command failed: ${error.message}`, { flags: 64, title: 'Whitelist Command Failed' });
     }
   }
 };
+

@@ -1,54 +1,62 @@
-const runtime = {
+const state = {
   client: null,
   db: null,
   antiNuke: null,
-  antiNukeRollback: null,
+  antiNukeRollback: null
+};
+
+function setSlot(key, value) {
+  if (value === undefined || value === null) {
+    return state[key] || null;
+  }
+  state[key] = value;
+  return state[key];
+}
+
+const runtime = {
   setClient(client) {
-    if (client == null) return;
-    this.client = client;
+    return setSlot('client', client);
   },
   setDb(db) {
-    if (db == null) return;
-    this.db = db;
+    return setSlot('db', db);
   },
   setAntiNuke(antiNuke) {
-    if (antiNuke == null) return;
-    this.antiNuke = antiNuke;
+    return setSlot('antiNuke', antiNuke);
   },
   setAntiNukeRollback(antiNukeRollback) {
-    if (antiNukeRollback == null) return;
-    this.antiNukeRollback = antiNukeRollback;
+    return setSlot('antiNukeRollback', antiNukeRollback);
   },
   clearClient() {
-    this.client = null;
+    state.client = null;
   },
   clearDb() {
-    this.db = null;
+    state.db = null;
   },
   clearAntiNuke() {
-    this.antiNuke = null;
+    state.antiNuke = null;
   },
   clearAntiNukeRollback() {
-    this.antiNukeRollback = null;
+    state.antiNukeRollback = null;
   },
   resetForTests() {
-    this.client = null;
-    this.db = null;
-    this.antiNuke = null;
-    this.antiNukeRollback = null;
+    if (process.env.NODE_ENV !== 'test') return;
+    state.client = null;
+    state.db = null;
+    state.antiNuke = null;
+    state.antiNukeRollback = null;
   },
   getClient() {
-    return this.client || null;
+    return state.client || null;
   },
   getDb() {
-    return this.db || null;
+    return state.db || null;
   },
   getAntiNuke() {
-    return this.antiNuke || null;
+    return state.antiNuke || null;
   },
   getAntiNukeRollback() {
-    return this.antiNukeRollback || null;
+    return state.antiNukeRollback || null;
   }
 };
 
-module.exports = runtime;
+module.exports = Object.freeze(runtime);

@@ -1,26 +1,18 @@
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../../constants');
 const { getRegionInfo } = require('../../lib/regions');
-const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
-const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs, loadRecruiterIdsFromRecentRecruits } = require('../../lib/leaderboard-utils');
+const { getWeekStartUtcTs } = require('../../lib/week');
+const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const recruitersRepo = require('../../repos/recruiters-repo');
 const { runWithConcurrency } = require('../../lib/concurrency');
 const { acquireJobLock } = require('../../lib/job-locks');
 const { calculate7DayStats, calculateMinRecruitsFixed, getBaseRequirement, isNewStaff } = require('../../lib/recruiting-system');
 const { makeLeaderboardText } = require('../../lib/messages');
-const { logUnexpectedError } = require('../../lib/logger');
 
 const FULL_FETCH_COOLDOWN_MS = Number.parseInt(process.env.LEADERBOARD_FULL_FETCH_COOLDOWN_MS || '600000', 10);
-const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'false').toLowerCase() === 'true';
+const FORCE_FULL_FETCH_ON_EMPTY = (process.env.LEADERBOARD_FORCE_FULL_FETCH_ON_EMPTY || 'true').toLowerCase() === 'true';
 const LEADERBOARD_ROW_CONCURRENCY = Number.parseInt(process.env.LEADERBOARD_ROW_CONCURRENCY || '4', 10);
 let lastFullFetchAt = 0;
-
-function reportLeaderboardServiceError(scope, error, meta = {}) {
-  void logUnexpectedError(scope, error, {
-    command: 'leaderboard',
-    ...meta
-  });
-}
 
 async function warmMemberCacheIfNeeded(guild, totalRoleMembers, reason, options = {}) {
   if (!guild || !guild.members || typeof guild.members.fetch !== 'function') return false;
@@ -53,11 +45,7 @@ async function warmMemberCacheIfNeeded(guild, totalRoleMembers, reason, options 
     const hint = e && (e.code === 50001 || e.code === 50013)
       ? ' Check Server Members intent and bot permissions.'
       : '';
-    reportLeaderboardServiceError('service.leaderboard.warmMemberCache', e, {
-      reason,
-      hint,
-      guildId
-    });
+    console.error('Failed to warm member cache for leaderboard', { reason, error: e, hint });
     return false;
   }
 }
@@ -68,17 +56,12 @@ async function buildRows({ db, guild, guildId, recruiterMembers, region, weekSta
     return { rows: [], meta };
   }
 
-  const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, {
-    region,
-    weekStart,
-    sinceTs: getRolling7DayStartTs(),
-    guildId
-  });
+  const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region, weekStart, sinceTs: weekStart, guildId });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
   const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
   const rows = [];
-  const statsWindow = { sinceTs: getRolling7DayStartTs(), untilTs: Date.now(), overrideWeekStart: weekStart };
+  const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
   const safeConcurrency = Number.isFinite(LEADERBOARD_ROW_CONCURRENCY) && LEADERBOARD_ROW_CONCURRENCY > 0
     ? LEADERBOARD_ROW_CONCURRENCY
     : 4;
@@ -142,10 +125,7 @@ async function buildRows({ db, guild, guildId, recruiterMembers, region, weekSta
   for (const entry of enrichedRows) {
     if (!entry) continue;
     if (entry.ok === false && entry.error) {
-      reportLeaderboardServiceError('service.leaderboard.enrichRow', entry.error, {
-        guildId,
-        region
-      });
+      console.error('Failed to enrich leaderboard row:', entry.error);
       continue;
     }
     rows.push(entry);
@@ -169,10 +149,7 @@ async function showLeaderboard({ interaction, db, guildId }) {
     try {
       dbIds = await recruitersRepo.listIds(db, guildId);
     } catch (e) {
-      reportLeaderboardServiceError('service.leaderboard.loadRecruiterIds.region', e, {
-        guildId,
-        region
-      });
+      console.error('Failed to load recruiter IDs for leaderboard', e);
     }
 
     const recruiterRoleId = RECRUITER_ROLE_IDS[region];
@@ -207,24 +184,7 @@ async function showLeaderboard({ interaction, db, guildId }) {
         dbIds.forEach(id => allRecruiterIds.add(id));
       }
     } catch (e) {
-      reportLeaderboardServiceError('service.leaderboard.resolveMembers.region', e, {
-        guildId,
-        region
-      });
-    }
-
-    try {
-      const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
-        guildId,
-        region,
-        sinceTs: getRolling7DayStartTs()
-      });
-      recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
-    } catch (e) {
-      reportLeaderboardServiceError('service.leaderboard.loadRecentRecruiterIds.region', e, {
-        guildId,
-        region
-      });
+      console.error('Failed to resolve recruiter members for leaderboard', e);
     }
 
     const recruiterMembers = Array.from(allRecruiterIds);
@@ -260,7 +220,7 @@ async function showLeaderboard({ interaction, db, guildId }) {
   try {
     dbIds = await recruitersRepo.listIds(db, guildId);
   } catch (e) {
-    reportLeaderboardServiceError('service.leaderboard.loadRecruiterIds.global', e, { guildId });
+    console.error('Failed to load recruiter IDs for leaderboard', e);
   }
   if (totalRoleMembers === 0 && recruiterRoleIds.length) {
     await warmMemberCacheIfNeeded(interaction.guild, totalRoleMembers, 'global', {
@@ -292,17 +252,7 @@ async function showLeaderboard({ interaction, db, guildId }) {
       dbIds.forEach(id => allRecruiterIds.add(id));
     }
   } catch (e) {
-    reportLeaderboardServiceError('service.leaderboard.resolveMembers.global', e, { guildId });
-  }
-
-  try {
-    const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
-      guildId,
-      sinceTs: getRolling7DayStartTs()
-    });
-    recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
-  } catch (e) {
-    reportLeaderboardServiceError('service.leaderboard.loadRecentRecruiterIds.global', e, { guildId });
+    console.error('Failed to resolve recruiter members for global leaderboard', e);
   }
 
   const recruiterMembers = Array.from(allRecruiterIds);

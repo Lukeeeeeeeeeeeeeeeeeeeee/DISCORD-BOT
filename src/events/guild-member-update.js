@@ -59,56 +59,6 @@ function createGuildMemberUpdateHandler({
           timestamp: Date.now()
         });
       }
-
-      // Auto-swap Onboarding to Team roles when the SOLACE/member role is granted (i.e., a real promotion)
-      const solaceRoleId = ROLE_IDS.AUTO_PROMOTE_ROLE || ROLE_IDS.SOLACE;
-      const memberJustPromoted = solaceRoleId && added.has(solaceRoleId);
-
-      if (memberJustPromoted) {
-        let targetTeam = null;
-        
-        if (ROLE_IDS.ONBOARDING_FIRE && newMember.roles.cache.has(ROLE_IDS.ONBOARDING_FIRE)) targetTeam = 'EU';
-        else if (ROLE_IDS.ONBOARDING_WATER && newMember.roles.cache.has(ROLE_IDS.ONBOARDING_WATER)) targetTeam = 'NA';
-        else if (ROLE_IDS.ONBOARDING_AIR && newMember.roles.cache.has(ROLE_IDS.ONBOARDING_AIR)) targetTeam = 'AS';
-
-        if (targetTeam) {
-          const teamRoleId = ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER[targetTeam];
-          const onboardingRolesToRemove = [
-            ROLE_IDS.ROOKIE,
-            ROLE_IDS.UNVERIFIED,
-            ROLE_IDS.ONBOARDING_FIRE,
-            ROLE_IDS.ONBOARDING_WATER,
-            ROLE_IDS.ONBOARDING_AIR,
-            ...(ROLE_IDS.ONBOARDING || [])
-          ].filter(Boolean);
-
-          const rolesToAdd = [teamRoleId].filter(Boolean);
-          const removeList = onboardingRolesToRemove.filter(id => newMember.roles.cache.has(id));
-          const addList = rolesToAdd.filter(id => !newMember.roles.cache.has(id));
-
-          if (removeList.length > 0 || addList.length > 0) {
-            // Slight delay so the initial role grant settles first
-            setTimeout(async () => {
-              try {
-                const freshMember = await newMember.guild.members.fetch(newMember.id).catch(() => null);
-                if (!freshMember) return;
-                if (removeList.length > 0) {
-                  await freshMember.roles.remove(removeList, 'Promotion: remove onboarding roles').catch(e => {
-                    console.error('Failed to remove onboarding roles on promotion', e);
-                  });
-                }
-                if (addList.length > 0) {
-                  await freshMember.roles.add(addList, 'Promotion: add team member role').catch(e => {
-                    console.error('Failed to add team role on promotion', e);
-                  });
-                }
-              } catch (e) {
-                console.error('Failed to swap onboarding to team on promotion', e);
-              }
-            }, 2000);
-          }
-        }
-      }
     } catch (e) {
       console.error('Failed to record role change analytics:', e);
     }

@@ -25,37 +25,11 @@ describe('computeRetentionFromGuild', () => {
 
   test('fallback to heuristic when message fetch permission denied', async () => {
     const channel = { isTextBased: () => true, messages: { fetch: jest.fn(async () => { throw new Error('Missing Permissions'); }) } };
-    const guild = { id: 'guild-perm', channels: { cache: { values: () => [channel] } } };
+    const guild = { channels: { cache: { values: () => [channel] } } };
     const ret = await econ.computeRetentionFromGuild(guild, ['u1','u2'], 7, 15, { maxChannels: 1, perChannelLimit: 100, fallbackToHeuristic: true });
     expect(ret).toBe(0.5);
 
     const ret2 = await econ.computeRetentionFromGuild(guild, ['u1','u2'], 7, 15, { maxChannels: 1, perChannelLimit: 100, fallbackToHeuristic: false });
     expect(ret2).toBeNull();
-  });
-
-  test('deduplicates recruited IDs before retention calculation', async () => {
-    const now = Date.now();
-    const messages = Array.from({ length: 20 }, () => ({ author: { id: 'u1' }, createdTimestamp: now - 1000 }));
-    const channel = { isTextBased: () => true, messages: { fetch: jest.fn(async () => messages) } };
-    const guild = { id: 'guild-dedupe', channels: { cache: { values: () => [channel] } } };
-
-    const ret = await econ.computeRetentionFromGuild(guild, ['u1', 'u1', 'u2'], 7, 15, { maxChannels: 1, perChannelLimit: 100 });
-    expect(ret).toBeCloseTo(0.5);
-  });
-
-  test('memoizes retention per guild and query parameters', async () => {
-    const now = Date.now();
-    const messages = Array.from({ length: 20 }, () => ({ author: { id: 'u1' }, createdTimestamp: now - 1000 }));
-    const fetch = jest.fn(async () => messages);
-    const channel = { isTextBased: () => true, messages: { fetch } };
-    const guild = { id: 'guild-cache', channels: { cache: { values: () => [channel] } } };
-
-    const opts = { maxChannels: 1, perChannelLimit: 100 };
-    const first = await econ.computeRetentionFromGuild(guild, ['u1', 'u2'], 7, 15, opts);
-    const second = await econ.computeRetentionFromGuild(guild, ['u1', 'u2'], 7, 15, opts);
-
-    expect(first).toBeCloseTo(0.5);
-    expect(second).toBeCloseTo(0.5);
-    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });

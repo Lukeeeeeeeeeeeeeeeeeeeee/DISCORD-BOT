@@ -9,7 +9,7 @@ const {
   isNewStaff,
   getRecruiterStatus
 } = require('../../lib/recruiting-system');
-const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
+const { getWeekStartUtcTs } = require('../../lib/week');
 const {
   toUnixSeconds,
   hasRecruiterRole,
@@ -43,7 +43,7 @@ async function getRecruiterInfoData({ db, guild, guildId, memberId }) {
   const recentWarnings = await warningsRepo.getRecent(db, guildId, memberId, 5);
 
   const weekStart = getWeekStartUtcTs();
-  const statsWindow = { sinceTs: getRolling7DayStartTs(now), untilTs: now, overrideWeekStart: weekStart };
+  const statsWindow = { sinceTs: weekStart, untilTs: now };
   const stats7d = await calculate7DayStats(db, memberId, guild, { ...statsWindow, guildId });
   const avgRecruitsWeek = await getAverageWeeklyRecruits(db, memberId, guildId);
   const avgRecruitsDisplay = Number.isFinite(avgRecruitsWeek)

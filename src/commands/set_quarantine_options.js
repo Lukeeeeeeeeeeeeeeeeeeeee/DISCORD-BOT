@@ -1,11 +1,13 @@
 const { EmbedBuilder } = require('discord.js');
+const { hasAdministrator } = require('../lib/permissions');
 const { buildErrorEmbed } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
 
 module.exports = {
   data: {
     name: 'set_quarantine_options',
-    description: 'Configure anti-nuke quarantine options (Owner only)',
+    description: 'Configure anti-nuke quarantine options (Admin only)',
     options: [
       {
         name: 'mode',
@@ -33,28 +35,17 @@ module.exports = {
     ]
   },
   async execute(interaction) {
+    if (!hasAdministrator(interaction.member)) {
+      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
+    }
+
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
       return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
-    if (!antiNuke.isOwner || !antiNuke.isOwner(interaction.user.id)) {
-      return interaction.reply({
-        embeds: [buildErrorEmbed('This dangerous anti-nuke command is restricted to the bot owner.')],
-        flags: 64
-      });
-    }
 
-    if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
-
-    const respond = (payload) => {
-      if (interaction.deferred || interaction.replied) {
-        if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
-        if (typeof interaction.followUp === 'function') return interaction.followUp(payload);
-      }
-      return interaction.reply(payload);
-    };
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const mode = interaction.options.getString('mode');
     const preserveView = interaction.options.getBoolean('preserve_view');
@@ -76,7 +67,7 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setColor('#00AAFF')
-      .setTitle('🛡️ Quarantine Options Updated')
+      .setTitle('Quarantine Options Updated')
       .setDescription('Updated quarantine behavior for this server.')
       .addFields(
         { name: 'Mode', value: config.quarantine?.mode || 'quarantine', inline: true },

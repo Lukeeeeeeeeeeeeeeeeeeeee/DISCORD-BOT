@@ -3,8 +3,6 @@ const InviteSystem = require('../../lib/invite-system');
 const { hasAdministrator } = require('../../lib/permissions');
 const analytics = require('../../lib/analytics');
 const { replyError } = require('../../lib/embeds');
-const { isInteractionAckError } = require('../../lib/interaction-errors');
-const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 
 const inviteSystems = new Map();
 
@@ -38,18 +36,13 @@ function getCached(guildId = null) {
 }
 
 async function execute(interaction, _client, db) {
+  if (!interaction.guild) {
+    return replyError(interaction, 'This command can only be used in a server.', { flags: 64 });
+  }
+
+  const system = await initWithDb(interaction.guild.id, db || null);
+
   try {
-    if (!interaction.guild) {
-      return replyError(interaction, 'This command can only be used in a server.', { flags: 64 });
-    }
-
-    // Acknowledge quickly to avoid Unknown interaction (10062) on slow paths.
-    if (!interaction.deferred && !interaction.replied && typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
-
-    const system = await initWithDb(interaction.guild.id, db || null);
-
     const isAdmin = hasAdministrator(interaction.member);
     const isRecruiter = interaction.guild
       ? await system.isRecruiter(interaction.user.id, interaction.guild, interaction.member)
@@ -91,7 +84,7 @@ async function execute(interaction, _client, db) {
         .setFooter({ text: 'Right-click the link above and select "Copy Link"' })
         .setTimestamp();
 
-      return interaction.editReply({ embeds: [embed] });
+      return interaction.reply({ embeds: [embed], flags: 64 });
     }
 
     if (status.onCooldown) {
@@ -113,8 +106,10 @@ async function execute(interaction, _client, db) {
         })
         .setTimestamp();
 
-      return interaction.editReply({ embeds: [embed] });
+      return interaction.reply({ embeds: [embed], flags: 64 });
     }
+
+    await interaction.deferReply({ flags: 64 });
 
     const result = await system.createInvite(interaction.user.id, interaction.guild);
 
@@ -152,21 +147,11 @@ async function execute(interaction, _client, db) {
 
       if (!result.reused) {
         await analytics.recordInviteCreated({ guildId: interaction.guild.id, timestamp: Date.now() }).catch(err => {
-          void logUnexpectedError('service.invite.analytics.recordInviteCreated', err, {
-            command: 'invite',
-            guildId: interaction.guild.id,
-            userId: interaction.user.id
-          });
+          console.error('Failed to record invite creation analytics:', err);
         });
       }
 
-      void logRuntimeEvent('info', 'service.invite.created', 'Invite created', {
-        command: 'invite',
-        guildId: interaction.guild.id,
-        userId: interaction.user.id,
-        inviteCode: result.invite.code,
-        reused: Boolean(result.reused)
-      });
+      console.log(`🔗 Invite created: ${result.invite.code} by ${interaction.user.tag} (${interaction.user.id})`);
 
     } else {
       const embed = new EmbedBuilder()
@@ -179,32 +164,18 @@ async function execute(interaction, _client, db) {
     }
 
   } catch (error) {
-    if (isInteractionAckError(error)) return;
-    const dispatchResult = await logUnexpectedError('service.invite.execute', error, {
-      command: 'invite',
-      guildId: interaction.guild ? interaction.guild.id : null,
-      userId: interaction.user ? interaction.user.id : null
-    });
+    console.error('Invite command error:', error);
 
     const embed = new EmbedBuilder()
       .setColor('#FF0000')
       .setTitle('❌ Invite System Error')
-      .setDescription(`An error occurred while processing your request. Please try again later.${dispatchResult && dispatchResult.supportId ? ` Support ID: \`${dispatchResult.supportId}\`.` : ''}`)
+      .setDescription('An error occurred while processing your request. Please try again later.')
       .setTimestamp();
 
-    try {
-      if (interaction.replied || interaction.deferred) {
-        await interaction.editReply({ embeds: [embed] });
-      } else {
-        await interaction.reply({ embeds: [embed], flags: 64 });
-      }
-    } catch (responseError) {
-      if (isInteractionAckError(responseError)) return;
-      await logUnexpectedError('service.invite.errorResponse', responseError, {
-        command: 'invite',
-        guildId: interaction.guild ? interaction.guild.id : null,
-        userId: interaction.user ? interaction.user.id : null
-      });
+    if (interaction.replied || interaction.deferred) {
+      await interaction.editReply({ embeds: [embed] });
+    } else {
+      await interaction.reply({ embeds: [embed], flags: 64 });
     }
   }
 }

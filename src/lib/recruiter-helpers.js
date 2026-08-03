@@ -1,4 +1,4 @@
-const { ROLE_IDS, RECRUITER_ROLE_IDS, CHANNELS } = require('../constants');
+﻿const { ROLE_IDS, RECRUITER_ROLE_IDS, CHANNELS } = require('../constants');
 const { formatPointsValue } = require('./economy');
 const { resolveGuildId } = require('./guild');
 const { fetchMembersByIds } = require('./member-fetch');
@@ -43,7 +43,7 @@ async function getAverageWeeklyRecruits(db, recruiterId, guildId, weeks = 4) {
       return Math.round((total / rows.length) * 10) / 10;
     }
   } catch (e) {
-    void e;
+    console.error(e);
   }
 
   try {
@@ -98,7 +98,7 @@ async function getAverageWeeklyRecruitsMap(db, recruiterIds, guildId, weeks = 4)
       map.set(id, Math.round((cur.total / cur.count) * 10) / 10);
     }
   } catch (e) {
-    void e;
+    console.error(e);
   }
 
   const unresolved = ids.filter(id => !map.has(id));
@@ -184,3 +184,4 @@ module.exports = {
   postPurchaseLog,
   computeRetentionCounts
 };
+

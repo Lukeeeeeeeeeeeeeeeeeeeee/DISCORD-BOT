@@ -1,6 +1,7 @@
 const { EmbedBuilder } = require('discord.js');
-const { ensureCommandAccess } = require('../lib/command-auth');
+const { hasAdministrator } = require('../lib/permissions');
 const { buildErrorEmbed } = require('../lib/embeds');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
 
 module.exports = {
@@ -9,20 +10,17 @@ module.exports = {
     description: 'View full anti-nuke protection status (Admin only)'
   },
   async execute(interaction) {
-    const allowed = await ensureCommandAccess(interaction, {
-      allowStaff: false,
-      deniedMessage: 'Administrator permission required.'
-    });
-    if (!allowed) return null;
+    if (!hasAdministrator(interaction.member)) {
+      return interaction.reply({ embeds: [buildErrorEmbed('Administrator permission required.')], flags: 64 });
+    }
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
       return interaction.reply({ embeds: [buildErrorEmbed('Anti-nuke system not initialized.')], flags: 64 });
     }
 
-    if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply({ flags: 64 });
-    }
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const status = antiNuke.getStatus(interaction.guild.id);
     const formatWindow = (ms) => {
@@ -39,7 +37,7 @@ module.exports = {
     const beastWindow = formatWindow(status.beastModeWindow || antiNuke.BEAST_MODE_WINDOW);
     const emergencyThresholds = Array.isArray(thresholds?.emergency)
       ? thresholds.emergency
-        .map((t) => `• ${t.count} bans in ${formatWindow(t.time)}`)
+        .map((t) => `- ${t.count} bans in ${formatWindow(t.time)}`)
         .join('\n')
       : 'No emergency thresholds configured.';
     const embedColor = status.isEmergency ? 0x992D22 : 0x0000FF;
@@ -49,33 +47,33 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setColor(embedColor)
-      .setTitle('🛡️ Anti-Nuke Protection Status')
+      .setTitle('Anti-Nuke Protection Status')
       .setThumbnail(interaction.guild.iconURL())
       .addFields(
-        { 
-          name: '📊 Statistics', 
-          value: `• Tracked Users: ${status.totalTrackedUsers}\n• Whitelisted Users: ${status.totalWhitelistedUsers}\n• Pending Whitelist: ${status.pendingWhitelist}\n• Bans (1h): ${status.bansLastHour}\n• Bans (24h): ${status.bansLastDay}\n• Total Actions: ${status.totalActions}\n• Log History: ${status.logHistoryCount}`, 
-          inline: true 
+        {
+          name: 'Statistics',
+          value: `- Tracked Users: ${status.totalTrackedUsers}\n- Whitelisted Users: ${status.totalWhitelistedUsers}\n- Pending Whitelist: ${status.pendingWhitelist}\n- Bans (1h): ${status.bansLastHour}\n- Bans (24h): ${status.bansLastDay}\n- Total Actions: ${status.totalActions}\n- Log History: ${status.logHistoryCount}`,
+          inline: true
         },
-        { 
-          name: '⚙️ Configuration', 
-          value: `• Emergency Mode: ${status.isEmergency ? '🔴 ACTIVE' : '🟢 Normal'}\n• Emergency Lockdown Until: ${emergencyUntil}\n• Log Channel: ${status.logChannel ? `<#${status.logChannel}>` : '❌ Not Set'}\n• Backup Available: ${status.hasBackup ? '✅ Yes' : '❌ No'}\n• Backup ID: ${status.backupId || 'N/A'}\n• Backup Encrypted: ${status.backupEncrypted ? '✅ Yes' : '❌ No'}\n• Beast Mode Window: ${beastWindow}\n• Threshold Scale: ${scaleLabel}\n• Member Count: ${status.memberCount || 'N/A'}`,
-          inline: true 
+        {
+          name: 'Configuration',
+          value: `- Emergency Mode: ${status.isEmergency ? 'ACTIVE' : 'Normal'}\n- Emergency Lockdown Until: ${emergencyUntil}\n- Log Channel: ${status.logChannel ? `<#${status.logChannel}>` : 'Not set'}\n- Backup Available: ${status.hasBackup ? 'Yes' : 'No'}\n- Backup ID: ${status.backupId || 'N/A'}\n- Backup Encrypted: ${status.backupEncrypted ? 'Yes' : 'No'}\n- Beast Mode Window: ${beastWindow}\n- Threshold Scale: ${scaleLabel}\n- Member Count: ${status.memberCount || 'N/A'}`,
+          inline: true
         }
       )
       .addFields(
         {
-          name: '🚨 Protection Features',
-          value: '✅ Ban Protection\n✅ Kick Protection\n✅ Channel/Role Deletion Protection\n✅ Member Prune Protection\n✅ Bot Addition Protection\n✅ Webhook Spam Protection\n✅ Emergency Mode\n✅ Beast Mode (rolling)\n✅ Whitelist Approvals\n✅ Backup & Recovery',
+          name: 'Protection Features',
+          value: 'Ban Protection\nKick Protection\nChannel/Role Deletion Protection\nMember Prune Protection\nBot Addition Protection\nWebhook Spam Protection\nEmergency Mode\nBeast Mode (rolling)\nWhitelist Approvals\nBackup and Recovery',
           inline: false
         },
         {
-          name: '🛡️ Strict/Quarantine',
-          value: `• Strict Mode: ${status.strictMode ? 'ON' : 'OFF'}${status.strictActive && !status.strictMode ? ' (Auto)' : ''}\n• Aggressive Ban: ${status.aggressiveBan ? 'ON' : 'OFF'}\n• Quarantine Mode: ${status.quarantineMode}\n• Preserve View: ${status.quarantinePreserveView ? 'ON' : 'OFF'}\n• Quarantine Duration: ${Math.round((status.quarantineDuration || 0) / 3600000)}h\n• Auto Threshold: ${Math.round((status.autoActionThreshold || 0) * 100)}%`,
+          name: 'Strict and Quarantine',
+          value: `- Strict Mode: ${status.strictMode ? 'ON' : 'OFF'}${status.strictActive && !status.strictMode ? ' (Auto)' : ''}\n- Aggressive Ban: ${status.aggressiveBan ? 'ON' : 'OFF'}\n- Quarantine Mode: ${status.quarantineMode}\n- Preserve View: ${status.quarantinePreserveView ? 'ON' : 'OFF'}\n- Quarantine Duration: ${Math.round((status.quarantineDuration || 0) / 3600000)}h\n- Auto Threshold: ${Math.round((status.autoActionThreshold || 0) * 100)}%`,
           inline: false
         },
         {
-          name: '📈 Emergency Thresholds',
+          name: 'Emergency Thresholds',
           value: emergencyThresholds,
           inline: false
         }
@@ -83,13 +81,6 @@ module.exports = {
       .setFooter({ text: `Server: ${interaction.guild.name}` })
       .setTimestamp();
 
-    if (interaction.deferred || interaction.replied) {
-      if (typeof interaction.editReply === 'function') {
-        return interaction.editReply({ embeds: [embed] });
-      }
-    }
-    return interaction.reply({ embeds: [embed], flags: 64 });
+    return respond({ embeds: [embed] });
   }
 };
-
-

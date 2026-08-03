@@ -1,55 +1,70 @@
-const db = require('../db_async');
-const { GUILD_ID } = require('../constants');
+const defaultDb = require('../db_async');
+const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 const { formatUtcDate } = require('./time');
+const { resolveGuildId } = require('./guild');
+const invitesRepo = require('../repos/recruiter-invites-repo');
+const cooldownsRepo = require('../repos/invite-cooldowns-repo');
+const { acquireJobLock } = require('./job-locks');
 
-function resolveDefaultGuildId() {
-  return process.env.GUILD_ID || GUILD_ID || 'GLOBAL';
-}
+const INVITE_CREATE_LOCK_MS = Number.parseInt(process.env.INVITE_CREATE_LOCK_MS || '10000', 10);
 
 class InviteSystem {
-  constructor() {
-    this.activeInvites = new Map(); // recruiterId -> invite data
-    this.inviteCooldowns = new Map(); // recruiterId -> timestamp
-    this.guildId = resolveDefaultGuildId();
+  constructor(dbHandle = null) {
+    this.db = dbHandle || defaultDb;
+    this.activeInvites = new Map(); // key -> invite data
+    this.inviteCooldowns = new Map(); // key -> timestamp
+    this.initializedGuilds = new Set();
   }
 
-  resolveGuildId(guildOrId = null) {
-    if (typeof guildOrId === 'string' && guildOrId) return guildOrId;
-    if (guildOrId && guildOrId.id) return guildOrId.id;
-    return this.guildId || resolveDefaultGuildId();
+  setDb(dbHandle) {
+    if (dbHandle) this.db = dbHandle;
   }
 
-  async init(guildOrId = null) {
-    this.guildId = this.resolveGuildId(guildOrId);
-    await this.loadActiveInvites();
-    console.log(`Invite system initialized for guild ${this.guildId}`);
+  getDb() {
+    return this.db || defaultDb;
   }
 
-  async loadActiveInvites() {
+  makeKey(guildId, userId) {
+    const gid = guildId || 'GLOBAL';
+    return `${gid}:${userId}`;
+  }
+
+  async init(guildId = null) {
+    const key = guildId || '*';
+    if (this.initializedGuilds.has(key)) return;
+    await this.loadActiveInvites(guildId);
+    this.initializedGuilds.add(key);
+    console.log(`Invite system initialized${guildId ? ` for ${guildId}` : ''}`);
+  }
+
+  async loadActiveInvites(guildId = null) {
     try {
-      this.activeInvites.clear();
-      const activeInvites = await db.all(
-        `SELECT *
-         FROM recruiter_invites
-         WHERE guild_id = ? AND used = 0 AND expires_at > ?
-         ORDER BY created_at DESC`,
-        this.guildId,
-        Date.now()
-      );
-
-      for (const invite of activeInvites || []) {
-        if (!invite || !invite.recruiter_id) continue;
-        this.activeInvites.set(invite.recruiter_id, {
+      const db = this.getDb();
+      if (guildId) {
+        const prefix = `${guildId}:`;
+        for (const key of Array.from(this.activeInvites.keys())) {
+          if (key.startsWith(prefix)) this.activeInvites.delete(key);
+        }
+      } else {
+        this.activeInvites.clear();
+      }
+      const now = Date.now();
+      const allowGlobal = !guildId && (process.env.ALLOW_GLOBAL_INVITE_SCOPE || '').toLowerCase() === 'true';
+      const rows = await invitesRepo.getActiveInvites(db, { guildId, now, allowGlobal });
+      for (const invite of rows || []) {
+        const storedGuildId = invite.guild_id || 'GLOBAL';
+        const key = this.makeKey(storedGuildId, invite.recruiter_id);
+        this.activeInvites.set(key, {
+          guildId: storedGuildId,
           code: invite.invite_code,
           url: invite.invite_url,
           createdAt: invite.created_at,
           expiresAt: invite.expires_at,
           maxUses: 1,
-          currentUses: Number(invite.used || 0)
+          currentUses: invite.used
         });
       }
-
-      console.log(`Loaded ${this.activeInvites.size} active invites for guild ${this.guildId}`);
+      console.log(`Loaded ${rows ? rows.length : 0} active invites`);
     } catch (error) {
       console.error('Error loading active invites:', error);
     }
@@ -60,7 +75,6 @@ class InviteSystem {
       const member = memberOverride || await guild.members.fetch(userId).catch(() => null);
       if (!member) return false;
 
-      const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
       const recruiterRoles = [
         ROLE_IDS.TRIAL_RECRUITER,
         ROLE_IDS.RECRUITER,
@@ -76,15 +90,34 @@ class InviteSystem {
 
   async createInvite(recruiterId, guild) {
     try {
-      this.guildId = this.resolveGuildId(guild);
+      const db = this.getDb();
+      const guildId = resolveGuildId(guild) || 'GLOBAL';
+      const key = this.makeKey(guildId, recruiterId);
+      const lockTtl = Number.isFinite(INVITE_CREATE_LOCK_MS) && INVITE_CREATE_LOCK_MS > 0
+        ? INVITE_CREATE_LOCK_MS
+        : 10000;
+      const lockOk = await acquireJobLock(db, {
+        guildId,
+        key: `invite_create_${recruiterId}`,
+        ttlMs: lockTtl,
+        failOpen: false
+      });
+      if (!lockOk) {
+        return {
+          success: false,
+          message: 'An invite request is already being processed. Please try again in a few seconds.'
+        };
+      }
 
-      await this.cleanupExpiredInvites(this.guildId);
+      await this.cleanupExpiredInvites(guildId);
 
-      if (this.activeInvites.has(recruiterId)) {
-        const activeInvite = this.activeInvites.get(recruiterId);
+      if (this.activeInvites.has(key)) {
+        const activeInvite = this.activeInvites.get(key);
         const now = Date.now();
+
         if (activeInvite.currentUses === 0 && activeInvite.expiresAt > now) {
-          const minutesLeft = Math.ceil((activeInvite.expiresAt - now) / (60 * 1000));
+          const timeLeft = activeInvite.expiresAt - now;
+          const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
           return {
             success: true,
             invite: {
@@ -95,28 +128,50 @@ class InviteSystem {
             },
             reused: true
           };
+        } else {
+          this.activeInvites.delete(key);
         }
-        this.activeInvites.delete(recruiterId);
       }
 
       const cooldownTime = 90 * 60 * 1000;
       const now = Date.now();
-      if (this.inviteCooldowns.has(recruiterId)) {
-        const lastUsed = this.inviteCooldowns.get(recruiterId);
-        const timeLeft = lastUsed + cooldownTime - now;
-        if (timeLeft > 0) {
-          return {
-            success: false,
-            message: `You must wait ${Math.ceil(timeLeft / (60 * 1000))} minutes before creating another invite.`
-          };
-        }
+
+      const cachedCooldown = this.inviteCooldowns.get(key);
+      if (cachedCooldown && cachedCooldown > now) {
+        const minutesLeft = Math.ceil((cachedCooldown - now) / (60 * 1000));
+        return {
+          success: false,
+          message: `You must wait ${minutesLeft} minutes before creating another invite.`
+        };
+      }
+      const cooldownRow = await cooldownsRepo.getCooldown(db, guildId, recruiterId).catch(() => null);
+      if (cooldownRow && Number(cooldownRow.cooldown_until) > now) {
+        this.inviteCooldowns.set(key, Number(cooldownRow.cooldown_until));
+        const minutesLeft = Math.ceil((Number(cooldownRow.cooldown_until) - now) / (60 * 1000));
+        return {
+          success: false,
+          message: `You must wait ${minutesLeft} minutes before creating another invite.`
+        };
+      }
+
+      const botMember = guild.members.me
+        || await guild.members.fetch(guild.client.user.id).catch(() => null);
+      if (!botMember) {
+        return {
+          success: false,
+          message: 'Unable to resolve bot member for invite creation.'
+        };
       }
 
       const channel = guild.channels.cache.find(ch =>
-        ch.type === 0 && ch.permissionsFor(guild.members.me).has('CreateInstantInvite')
+        ch.type === 0 && ch.permissionsFor(botMember).has('CreateInstantInvite')
       );
+
       if (!channel) {
-        return { success: false, message: 'No suitable channel found to create invite.' };
+        return {
+          success: false,
+          message: 'No suitable channel found to create invite.'
+        };
       }
 
       const invite = await channel.createInvite({
@@ -125,30 +180,30 @@ class InviteSystem {
         unique: true,
         reason: `Recruiter invite for ${recruiterId}`
       });
-      const createdAt = Date.now();
-      const expiresAt = createdAt + (90 * 60 * 1000);
 
-      await db.run(
-        `INSERT INTO recruiter_invites
-         (guild_id, recruiter_id, invite_code, invite_url, created_at, expires_at, used)
-         VALUES (?, ?, ?, ?, ?, ?, 0)`,
-        this.guildId,
+      const expiresAt = Date.now() + (90 * 60 * 1000);
+
+      await invitesRepo.insertInvite(db, guildId, {
         recruiterId,
-        invite.code,
-        invite.url,
-        createdAt,
+        inviteCode: invite.code,
+        inviteUrl: invite.url,
+        createdAt: Date.now(),
         expiresAt
-      );
+      });
 
-      this.activeInvites.set(recruiterId, {
+      this.activeInvites.set(key, {
+        guildId,
         code: invite.code,
         url: invite.url,
-        createdAt,
+        createdAt: Date.now(),
         expiresAt,
         maxUses: 1,
         currentUses: 0
       });
-      this.inviteCooldowns.set(recruiterId, createdAt);
+
+      const cooldownUntil = Date.now() + cooldownTime;
+      this.inviteCooldowns.set(key, cooldownUntil);
+      await cooldownsRepo.upsertCooldown(db, guildId, recruiterId, cooldownUntil);
 
       return {
         success: true,
@@ -159,6 +214,7 @@ class InviteSystem {
           expiresIn: '1 hour 30 minutes'
         }
       };
+
     } catch (error) {
       console.error('Error creating invite:', error);
       return {
@@ -168,36 +224,54 @@ class InviteSystem {
     }
   }
 
-  getInviteStatus(userId) {
-    const activeInvite = this.activeInvites.get(userId);
+  getInviteStatus(userId, guildOrGuildId) {
+    const guildId = resolveGuildId(guildOrGuildId) || 'GLOBAL';
+    const key = this.makeKey(guildId, userId);
+    const activeInvite = this.activeInvites.get(key);
     const now = Date.now();
-    const cooldownTime = 90 * 60 * 1000;
 
     if (activeInvite) {
       if (activeInvite.currentUses > 0 || activeInvite.expiresAt <= now) {
-        this.activeInvites.delete(userId);
-      } else {
-        return {
-          hasActive: true,
-          code: activeInvite.code,
-          url: activeInvite.url,
-          expiresAt: formatUtcDate(activeInvite.expiresAt),
-          timeLeft: `${Math.ceil((activeInvite.expiresAt - now) / (60 * 1000))} minutes`,
-          isExpired: false
-        };
-      }
-    }
+        this.activeInvites.delete(key);
 
-    if (this.inviteCooldowns.has(userId)) {
-      const lastUsed = this.inviteCooldowns.get(userId);
-      const timeLeft = lastUsed + cooldownTime - now;
-      if (timeLeft > 0) {
+        const cachedCooldown = this.inviteCooldowns.get(key);
+        if (cachedCooldown && cachedCooldown > now) {
+          const minutesLeft = Math.ceil((cachedCooldown - now) / (60 * 1000));
+          return {
+            hasActive: false,
+            onCooldown: true,
+            cooldownLeft: `${minutesLeft} minutes`
+          };
+        }
+
         return {
           hasActive: false,
-          onCooldown: true,
-          cooldownLeft: `${Math.ceil(timeLeft / (60 * 1000))} minutes`
+          onCooldown: false,
+          canCreate: true
         };
       }
+
+      const timeLeft = activeInvite.expiresAt - now;
+      const minutesLeft = Math.ceil(timeLeft / (60 * 1000));
+
+      return {
+        hasActive: true,
+        code: activeInvite.code,
+        url: activeInvite.url,
+        expiresAt: formatUtcDate(activeInvite.expiresAt),
+        timeLeft: `${minutesLeft} minutes`,
+        isExpired: false
+      };
+    }
+
+    const cachedCooldown = this.inviteCooldowns.get(key);
+    if (cachedCooldown && cachedCooldown > now) {
+      const minutesLeft = Math.ceil((cachedCooldown - now) / (60 * 1000));
+      return {
+        hasActive: false,
+        onCooldown: true,
+        cooldownLeft: `${minutesLeft} minutes`
+      };
     }
 
     return {
@@ -207,113 +281,105 @@ class InviteSystem {
     };
   }
 
-  async markInviteUsed(inviteCode, usedBy = null, guildOrId = null) {
+  async markInviteUsed(inviteCode, usedBy = null, guildOrGuildId = null) {
     try {
-      const guildId = this.resolveGuildId(guildOrId);
-      await db.run(
-        `UPDATE recruiter_invites
-         SET used = 1, used_at = ?, used_by = ?
-         WHERE guild_id = ? AND invite_code = ?`,
-        Date.now(),
-        usedBy,
-        guildId,
-        inviteCode
-      );
+      const db = this.getDb();
+      const guildId = resolveGuildId(guildOrGuildId) || null;
+      await invitesRepo.markUsed(db, guildId, inviteCode, usedBy, Date.now());
 
-      for (const [recruiterId, invite] of this.activeInvites.entries()) {
-        if (invite.code === inviteCode) {
+      for (const [key, invite] of this.activeInvites.entries()) {
+        if (invite.code === inviteCode && (!guildId || invite.guildId === guildId)) {
           invite.currentUses = 1;
-          this.inviteCooldowns.set(recruiterId, Date.now());
+          const cooldownUntil = Date.now() + (90 * 60 * 1000);
+          this.inviteCooldowns.set(key, cooldownUntil);
+          const parts = key.split(':');
+          const g = parts[0];
+          const uid = parts[1];
+          await cooldownsRepo.upsertCooldown(db, g, uid, cooldownUntil);
           break;
         }
       }
+
       console.log(`Invite ${inviteCode} marked as used`);
     } catch (error) {
       console.error('Error marking invite as used:', error);
     }
   }
 
-  async markInviteExpired(inviteCode, guildOrId = null) {
+  async markInviteExpired(inviteCode, guildOrGuildId = null) {
     try {
-      const guildId = this.resolveGuildId(guildOrId);
-      await db.run(
-        `UPDATE recruiter_invites
-         SET used = 1, used_at = ?
-         WHERE guild_id = ? AND invite_code = ?`,
-        Date.now(),
-        guildId,
-        inviteCode
-      );
+      const db = this.getDb();
+      const guildId = resolveGuildId(guildOrGuildId) || null;
+      await invitesRepo.markExpired(db, guildId, inviteCode, Date.now());
 
-      for (const [recruiterId, invite] of this.activeInvites.entries()) {
-        if (invite.code === inviteCode) {
-          this.activeInvites.delete(recruiterId);
-          this.inviteCooldowns.set(recruiterId, Date.now());
+      for (const [key, invite] of this.activeInvites.entries()) {
+        if (invite.code === inviteCode && (!guildId || invite.guildId === guildId)) {
+          this.activeInvites.delete(key);
+          const cooldownUntil = Date.now() + (90 * 60 * 1000);
+          this.inviteCooldowns.set(key, cooldownUntil);
+          const parts = key.split(':');
+          const g = parts[0];
+          const uid = parts[1];
+          await cooldownsRepo.upsertCooldown(db, g, uid, cooldownUntil);
           break;
         }
       }
+
       console.log(`Invite ${inviteCode} marked as expired`);
     } catch (error) {
       console.error('Error marking invite as expired:', error);
     }
   }
 
-  async cleanupExpiredInvites(guildOrId = null) {
+  async cleanupExpiredInvites(guildOrGuildId = null) {
     try {
-      const guildId = this.resolveGuildId(guildOrId);
+      const db = this.getDb();
       const now = Date.now();
-      const cooldownTime = 90 * 60 * 1000;
-      const purgeWindow = 7 * 24 * 60 * 60 * 1000;
-      let iterations = 0;
+      const guildId = resolveGuildId(guildOrGuildId) || null;
+      const prefix = guildId ? `${guildId}:` : null;
       const yieldEvery = 100;
+      let iterations = 0;
 
-      for (const [recruiterId, invite] of this.activeInvites.entries()) {
-        if (invite.expiresAt <= now) {
-          this.activeInvites.delete(recruiterId);
+      for (const [key, invite] of this.activeInvites.entries()) {
+        if (invite.expiresAt <= now && (!prefix || key.startsWith(prefix))) {
+          this.activeInvites.delete(key);
         }
-        if (++iterations % yieldEvery === 0) await new Promise(resolve => setImmediate(resolve));
+        if (++iterations % yieldEvery === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
       }
 
-      for (const [userId, timestamp] of this.inviteCooldowns.entries()) {
-        if (timestamp + cooldownTime <= now) {
-          this.inviteCooldowns.delete(userId);
+      for (const [key, cooldownUntil] of this.inviteCooldowns.entries()) {
+        if (cooldownUntil <= now && (!prefix || key.startsWith(prefix))) {
+          this.inviteCooldowns.delete(key);
         }
-        if (++iterations % yieldEvery === 0) await new Promise(resolve => setImmediate(resolve));
+        if (++iterations % yieldEvery === 0) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
       }
 
-      await db.run(
-        `DELETE FROM recruiter_invites
-         WHERE guild_id = ? AND (expires_at < ? OR (used = 1 AND used_at < ?))`,
-        guildId,
-        now,
-        now - purgeWindow
-      );
+      const allowGlobal = !guildId && (process.env.ALLOW_GLOBAL_INVITE_SCOPE || '').toLowerCase() === 'true';
+      await invitesRepo.cleanupExpired(db, { guildId, now, allowGlobal });
+      await cooldownsRepo.cleanupExpired(db, { guildId, now, allowGlobal: !guildId });
+
     } catch (error) {
       console.error('Error cleaning up expired invites:', error);
     }
   }
 
-  async getStats(guildOrId = null) {
+  async getStats(guildOrGuildId = null) {
     try {
-      const guildId = this.resolveGuildId(guildOrId);
+      const db = this.getDb();
       const now = Date.now();
-      const stats = await db.get(
-        `SELECT
-           COUNT(*) as total_invites,
-           COUNT(CASE WHEN used = 1 THEN 1 END) as used_invites,
-           COUNT(CASE WHEN used = 0 AND expires_at > ? THEN 1 END) as active_invites
-         FROM recruiter_invites
-         WHERE guild_id = ? AND created_at > ?`,
-        now,
-        guildId,
-        now - (7 * 24 * 60 * 60 * 1000)
-      );
+      const guildId = resolveGuildId(guildOrGuildId) || null;
+      const allowGlobal = !guildId && (process.env.ALLOW_GLOBAL_INVITE_SCOPE || '').toLowerCase() === 'true';
+      const stats = await invitesRepo.getStats(db, { guildId, now, sinceMs: now - (7 * 24 * 60 * 60 * 1000), allowGlobal });
 
       return {
-        totalInvites: stats ? (stats.total_invites || 0) : 0,
-        usedInvites: stats ? (stats.used_invites || 0) : 0,
-        activeInvites: stats ? (stats.active_invites || 0) : 0,
-        memoryActive: this.activeInvites.size
+        totalInvites: stats && stats.total_invites ? stats.total_invites : 0,
+        usedInvites: stats && stats.used_invites ? stats.used_invites : 0,
+        activeInvites: stats && stats.active_invites ? stats.active_invites : 0,
+        memoryActive: Array.from(this.activeInvites.keys()).filter(k => !guildId || k.startsWith(`${guildId}:`)).length
       };
     } catch (error) {
       console.error('Error getting invite stats:', error);
@@ -321,19 +387,13 @@ class InviteSystem {
     }
   }
 
-  async getActiveInviteCodeCandidates(guildOrId = null) {
+  async getActiveInviteCodeCandidates(guildOrGuildId = null) {
     try {
-      const guildId = this.resolveGuildId(guildOrId);
-      const rows = await db.all(
-        `SELECT invite_code
-         FROM recruiter_invites
-         WHERE guild_id = ? AND used = 0 AND expires_at > ?
-         ORDER BY created_at DESC LIMIT 10`,
-        guildId,
-        Date.now()
-      );
-      return (rows || []).map(r => r.invite_code).filter(Boolean);
-    } catch (_error) {
+      const db = this.getDb();
+      const guildId = resolveGuildId(guildOrGuildId) || null;
+      const allowGlobal = !guildId && (process.env.ALLOW_GLOBAL_INVITE_SCOPE || '').toLowerCase() === 'true';
+      return await invitesRepo.getActiveCodes(db, { guildId, now: Date.now(), limit: 10, allowGlobal });
+    } catch (e) {
       return [];
     }
   }

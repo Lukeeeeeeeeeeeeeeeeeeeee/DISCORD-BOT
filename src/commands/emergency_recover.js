@@ -1,22 +1,17 @@
 const { EmbedBuilder } = require('discord.js');
+const { hasAdministrator } = require('../lib/permissions');
 const runtime = require('../lib/runtime');
 const { replyError } = require('../lib/embeds');
-const { logUnexpectedError } = require('../lib/logger');
+const { createResponder } = require('../lib/respond');
 
 module.exports = {
   data: {
     name: 'emergency_recover',
-    description: 'Recover or clone server from backup (Owner only)',
+    description: 'Recover from emergency lockdown (Admin only)',
     options: [
       {
         name: 'backup_id',
         description: 'Backup ID to restore (optional, defaults to latest)',
-        type: 3,
-        required: false
-      },
-      {
-        name: 'source_guild_id',
-        description: 'Optional source guild ID for cross-server restore (owner only)',
         type: 3,
         required: false
       },
@@ -29,26 +24,30 @@ module.exports = {
     ]
   },
   async execute(interaction) {
+    if (!hasAdministrator(interaction.member)) {
+      return interaction.reply({
+        content: 'Administrator permission required.',
+        flags: 64
+      });
+    }
+
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
-      return interaction.reply({ content: 'Anti-nuke system not initialized.', flags: 64 });
+      return interaction.reply({
+        content: 'Anti-nuke system not initialized.',
+        flags: 64
+      });
     }
 
     try {
       const backupId = interaction.options.getString('backup_id');
-      const sourceGuildIdRaw = interaction.options.getString('source_guild_id');
-      const sourceGuildId = sourceGuildIdRaw ? String(sourceGuildIdRaw).trim() : null;
       const force = interaction.options.getBoolean('force') || false;
-      const isOwner = antiNuke.isOwner && antiNuke.isOwner(interaction.user.id);
-
-      if (!isOwner) {
-        return replyError(interaction, 'This dangerous anti-nuke command is restricted to the bot owner.', { flags: 64 });
+      if (force && !antiNuke.isOwner(interaction.user.id, interaction.guild && interaction.guild.id)) {
+        return replyError(interaction, 'Force recovery is restricted to the bot owner.', { flags: 64 });
       }
 
       const status = antiNuke.getStatus(interaction.guild.id);
-      const sourceStatus = sourceGuildId ? antiNuke.getStatus(sourceGuildId) : status;
-
-      if (!sourceGuildId && !status.isEmergency && !force) {
+      if (!status.isEmergency && !force) {
         const embed = new EmbedBuilder()
           .setColor('#FFFF00')
           .setTitle('Not in Emergency Mode')
@@ -61,74 +60,54 @@ module.exports = {
         return interaction.reply({ embeds: [embed], flags: 64 });
       }
 
-      if (!sourceStatus.hasBackup) {
+      if (!status.hasBackup) {
         const embed = new EmbedBuilder()
           .setColor('#FF0000')
           .setTitle('No Backup Available')
-          .setDescription(sourceGuildId
-            ? `Cannot recover: no backup found for source guild ${sourceGuildId}.`
-            : 'Cannot recover: no backup found for this server.')
+          .setDescription('Cannot recover: no backup found for this server.')
           .setTimestamp();
         return interaction.reply({ embeds: [embed], flags: 64 });
       }
 
-      await interaction.deferReply({ flags: 64 });
+      const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+      await defer();
 
       const result = await antiNuke.emergencyRecover(interaction.guild.id, backupId, {
         force,
-        sourceGuildId,
         traceId: antiNuke.createTraceId(),
-        executorId: interaction.user.id,
-        recreateMissingChannels: true,
-        recreateMissingRoles: true,
-        restoreAssets: true,
-        restoreBans: true,
-        restoreOnboarding: true,
-        restoreThreads: true,
-        restoreGuildMeta: true,
-        restoreGuildAssets: true
+        executorId: interaction.user.id
       });
 
       const embed = new EmbedBuilder()
         .setColor('#00FF00')
         .setTitle('Emergency Recovery Successful')
-        .setDescription(result.isCrossGuildRecover
-          ? 'Server clone-style recovery completed from source backup.'
-          : 'Server has been recovered from emergency lockdown.')
+        .setDescription('Server has been recovered from emergency lockdown.')
         .addFields(
-          { name: 'Roles Restored', value: String(result.rolesRestored || 0), inline: true },
-          { name: 'Roles Created', value: String(result.rolesCreated || 0), inline: true },
-          { name: 'Channels Restored', value: String(result.channelsRestored || 0), inline: true },
+          { name: 'Roles Restored', value: result.rolesRestored.toString(), inline: true },
+          { name: 'Channels Restored', value: result.channelsRestored.toString(), inline: true },
           { name: 'Channels Recreated', value: String(result.channelsCreated || 0), inline: true },
-          { name: 'Threads Recreated', value: String(result.threadsCreated || 0), inline: true },
-          { name: 'Emojis Restored', value: String(result.emojisRestored || 0), inline: true },
-          { name: 'Stickers Restored', value: String(result.stickersRestored || 0), inline: true },
-          { name: 'Bans Restored', value: String(result.bansRestored || 0), inline: true },
-          { name: 'Onboarding Restored', value: result.onboardingRestored ? 'Yes' : 'No', inline: true },
-          { name: 'Guild Metadata Restored', value: result.guildMetaRestored ? 'Yes' : 'No', inline: true },
+          { name: 'Channels Missing', value: String(result.channelsMissing || 0), inline: true },
           { name: 'Recovered By', value: interaction.user.tag, inline: true },
-          { name: 'Backup ID', value: backupId || sourceStatus.backupId || 'Latest', inline: true }
+          { name: 'Backup ID', value: backupId || status.backupId || 'Latest', inline: true }
         )
-        .addFields({
-          name: 'Restore Source',
-          value: result.sourceGuildId ? `Source guild: ${result.sourceGuildId}` : `Source guild: ${interaction.guild.id}`,
-          inline: false
-        })
-        .setFooter({ text: 'Recovery finished. Review logs for any skipped items.' })
+        .addFields(
+          {
+            name: 'What Was Restored',
+            value: 'All role permissions\nChannel permission overwrites\nServer settings\nEmergency mode disabled',
+            inline: false
+          }
+        )
+        .setFooter({ text: 'Server is now back to normal operation' })
         .setTimestamp();
 
-      await interaction.editReply({ embeds: [embed] });
+      return respond({ embeds: [embed] });
     } catch (error) {
-      const dispatchResult = await logUnexpectedError('command.emergencyRecover.execute', error, {
-        command: 'emergency_recover',
-        guildId: interaction.guild ? interaction.guild.id : null,
-        actorId: interaction.user ? interaction.user.id : null
-      });
+      console.error('Emergency recovery error:', error);
 
       const embed = new EmbedBuilder()
         .setColor('#FF0000')
         .setTitle('Emergency Recovery Failed')
-        .setDescription(`Failed to recover: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`)
+        .setDescription(`Failed to recover from emergency mode: ${error.message}`)
         .setTimestamp();
 
       if (interaction.replied || interaction.deferred) {

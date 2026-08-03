@@ -52,71 +52,29 @@ describe('upsertLeaderboardMessage', () => {
     expect(row.message_id).toBe('m-2');
   });
 
-  test('reuses existing bot leaderboard message when DB row is missing', async () => {
+  test('concurrent upserts create only one new message record', async () => {
     const db = await makeDb();
-    let edited = false;
-    const existingMsg = {
-      id: 'm-existing',
-      content: '# 🔥 Fire Leaderboard\nold',
-      author: { id: 'bot-1' },
-      edit: jest.fn(async () => { edited = true; return { id: 'm-existing' }; })
-    };
+    let sendCount = 0;
     const channel = {
-      id: 'chan-3',
-      client: { user: { id: 'bot-1' } },
+      id: 'chan-race',
       messages: {
-        fetch: jest.fn(async (arg) => {
-          if (typeof arg === 'object') {
-            return {
-              values: () => [existingMsg]
-            };
-          }
-          return null;
-        })
+        fetch: jest.fn(async (id) => ({ id, edit: async () => ({ id }) })),
+        edit: jest.fn(async (id) => ({ id }))
       },
-      send: jest.fn(async () => ({ id: 'm-new' }))
+      send: jest.fn(async () => {
+        sendCount += 1;
+        return { id: `m-race-${sendCount}` };
+      })
     };
 
-    await upsertLeaderboardMessage(db, channel, 'EU', 'updated', null, 'GLOBAL');
+    await Promise.all([
+      upsertLeaderboardMessage(db, channel, 'EU', 'race', null, 'GLOBAL'),
+      upsertLeaderboardMessage(db, channel, 'EU', 'race', null, 'GLOBAL')
+    ]);
 
-    expect(edited).toBe(true);
-    expect(channel.send).not.toHaveBeenCalled();
-    const row = await db.get('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, 'EU');
+    const row = await db.get('SELECT * FROM leaderboard_messages WHERE guild_id = ? AND channel_id = ? AND region = ?', 'GLOBAL', channel.id, 'EU');
     expect(row).toBeDefined();
-    expect(row.message_id).toBe('m-existing');
-  });
-
-  test('collapses duplicate rows and keeps canonical record', async () => {
-    const db = await makeDb();
-    await db.exec('DROP INDEX IF EXISTS uniq_leaderboard_channel_region');
-    await db.run(
-      'INSERT INTO leaderboard_messages (guild_id, channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?, ?)',
-      'GLOBAL',
-      'chan-4',
-      'm-old',
-      'NA',
-      1
-    );
-    await db.run(
-      'INSERT INTO leaderboard_messages (guild_id, channel_id, message_id, region, updated_at) VALUES (?, ?, ?, ?, ?)',
-      'GLOBAL',
-      'chan-4',
-      'm-new',
-      'NA',
-      2
-    );
-
-    const channel = {
-      id: 'chan-4',
-      messages: { fetch: jest.fn(async (id) => ({ id, edit: async () => ({ id }) })) },
-      send: jest.fn(async () => ({ id: 'm-created' }))
-    };
-
-    await upsertLeaderboardMessage(db, channel, 'NA', 'updated', null, 'GLOBAL');
-
-    const rows = await db.all('SELECT * FROM leaderboard_messages WHERE channel_id = ? AND region = ?', channel.id, 'NA');
-    expect(rows.length).toBe(1);
-    expect(rows[0].message_id).toBe('m-new');
-    expect(channel.send).not.toHaveBeenCalled();
+    expect(sendCount).toBe(1);
+    expect(row.message_id).toBe('m-race-1');
   });
 });

@@ -1,6 +1,11 @@
 const { makeLeaderboardEmbed } = require('../src/lib/messages');
+const { initI18n } = require('../src/lib/i18n');
 
 describe('makeLeaderboardEmbed', () => {
+  beforeAll(async () => {
+    await initI18n();
+  });
+
   test('returns no-recruits embed for empty rows', () => {
     const embed = makeLeaderboardEmbed([], 'EU');
     const json = embed.toJSON();

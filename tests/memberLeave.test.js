@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -25,10 +25,10 @@ describe('member leave handling', () => {
     process.env.DATABASE_PATH = dbPath;
   });
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
-  test('removes recruit but does NOT deduct points from recruiter', async () => {
+  test('removes recruit and deducts points from recruiter', async () => {
     const db = await makeDb(dbPath);
     await db.run('INSERT INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, 0, 0, 4)', 'GLOBAL', 'R1', 100);
     const now = Date.now();
@@ -40,8 +40,9 @@ describe('member leave handling', () => {
     const rec = await db.get('SELECT * FROM recruits WHERE recruited_id = ?', 'Mleave');
     expect(rec.valid).toBe(0);
     const r = await db.get('SELECT * FROM recruiters WHERE id = ?', 'R1');
-    expect(r.points).toBe(100);
+    expect(r.points).toBe(75);
 
     await db.close();
   });
 });
+

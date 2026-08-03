@@ -1,5 +1,4 @@
 const DEFAULT_WEEK_OFFSET_MS = 5 * 60 * 1000;
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 function getWeekStartUtcTs(now = new Date(), offsetMs = DEFAULT_WEEK_OFFSET_MS) {
   const date = new Date(now);
@@ -15,13 +14,7 @@ function getWeekStartUtcTs(now = new Date(), offsetMs = DEFAULT_WEEK_OFFSET_MS) 
     0, 0, 0, 0
   ));
   weekStart.setUTCDate(weekStart.getUTCDate() - diffToMonday);
-  return weekStart.getTime();
+  return weekStart.getTime() + (Number.isFinite(offsetMs) ? offsetMs : 0);
 }
 
-function getRolling7DayStartTs(now = Date.now()) {
-  const baseMs = now instanceof Date ? now.getTime() : Number(now);
-  const safeNow = Number.isFinite(baseMs) ? baseMs : Date.now();
-  return safeNow - SEVEN_DAYS_MS;
-}
-
-module.exports = { getWeekStartUtcTs, getRolling7DayStartTs, SEVEN_DAYS_MS };
+module.exports = { getWeekStartUtcTs };

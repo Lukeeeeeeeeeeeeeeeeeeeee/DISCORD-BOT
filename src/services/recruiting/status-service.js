@@ -1,4 +1,4 @@
-const fs = require('fs/promises');
+﻿const fs = require('fs/promises');
 const path = require('path');
 const recruitsRepo = require('../../repos/recruits-repo');
 const recruitersRepo = require('../../repos/recruiters-repo');
@@ -9,7 +9,7 @@ async function getStatusData({ db, guildId }) {
   try {
     const s = await fs.stat(DB_PATH);
     dbSize = `${Math.round(s.size / 1024)} KB`;
-  } catch (e) { void e; }
+  } catch (e) { console.error(e); }
 
   const backupsDir = path.join(path.dirname(DB_PATH), 'backups');
   let lastBackup = 'None';
@@ -24,7 +24,7 @@ async function getStatusData({ db, guildId }) {
       stats.sort((a, b) => b.t - a.t);
       lastBackup = stats[0].f;
     }
-  } catch (e) { void e; }
+  } catch (e) { console.error(e); }
 
   const recruits = await recruitsRepo.countAll(db, guildId);
   const recruiters = await recruitersRepo.countAll(db, guildId);
@@ -34,3 +34,4 @@ async function getStatusData({ db, guildId }) {
 }
 
 module.exports = { getStatusData };
+

@@ -1,7 +1,7 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const path = require('path');
 
-test('db is created at DATABASE_PATH when required', async () => {
+test('db is created at DATABASE_PATH when required', () => {
   const tmpDir = require('os').tmpdir();
   const dbPath = path.join(tmpDir, `recruiter-test-${Date.now()}.db`);
   process.env.DATABASE_PATH = dbPath;
@@ -14,8 +14,8 @@ test('db is created at DATABASE_PATH when required', async () => {
 
   // Clean up
   try {
-    if (db && typeof db.close === 'function') await db.close();
-  } catch (e) { void e; }
-  try { delete require.cache[require.resolve('../src/db_async.js')]; } catch (e) { void e; }
-  try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    if (db && typeof db.close === 'function') db.close();
+  } catch (e) { console.error(e); }
+  try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
 });
+

@@ -2,7 +2,6 @@ const { EmbedBuilder } = require('discord.js');
 const AntiNukeRollback = require('../lib/antinuke-rollback');
 const runtime = require('../lib/runtime');
 const { replyError, buildErrorEmbed } = require('../lib/embeds');
-const { logUnexpectedError } = require('../lib/logger');
 
 module.exports = {
   data: {
@@ -12,7 +11,8 @@ module.exports = {
   async execute(interaction, client) {
     const antiNuke = runtime.getAntiNuke();
     if (antiNuke && typeof antiNuke.isOwner === 'function') {
-      if (!antiNuke.isOwner(interaction.user.id)) {
+      const guildId = interaction && interaction.guild ? interaction.guild.id : null;
+      if (!antiNuke.isOwner(interaction.user.id, guildId)) {
         return replyError(interaction, 'This command can only be used by the bot owner.');
       }
     }
@@ -23,7 +23,7 @@ module.exports = {
       await rollback.init();
     }
 
-    if ((!antiNuke || typeof antiNuke.isOwner !== 'function') && !rollback.isOwner(interaction.user.id)) {
+    if ((!antiNuke || typeof antiNuke.isOwner !== 'function') && !rollback.isOwner(interaction.user.id, interaction.guild)) {
       return replyError(interaction, 'This command can only be used by the bot owner.');
     }
 
@@ -148,15 +148,8 @@ module.exports = {
           await i.editReply({ embeds: [resultEmbed] });
 
         } catch (error) {
-          const dispatchResult = await logUnexpectedError('command.antinukeRollback.execute', error, {
-            command: 'antinuke_rollback',
-            guildId: guild.id,
-            actorId: interaction.user ? interaction.user.id : null
-          });
-          const errorEmbed = buildErrorEmbed(
-            `Rollback failed: ${error.message}${dispatchResult && dispatchResult.supportId ? ` (Support ID: ${dispatchResult.supportId})` : ''}`,
-            'Rollback Failed'
-          );
+          console.error('Rollback error:', error);
+          const errorEmbed = buildErrorEmbed(`Rollback failed: ${error.message}`, 'Rollback Failed');
           await i.editReply({
             embeds: [errorEmbed],
             components: []
@@ -179,11 +172,7 @@ module.exports = {
           embeds: [],
           components: []
         }).catch(err => {
-          void logUnexpectedError('command.antinukeRollback.timeoutReply', err, {
-            command: 'antinuke_rollback',
-            guildId: guild.id,
-            actorId: interaction.user ? interaction.user.id : null
-          });
+          console.error('Failed to update rollback timeout reply:', err);
         });
       }
     });

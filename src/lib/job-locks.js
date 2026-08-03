@@ -1,6 +1,4 @@
-const { withTransaction } = require('./transactions');
-
-async function acquireJobLock(db, { guildId, key, ttlMs, failOpen = false } = {}) {
+﻿async function acquireJobLock(db, { guildId, key, ttlMs, failOpen = false } = {}) {
   if (!db || !guildId || !key || !Number.isFinite(ttlMs)) return !!failOpen;
   const now = Date.now();
   const expiryCutoff = now - ttlMs;
@@ -28,28 +26,30 @@ async function acquireJobLock(db, { guildId, key, ttlMs, failOpen = false } = {}
   }
 
   try {
-    const result = await withTransaction(db, async (tx) => {
-      const existing = await tx.get(
-        'SELECT timestamp FROM system_events WHERE guild_id = ? AND key = ?',
-        guildId,
-        key
-      );
-      if (existing && Number.isFinite(existing.timestamp) && now - existing.timestamp < ttlMs) {
-        return false;
-      }
-      await tx.run(
-        'INSERT OR REPLACE INTO system_events (guild_id, key, timestamp) VALUES (?, ?, ?)',
-        guildId,
-        key,
-        now
-      );
-      return true;
-    }, { immediate: true });
-    return !!result;
+    await db.run('BEGIN IMMEDIATE');
+    const existing = await db.get(
+      'SELECT timestamp FROM system_events WHERE guild_id = ? AND key = ?',
+      guildId,
+      key
+    );
+    if (existing && Number.isFinite(existing.timestamp) && now - existing.timestamp < ttlMs) {
+      await db.run('ROLLBACK');
+      return false;
+    }
+    await db.run(
+      'INSERT OR REPLACE INTO system_events (guild_id, key, timestamp) VALUES (?, ?, ?)',
+      guildId,
+      key,
+      now
+    );
+    await db.run('COMMIT');
+    return true;
   } catch (err) {
+    try { await db.run('ROLLBACK'); } catch (e) { console.error(e); }
     console.error('Job lock acquisition failed (fallback)', { key, error: err });
     return !!failOpen;
   }
 }
 
 module.exports = { acquireJobLock };
+

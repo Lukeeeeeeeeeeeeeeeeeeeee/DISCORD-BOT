@@ -1,221 +1,168 @@
-/**
- * /dm command — Control Plane
- *
- * Subcommands: create, status, cancel, report, workers
- * Creates campaigns in the DB queue; worker bots handle actual sends.
- */
-'use strict';
-
-const { ensureCommandAccess } = require('../lib/command-auth');
+const { PermissionsBitField } = require('discord.js');
+const { CHANNELS } = require('../constants');
+const { hasAdministrator } = require('../lib/permissions');
 const { replyError } = require('../lib/embeds');
-const { logRuntimeEvent } = require('../lib/logger');
-const { envInt } = require('../lib/env-utils');
-const campaignService = require('../services/dm/dm-campaign-service');
-const reporter = require('../services/dm/dm-reporter');
-const legacyDmCommand = require('../services/dm/dm-legacy-command');
+const { createResponder } = require('../lib/respond');
+
+// Tunables
+const DEFAULT_MAX = 30; // default recipients cap
+const HARD_MAX = 1000; // absolute hard cap (allows batching up to 1000)
+const DELAY_MS = 1200; // ms between DMs
+const BATCH_SIZE = 100; // recipients per batch
+const BATCH_DELAY_MS = 5000; // delay between batches
+const COOLDOWN_MS = 5 * 60 * 1000; // per-admin cooldown for non-preview sends
 
 const cooldowns = new Map();
-const COOLDOWN_MS = envInt('DM_COMMAND_COOLDOWN_MS', 60 * 1000, 0, 24 * 60 * 60 * 1000);
 
 module.exports = {
   data: { name: 'dm' },
+  async execute(interaction, _client, _db) {
+    if (!hasAdministrator(interaction.member)) return replyError(interaction, 'Admin only.');
 
-  async execute(interaction, client, _db) {
-    const allowed = await ensureCommandAccess(interaction, {
-      allowStaff: false,
-      deniedMessage: 'Administrator permission required.'
-    });
-    if (!allowed) return null;
+    const perms = interaction.member.permissions || interaction.member.permissionsIn?.(interaction.channel);
+    const isAdmin = perms && perms.has && perms.has(PermissionsBitField.Flags.Administrator);
+    if (!isAdmin) return replyError(interaction, 'Administrator permission required.');
 
-    if (!interaction.guild || !interaction.guild.members) {
-      return replyError(interaction, 'This command can only be used inside a server.');
+    const role = interaction.options.getRole('role', false);  // Make role optional
+    const message = interaction.options.getString('message', true);
+    const limitOpt = interaction.options.getInteger('limit');
+    const preview = interaction.options.getBoolean('preview') || false;
+    const dmEveryone = interaction.options.getBoolean('everyone') || false;
+
+    if (!message) {
+      return replyError(interaction, 'Missing required message parameter.');
     }
 
-    const hasSubcommandResolver = Boolean(
-      interaction.options && typeof interaction.options.getSubcommand === 'function'
-    );
-    if (!hasSubcommandResolver) {
-      return legacyDmCommand.execute(interaction, client, _db);
+    if (!role && !dmEveryone) {
+      return replyError(interaction, 'You must specify a role OR set everyone to true.');
     }
 
-    let sub = null;
-    try {
-      sub = interaction.options.getSubcommand(false);
-    } catch (_error) {
-      return legacyDmCommand.execute(interaction, client, _db);
+    if (limitOpt && (limitOpt < 1 || limitOpt > HARD_MAX)) {
+      return replyError(interaction, `Limit must be between 1 and ${HARD_MAX}.`);
     }
 
-    if (sub === 'status') return handleStatus(interaction);
-    if (sub === 'cancel') return handleCancel(interaction);
-    if (sub === 'report') return handleReport(interaction, client);
-    if (sub === 'workers') return handleWorkers(interaction);
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
-    // Default / 'create'
-    return handleCreate(interaction);
-  }
-};
-
-// ── /dm create ──────────────────────────────────────────────────────────────
-
-async function handleCreate(interaction) {
-  const messageType = interaction.options.getString('message_type', true);
-  const message = interaction.options.getString('message', true);
-  const targetMode = interaction.options.getString('target_mode') || 'any_roles';
-  const preview = interaction.options.getBoolean('preview') || false;
-
-  // Collect up to 5 role options
-  const roleIds = [];
-  for (let i = 1; i <= 5; i++) {
-    const role = interaction.options.getRole(`role_${i}`, false);
-    if (role) roleIds.push(role.id);
-  }
-
-  // Validation
-  if (!message) return replyError(interaction, 'Missing required message parameter.');
-  if (message.length > 2000) return replyError(interaction, 'Message must be 2000 characters or fewer.');
-  if (targetMode !== 'everyone' && roleIds.length === 0) {
-    return replyError(interaction, 'You must specify at least one role OR set target_mode to "everyone".');
-  }
-
-  // Cooldown (non-preview only)
-  if (!preview) {
-    const last = cooldowns.get(interaction.user.id) || 0;
-    const now = Date.now();
-    if (now - last < COOLDOWN_MS) {
-      const rem = Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
-      return replyError(interaction, `Please wait ${rem}s before creating another campaign. Use preview to test.`);
+    if (!preview) {
+      const last = cooldowns.get(interaction.user.id) || 0;
+      const now = Date.now();
+      if (now - last < COOLDOWN_MS) {
+        const rem = Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
+        return replyError(interaction, `Please wait ${rem}s before sending another DM broadcast. Use preview to test.`);
+      }
+      cooldowns.set(interaction.user.id, now);
     }
-  }
 
-  await interaction.deferReply({ flags: 64 });
-
-  try {
-    const result = await campaignService.createCampaign({
-      guild: interaction.guild,
-      requestedBy: interaction.user.id,
-      messageType,
-      messageBody: message,
-      targetMode,
-      roleIds,
-      reportChannelId: interaction.channel ? interaction.channel.id : null,
-      requestedChannelId: interaction.channel ? interaction.channel.id : null,
-      preview
-    });
-
-    if (result.totalTargets === 0) {
-      return replyError(interaction, 'No matching members found for the specified target.');
+    let membersCol = null;
+    if (dmEveryone) {
+      membersCol = interaction.guild.members.cache;
+    } else if (role && role.members) {
+      membersCol = role.members;
+    } else {
+      membersCol = interaction.guild.members.cache;
     }
+
+    let targets;
+    if (dmEveryone) {
+      targets = membersCol.filter(m => !m.user.bot);
+    } else {
+      targets = membersCol.filter(m => m.roles.cache.has(role.id) && !m.user.bot);
+    }
+    const targetLabel = dmEveryone ? 'everyone' : role.name;
+    const totalFound = targets.size;
+    if (!totalFound) return replyError(interaction, `No human members found${dmEveryone ? '' : ` with the role ${role.name}`}.`);
+
+    const cap = Math.min(limitOpt || DEFAULT_MAX, HARD_MAX);
+    const recipients = Array.from(targets.values()).slice(0, cap);
 
     if (preview) {
-      const sample = (result.sampleUserIds || []).slice(0, 10).map(id => `<@${id}>`).join(', ');
-      return interaction.editReply({
-        content: `**Preview** — ${result.totalTargets} target(s) would be queued in ${result.totalBatches} batch(es).\nType: \`${messageType}\` | Mode: \`${targetMode}\`\nFirst ${Math.min(10, result.sampleUserIds?.length || 0)}: ${sample}`
-      });
+      const sample = recipients.slice(0, 10).map(m => `<@${m.id}>`).join(', ');
+      return respond({ content: `Preview: found ${totalFound} members, showing up to ${cap}. First ${Math.min(10, recipients.length)}: ${sample}` });
     }
 
-    cooldowns.set(interaction.user.id, Date.now());
+    const batches = [];
+    for (let i = 0; i < recipients.length; i += BATCH_SIZE) batches.push(recipients.slice(i, i + BATCH_SIZE));
 
-    void logRuntimeEvent('info', 'command.dm.create', 'DM campaign created via command', {
-      campaignId: result.campaignId,
-      guildId: interaction.guild.id,
-      requestedBy: interaction.user.id,
-      messageType,
-      targetMode,
-      totalTargets: result.totalTargets
-    });
+    (async () => {
+      let totalSent = 0;
+      let totalFailed = 0;
+      let totalRetries = 0;
+      const auditChId = CHANNELS && CHANNELS.INVITES_OVERALL ? CHANNELS.INVITES_OVERALL : null;
+      let auditCh = null;
+      if (auditChId) {
+        auditCh = await interaction.guild.channels.fetch(auditChId).catch(err => {
+          console.error('Failed to fetch DM audit channel:', err);
+          return null;
+        });
+      }
 
-    return interaction.editReply({
-      content: `✅ **Campaign #${result.campaignId}** created — ${result.totalTargets} target(s) queued in ${result.totalBatches} batch(es).\nType: \`${messageType}\` | Mode: \`${targetMode}\`\nWorker bots will begin sending shortly. Use \`/dm status\` to track progress.`
-    });
-  } catch (err) {
-    return replyError(interaction, `Failed to create campaign: ${err.message}`);
+      if (auditCh && auditCh.send) {
+        await auditCh.send(`DM broadcast queued by <@${interaction.user.id}> to **${targetLabel}**: ${recipients.length} recipients in ${batches.length} batch(es).`)
+          .catch(err => console.error('Failed to post DM audit start:', err));
+      }
+
+      const getRetryAfterMs = (error, fallbackMs) => {
+        const retryAfter = error && (error.retryAfter ?? error.retry_after ?? error.data?.retry_after ?? error.rawError?.retry_after);
+        if (Number.isFinite(retryAfter)) {
+          const value = Number(retryAfter);
+          return value < 1000 ? Math.ceil(value * 1000) : Math.ceil(value);
+        }
+        return fallbackMs;
+      };
+
+      const sendWithRetries = async (member, dmMessage, maxRetries = 2) => {
+        let attempts = 0;
+        while (attempts <= maxRetries) {
+          try {
+            await member.send(dmMessage);
+            return { ok: true, attempts };
+          } catch (err) {
+            attempts++;
+            const hardFail = err && (err.code === 50007 || err.code === 50013 || err.code === 50001);
+            const rateLimited = err && (err.status === 429 || err.code === 429);
+            if (hardFail || attempts > maxRetries) return { ok: false, attempts, error: err };
+            const retryAfter = rateLimited ? getRetryAfterMs(err, DELAY_MS * 2) : DELAY_MS * 2;
+            await new Promise(r => setTimeout(r, retryAfter));
+          }
+        }
+        return { ok: false, attempts: maxRetries };
+      };
+
+      for (let b = 0; b < batches.length; b++) {
+        const batch = batches[b];
+        let batchSent = 0;
+        let batchFailed = 0;
+        let batchRetries = 0;
+        for (let i = 0; i < batch.length; i++) {
+          const member = batch[i];
+          const res = await sendWithRetries(member, message, 2);
+          if (res.ok) batchSent++;
+          else batchFailed++;
+          batchRetries += Math.max(0, res.attempts);
+
+          if (i < batch.length - 1) await new Promise(r => setTimeout(r, DELAY_MS));
+        }
+        totalSent += batchSent;
+        totalFailed += batchFailed;
+        totalRetries += batchRetries;
+
+        if (auditCh && auditCh.send) {
+          await auditCh.send(`DM batch ${b + 1}/${batches.length} by <@${interaction.user.id}> to **${targetLabel}**: attempted ${batch.length}, sent ${batchSent}, failed ${batchFailed}, retries ${batchRetries}. Total so far: sent ${totalSent}, failed ${totalFailed}, retries ${totalRetries}.`).catch(err => {
+            console.error('Failed to post DM batch audit:', err);
+          });
+        }
+
+        if (b < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
+      }
+
+      if (auditCh && auditCh.send) {
+        await auditCh.send(`DM broadcast completed by <@${interaction.user.id}> to **${targetLabel}**: attempted ${recipients.length}, sent ${totalSent}, failed ${totalFailed}, total retries ${totalRetries}.`).catch(err => {
+          console.error('Failed to post DM completion audit:', err);
+        });
+      }
+    })();
+
+    return respond({ content: `Queued DM broadcast to ${recipients.length} recipient(s) in ${batches.length} batch(es). Progress will be posted to the audit channel.` });
   }
-}
-
-// ── /dm status ──────────────────────────────────────────────────────────────
-
-async function handleStatus(interaction) {
-  const campaignId = interaction.options.getInteger('campaign_id', true);
-
-  await interaction.deferReply({ flags: 64 });
-
-  const status = await campaignService.getCampaignStatus(campaignId);
-  if (!status) {
-    return replyError(interaction, `Campaign #${campaignId} not found.`);
-  }
-
-  const { campaign, statusCounts } = status;
-  const lines = [
-    `**Campaign #${campaignId}** — Status: \`${campaign.status}\``,
-    `Type: \`${campaign.message_type}\` | Mode: \`${campaign.target_mode}\``,
-    `Requested by: <@${campaign.requested_by}>`,
-    '',
-    `✅ Sent: **${statusCounts.sent || 0}**`,
-    `⏳ Pending: **${statusCounts.pending || 0}**`,
-    `🔄 Claimed: **${statusCounts.claimed || 0}**`,
-    `🚫 Blocked: **${statusCounts.blocked || 0}**`,
-    `❌ Undeliverable: **${statusCounts.undeliverable || 0}**`,
-    `⚠️ Failed: **${statusCounts.failed || 0}**`,
-    `🛑 Cancelled: **${statusCounts.cancelled || 0}**`,
-    `📊 Total: **${campaign.total_targets}**`
-  ];
-
-  return interaction.editReply({ content: lines.join('\n') });
-}
-
-// ── /dm cancel ──────────────────────────────────────────────────────────────
-
-async function handleCancel(interaction) {
-  const campaignId = interaction.options.getInteger('campaign_id', true);
-
-  await interaction.deferReply({ flags: 64 });
-
-  const result = await campaignService.cancelCampaign(campaignId);
-
-  return interaction.editReply({
-    content: `🛑 Campaign #${campaignId} cancelled. ${result.cancelledTargets} pending target(s) were stopped.`
-  });
-}
-
-// ── /dm report ──────────────────────────────────────────────────────────────
-
-async function handleReport(interaction, client) {
-  const campaignId = interaction.options.getInteger('campaign_id', true);
-
-  await interaction.deferReply({ flags: 64 });
-
-  const reportData = await reporter.postReport(client, campaignId, interaction.channel ? interaction.channel.id : null);
-
-  if (!reportData) {
-    return replyError(interaction, `Campaign #${campaignId} not found or no report data available.`);
-  }
-
-  return interaction.editReply({
-    content: `📊 Report for campaign #${campaignId} has been posted.`
-  });
-}
-
-// ── /dm workers ─────────────────────────────────────────────────────────────
-
-async function handleWorkers(interaction) {
-  // For now, workers subcommand shows the list
-  await interaction.deferReply({ flags: 64 });
-
-  const workers = await campaignService.listWorkers();
-
-  if (!workers || workers.length === 0) {
-    return interaction.editReply({ content: '🤖 No DM workers registered yet. Workers register when they start.' });
-  }
-
-  const lines = workers.map(w => {
-    const isOnline = w.last_seen_at && (Date.now() - w.last_seen_at < 60000);
-    const statusIcon = isOnline ? '🟢' : '🔴';
-    const enabledIcon = w.enabled ? '✅' : '❌';
-    const lastSeen = w.last_seen_at ? `<t:${Math.floor(w.last_seen_at / 1000)}:R>` : 'never';
-    return `${statusIcon} \`${w.worker_id}\` ${w.display_name || ''} — ${enabledIcon} Enabled | Weight: ${w.weight || 1} | Last seen: ${lastSeen}`;
-  });
-
-  return interaction.editReply({
-    content: `🤖 **DM Workers** (${workers.length})\n${lines.join('\n')}`
-  });
-}
+};

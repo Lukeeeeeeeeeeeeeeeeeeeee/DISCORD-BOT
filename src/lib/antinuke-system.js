@@ -9,36 +9,6 @@ class AntiNukeSystem {
     this.initialized = false;
   }
 
-  normalizeActionToken(actionType) {
-    const raw = actionType == null ? 'unknown' : String(actionType);
-    return raw
-      .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-      .replace(/[^a-zA-Z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '')
-      .toLowerCase() || 'unknown';
-  }
-
-  resolveRapidRollbackActionType(actionType) {
-    return `rapid_${this.normalizeActionToken(actionType)}`;
-  }
-
-  getCurrentShardId() {
-    const shard = this.antiNuke && this.antiNuke.client ? this.antiNuke.client.shard : null;
-    if (!shard) return null;
-    const ids = Array.isArray(shard.ids) ? shard.ids : [];
-    if (!ids.length) return null;
-    const first = Number(ids[0]);
-    return Number.isFinite(first) ? first : null;
-  }
-
-  buildRollbackMeta(extra = {}) {
-    const shardId = this.getCurrentShardId();
-    return {
-      shardId,
-      ...extra
-    };
-  }
-
   // Initialize the complete anti-nuke system
   async init(client) {
     if (this.initialized) return;
@@ -72,81 +42,66 @@ class AntiNukeSystem {
     // otherwise we end up storing corrupted/meaningless data.
 
     const originalHandleRapidAction = this.antiNuke.handleRapidAction.bind(this.antiNuke);
-    this.antiNuke.handleRapidAction = async (guildId, userId, actionType, actions) => {
+    this.antiNuke.handleRapidAction = async (...args) => {
+      const [guildId, userId] = args;
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
       const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
-      const rollbackActionType = this.resolveRapidRollbackActionType(actionType);
-      const meta = this.buildRollbackMeta({
-        triggerActionType: actionType || null,
-        eventFamily: 'rapid_action',
-        actionCount: Array.isArray(actions) ? actions.length : 0
-      });
 
       if (guild && member) {
-        await this.rollback.recordPreActionState(guild, rollbackActionType, member, meta);
+        await this.rollback.recordPreActionState(guild, 'ban', member);
       }
 
-      await originalHandleRapidAction(guildId, userId, actionType, actions);
+      await originalHandleRapidAction(...args);
 
       if (guild && member) {
-        await this.rollback.recordPostActionState(guild, rollbackActionType, member, meta);
+        await this.rollback.recordPostActionState(guild, 'ban', member);
       }
     };
 
     const originalHandleBeastModeTrigger = this.antiNuke.handleBeastModeTrigger.bind(this.antiNuke);
-    this.antiNuke.handleBeastModeTrigger = async (guildId, userId, score) => {
+    this.antiNuke.handleBeastModeTrigger = async (...args) => {
+      const [guildId, userId] = args;
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
       const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
-      const meta = this.buildRollbackMeta({
-        triggerActionType: 'beast_mode',
-        eventFamily: 'beast_mode',
-        score: Number(score)
-      });
 
       if (guild && member) {
-        await this.rollback.recordPreActionState(guild, 'beast_mode', member, meta);
+        await this.rollback.recordPreActionState(guild, 'ban', member);
       }
 
-      await originalHandleBeastModeTrigger(guildId, userId, score);
+      await originalHandleBeastModeTrigger(...args);
 
       if (guild && member) {
-        await this.rollback.recordPostActionState(guild, 'beast_mode', member, meta);
+        await this.rollback.recordPostActionState(guild, 'ban', member);
       }
     };
 
     const originalHandleEmergencyMode = this.antiNuke.handleEmergencyMode.bind(this.antiNuke);
-    this.antiNuke.handleEmergencyMode = async (guildId) => {
+    this.antiNuke.handleEmergencyMode = async (...args) => {
+      const [guildId] = args;
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
-      const meta = this.buildRollbackMeta({
-        triggerActionType: 'emergency_mode',
-        eventFamily: 'emergency'
-      });
       if (guild) {
-        await this.rollback.recordPreActionState(guild, 'emergency_lockdown', null, meta);
+        await this.rollback.recordPreActionState(guild, 'emergency_lockdown', null);
       }
 
-      await originalHandleEmergencyMode(guildId);
+      await originalHandleEmergencyMode(...args);
 
       if (guild) {
-        await this.rollback.recordPostActionState(guild, 'emergency_lockdown', null, meta);
+        await this.rollback.recordPostActionState(guild, 'emergency_lockdown', null);
       }
     };
 
     const originalHandleMassBanLockdown = this.antiNuke.handleMassBanLockdown.bind(this.antiNuke);
-    this.antiNuke.handleMassBanLockdown = async (guildId) => {
+    this.antiNuke.handleMassBanLockdown = async (...args) => {
+      const [guildId] = args;
       const guild = this.antiNuke.client.guilds.cache.get(guildId);
-      const meta = this.buildRollbackMeta({
-        triggerActionType: 'mass_ban_lockdown',
-        eventFamily: 'mass_ban'
-      });
       if (guild) {
-        await this.rollback.recordPreActionState(guild, 'role_permissions', null, meta);
+        await this.rollback.recordPreActionState(guild, 'role_permissions', null);
       }
 
-      await originalHandleMassBanLockdown(guildId);
+      await originalHandleMassBanLockdown(...args);
 
       if (guild) {
-        await this.rollback.recordPostActionState(guild, 'role_permissions', null, meta);
+        await this.rollback.recordPostActionState(guild, 'role_permissions', null);
       }
     };
 

@@ -1,14 +1,9 @@
-const { ROLE_IDS } = require('../constants');
+﻿const { ROLE_IDS, REGION_ROLE_IDS } = require('../constants');
 const { getRegionInfo } = require('./regions');
-const { PermissionsBitField } = require('discord.js');
-const { ensureRecruiter } = require('../repos/recruiters-repo');
+const scheduler = require('../scheduler');
 
 async function retrySetNickname(member, nickname, delaysMs = [0, 1000, 2000]) {
     if (!member || !nickname) return false;
-    const botMember = member.guild?.members?.me;
-    if (botMember && !botMember.permissions.has(PermissionsBitField.Flags.ManageNicknames)) return false;
-    if (botMember && member.id !== botMember.id && botMember.roles.highest.position <= member.roles.highest.position) return false;
-
     for (let i = 0; i < delaysMs.length; i++) {
         const delay = delaysMs[i];
         if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
@@ -39,7 +34,6 @@ function inferTeamFromOnboarding(member) {
 }
 
 function inferTeamFromRegionTag(member) {
-    const { REGION_ROLE_IDS } = require('../constants');
     if (!member || !member.roles || !member.roles.cache) return null;
     const keys = ['EU', 'NA', 'AS'];
     for (const key of keys) {
@@ -51,41 +45,17 @@ function inferTeamFromRegionTag(member) {
 
 function stripRookiePoints(nickname) {
     if (!nickname) return null;
-    const trimmed = nickname.replace(/\s*\d+(?:\.\d+)?\s*\/\s*(?:2|10)\s*$/i, '').trim();
+    const trimmed = nickname.replace(/\s*\d+(?:\.\d+)?\s*\/\s*10\s*$/i, '').trim();
     return trimmed.length ? trimmed : null;
-}
-
-function collectCurrentRoleIds(cache) {
-    if (!cache) return [];
-    if (typeof cache.map === 'function') {
-        try {
-            const mapped = cache.map(r => r && r.id);
-            if (Array.isArray(mapped)) return mapped.filter(Boolean);
-        } catch (e) { void e; }
-    }
-    const out = [];
-    if (Symbol && Symbol.iterator && cache[Symbol.iterator]) {
-        try {
-            for (const r of cache) if (r && r.id) out.push(r.id);
-            return out;
-        } catch (e) { void e; }
-    }
-    if (typeof cache.forEach === 'function') {
-        try {
-            cache.forEach(r => { if (r && r.id) out.push(r.id); });
-            return out;
-        } catch (e) { void e; }
-    }
-    const vals = Object.values(cache);
-    for (const r of vals) if (r && r.id) out.push(r.id);
-    return out;
 }
 
 async function promoteMember({ member, db, guild, verifierId }) {
     const guildId = guild ? guild.id : null;
     const team = inferTeamFromOnboarding(member) || inferTeamFromRegionTag(member);
-    const teamInfo = getRegionInfo(team) || { name: team || 'Unknown', emoji: '' };
     const teamRoleId = ROLE_IDS.TEAM_MEMBER && team ? ROLE_IDS.TEAM_MEMBER[team] : null;
+    const teamInfo = getRegionInfo(team);
+    const teamName = teamInfo.name || (team || 'Unknown');
+    const teamEmoji = teamInfo.emoji || '';
 
     // Roles to remove
     const rolesToRemove = [
@@ -98,54 +68,34 @@ async function promoteMember({ member, db, guild, verifierId }) {
     ].filter(Boolean);
 
     const uniqueRolesToRemove = Array.from(new Set(rolesToRemove));
-    const targetRoleIds = [ROLE_IDS.SOLACE, teamRoleId].filter(Boolean);
-    const hasGranularRoleOps = member && member.roles
-      && typeof member.roles.remove === 'function'
-      && typeof member.roles.add === 'function';
+    const rolesToRemoveNow = uniqueRolesToRemove
+        .filter(roleId => roleId !== member.guild.id)
+        .filter(roleId => member.roles.cache.has(roleId));
+    const rolesToAddNow = [ROLE_IDS.SOLACE, teamRoleId]
+        .filter(Boolean)
+        .filter(roleId => roleId !== member.guild.id)
+        .filter(roleId => !member.roles.cache.has(roleId));
 
-    const botMember = member.guild?.members?.me;
-    const canManageRoles = !botMember
-      || !botMember.permissions
-      || typeof botMember.permissions.has !== 'function'
-      || !botMember.roles
-      || !botMember.roles.highest
-      || !member.roles
-      || !member.roles.highest
-      || (
-        botMember.permissions.has(PermissionsBitField.Flags.ManageRoles)
-        && botMember.roles.highest.position > member.roles.highest.position
-      );
-
-    if (canManageRoles) {
-        if (hasGranularRoleOps) {
-            const removeList = uniqueRolesToRemove.filter(roleId => member.roles.cache.has(roleId));
-            if (removeList.length > 0) {
-                await member.roles.remove(removeList, 'Rookie promotion cleanup').catch(err => {
-                    console.error('Failed to remove onboarding roles during rookie promotion:', err);
-                });
-            }
-
-            const addList = targetRoleIds.filter(roleId => !member.roles.cache.has(roleId));
-            if (addList.length > 0) {
-                await member.roles.add(addList, 'Rookie promotion').catch(err => {
-                    console.error('Failed to add target roles during rookie promotion:', err);
-                });
-            }
-        } else {
-            // Fallback for partial mocks/legacy wrappers that do not expose add/remove.
-            const currentRoleIds = new Set(collectCurrentRoleIds(member.roles.cache));
-            for (const roleId of uniqueRolesToRemove) currentRoleIds.delete(roleId);
-            for (const roleId of targetRoleIds) currentRoleIds.add(roleId);
-            const finalRoleIds = Array.from(currentRoleIds).filter(id => id !== member.guild.id);
-            await member.roles.set(finalRoleIds, 'Rookie promotion').catch(err => {
-                console.error('Failed to update roles during rookie promotion:', err);
-            });
-        }
+    try {
+      if (rolesToRemoveNow.length) {
+        await member.roles.remove(rolesToRemoveNow, 'Rookie promotion');
+      }
+      if (rolesToAddNow.length) {
+        await member.roles.add(rolesToAddNow, 'Rookie promotion');
+      }
+    } catch (err) {
+      console.error('Failed to update roles during rookie promotion:', err);
+      return {
+        team,
+        teamName,
+        teamEmoji,
+        promoted: false,
+        error: 'Failed to update member roles during promotion.'
+      };
     }
 
     // Update Nickname
     const cleanedNickname = stripRookiePoints(member.nickname) || member.user.username;
-    const teamEmoji = teamInfo.emoji || '';
     const newNick = `${cleanedNickname} ${teamEmoji}`.trim();
     if (newNick !== member.nickname) {
         await retrySetNickname(member, newNick);
@@ -160,12 +110,9 @@ async function promoteMember({ member, db, guild, verifierId }) {
             member.id
         );
         recruiterId = recruitRow ? recruitRow.recruiter_id : null;
-    } catch (e) { void e; }
+    } catch (e) { console.error(e); }
 
     try {
-        if (recruiterId) {
-            await ensureRecruiter(db, guildId, recruiterId);
-        }
         await db.run(
             'INSERT OR REPLACE INTO verifications (guild_id, recruited_id, recruiter_id, verified_at, verified_by) VALUES (?, ?, ?, ?, ?)',
             guildId,
@@ -180,12 +127,11 @@ async function promoteMember({ member, db, guild, verifierId }) {
 
     // Recompute leaderboards
     try {
-        const scheduler = require('../scheduler');
         await scheduler.recomputeLeaderboards(db, guild);
-    } catch (e) { void e; }
+    } catch (e) { console.error(e); }
 
-    const teamName = teamInfo.name || (team || 'Unknown');
-    return { team, teamName, teamEmoji };
+    return { team, teamName, teamEmoji, promoted: true };
 }
 
 module.exports = { promoteMember, stripRookiePoints };
+

@@ -1,20 +1,20 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { getWeekStartUtcTs } = require('./week');
+const { formatUtcDateOnly } = require('./time');
 const {
+  calculate7DayStats,
   getPreviousMinReq,
   storeWeeklyCalculation,
   calculateMinRecruitsFixed,
   getBaseRequirement,
+  isNewStaff,
   getRoleLevel
 } = require('../lib/recruiting-system');
 const { CHANNELS, ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
-const { resolveGuildId } = require('./guild');
-const { withTransaction } = require('../lib/transactions');
-const { loadRecruiterMeta } = require('../lib/leaderboard-utils');
-const { logUnexpectedError, logRuntimeEvent } = require('../lib/logger');
 
-const WEEK_ROLLOVER_OFFSET_MS = 5 * 60 * 1000;
+const WEEK_ROLLOVER_OFFSET_MS = Number.parseInt(process.env.WEEK_ROLLOVER_OFFSET_MS || '0', 10);
+const DM_CONCURRENCY = 5;
 const CALC_CONCURRENCY = Number.parseInt(process.env.RECALC_CONCURRENCY || '4', 10);
 
 const { runWithConcurrency } = require('../lib/concurrency');
@@ -48,24 +48,21 @@ async function sendWithRetries(sendFn, opts = {}) {
 }
 
 /**
- * Perform weekly recalculation for all recruiters.
- * Runs every Monday at 00:00 UTC via scheduler.js.
- *
- * E-06: NOTE — scheduler.js also calls runWeeklySnapshotAndReset() which performs overlapping work
- * (7-day stats, storeWeeklyCalculation, DMs). To avoid double-processing and duplicate DMs,
- * ensure only ONE of these two paths executes per Monday boundary. The scheduler.js
- * acquireSchedulerLock (keyed on weekStart) guards runWeeklySnapshotAndReset. If this function
- * is also called on the same schedule without a lock, recruiters may receive two DMs.
- * Audit: consider removing this function and routing fully to runWeeklySnapshotAndReset.
+ * Perform weekly recalculation for all recruiters
+ * Runs every Monday at 00:00 UTC
  */
 async function performWeeklyRecalculations(guild) {
   const database = db;
-  const guildId = resolveGuildId(guild);
+  const guildId = guild ? guild.id : null;
+  if (!guildId) {
+    throw new Error('Weekly recalculation requires a guild.');
+  }
   console.log('Starting weekly recruiter recalculation...');
 
-  const weekStart = getWeekStartUtcTs(new Date(Date.now() + WEEK_ROLLOVER_OFFSET_MS));
+  const safeOffset = Number.isFinite(WEEK_ROLLOVER_OFFSET_MS) ? WEEK_ROLLOVER_OFFSET_MS : 0;
+  const weekStart = getWeekStartUtcTs(new Date(Date.now() + safeOffset));
   const weekWindowStart = weekStart - (7 * 24 * 60 * 60 * 1000);
-  const statsWindow = { sinceTs: weekWindowStart, untilTs: weekStart, overrideWeekStart: weekStart };
+  const statsWindow = { sinceTs: weekWindowStart, untilTs: weekStart };
 
   try {
     // Get all recruiters (staff roles + recruiter roles)
@@ -90,108 +87,95 @@ async function performWeeklyRecalculations(guild) {
 
     const allRoleIds = [...staffRoleIds, ...recruiterRoleIds];
 
-    const allStaff = [];
+    const allStaffById = new Map();
     for (const roleId of allRoleIds) {
       const role = guild.roles.cache.get(roleId);
       if (role) {
         role.members.forEach(member => {
-          if (!allStaff.find(m => m.id === member.id)) {
-            allStaff.push(member);
+          if (!allStaffById.has(member.id)) {
+            allStaffById.set(member.id, member);
           }
         });
       }
     }
+    const allStaff = Array.from(allStaffById.values());
 
     console.log(`Found ${allStaff.length} staff members to recalculate`);
-    const recruiterIds = allStaff.map(m => m.id);
-
-    const { batchCalculate7DayStats, batchIsNewStaff } = require('./recruiter-stats');
-    const allStats7dMap = await batchCalculate7DayStats(database, recruiterIds, guild, { ...statsWindow, guildId });
-    const isNewStaffMap = await batchIsNewStaff(database, recruiterIds, guildId);
-    
-    // Batch fetch absences and warnings 
-    const metaMap = await loadRecruiterMeta(database, recruiterIds, { guildId }).catch(() => ({ 
-      absences: new Map(), 
-      warnings: new Map(), 
-      systemWarnings: new Map() 
-    }));
 
     const calcResults = await runWithConcurrency(allStaff, CALC_CONCURRENCY, async (staffMember) => {
-      try {
-        // Get pre-fetched 7-day stats
-        const stats7d = allStats7dMap.get(staffMember.id) || { recruits7d: 0, activityRate: 0, verifyRate: 0, retention: 0 };
-        
-        const previousMinReq = await getPreviousMinReq(database, staffMember.id, { guildId });
-  
-        // Look up absences and warnings from the batch map
-        const absence = metaMap.absences.has(staffMember.id);
-        const activeWarnings = metaMap.warnings.get(staffMember.id) || 0;
-  
-        // Get role base requirement
-        const roleBase = getBaseRequirement(staffMember);
-  
-        // Check if new staff (look up from pre-calculated map)
-        const newStaffCheck = isNewStaffMap.get(staffMember.id) ?? false;
-  
-        // Calculate and Store within a per-recruiter transaction block for atomic safety
-        const newMinReq = await withTransaction(database, async (tx) => {
-          const req = calculateMinRecruitsFixed({
-            roleBase,
-            member: staffMember,
-            recruits7d: stats7d.recruits7d,
-            activityRate: stats7d.activityRate,
-            verifyRate: stats7d.verifyRate,
-            retention: stats7d.retention,
-            warnings: activeWarnings,
-            previousMinReq,
-            absent: !!absence,
-            isNewStaff: newStaffCheck
-          });
-  
-          await storeWeeklyCalculation(tx, {
-            guildId,
-            recruiterId: staffMember.id,
-            weekStart,
-            recruits7d: stats7d.recruits7d,
-            activityRate: stats7d.activityRate,
-            verifyRate: stats7d.verifyRate,
-            retention: stats7d.retention,
-            warnings: activeWarnings,
-            absent: !!absence,
-            previousMinReq,
-            calculatedMinReq: req,
-            roleBase
-          });
-          
-          // P-04: Weekly Point Reset — Ensure points return to 0 for the new week window.
-          await tx.run('UPDATE recruiters SET points = 0 WHERE guild_id = ? AND id = ?', guildId, staffMember.id);
-  
-          return req;
-        });
-  
-        const result = {
-          staffMember,
-          newMinReq,
-          stats7d,
-          activeWarnings,
-          absence,
-          previousMinReq,
-          roleBase
-        };
-  
-        const roleLevel = getRoleLevel(staffMember);
-        return { ok: true, result, notify: roleLevel > 0 };
-      } catch (err) {
-        void logUnexpectedError('service.weeklyRecalculations.perMember', err, {
-          guildId,
-          recruiterId: staffMember.id,
-          weekStart
-        });
-        return { ok: false, error: err.message };
-      }
+      // Get 7-day stats
+      const stats7d = await calculate7DayStats(database, staffMember.id, guild, statsWindow);
+
+      const previousMinReq = await getPreviousMinReq(database, staffMember.id, { guildId });
+
+      // Check for active absence
+      const absence = await database.get(
+        'SELECT * FROM absences WHERE guild_id = ? AND recruiter_id = ? AND active = 1 AND end_date >= date("now")',
+        guildId,
+        staffMember.id
+      );
+
+      // Get active warnings count
+      const warnings = await database.get(
+        'SELECT COUNT(*) as c FROM warnings WHERE guild_id = ? AND recruiter_id = ? AND revoked = 0 AND (expired_at IS NULL OR expired_at > ?)',
+        guildId,
+        staffMember.id,
+        Date.now()
+      );
+      const activeWarnings = warnings ? warnings.c : 0;
+
+      // Get role base requirement
+      const roleBase = getBaseRequirement(staffMember);
+
+      // Check if new staff (first 2 recalcs)
+      const newStaffCheck = await isNewStaff(database, staffMember.id, { guildId });
+
+      // Calculate new min req
+      const newMinReq = calculateMinRecruitsFixed({
+        roleBase,
+        member: staffMember,
+        recruits7d: stats7d.recruits7d,
+        activityRate: stats7d.activityRate,
+        verifyRate: stats7d.verifyRate,
+        retention: stats7d.retention,
+        warnings: activeWarnings,
+        previousMinReq,
+        absent: !!absence,
+        isNewStaff: newStaffCheck
+      });
+
+      // Store calculation
+      await storeWeeklyCalculation(database, {
+        guildId,
+        recruiterId: staffMember.id,
+        weekStart,
+        recruits7d: stats7d.recruits7d,
+        activityRate: stats7d.activityRate,
+        verifyRate: stats7d.verifyRate,
+        retention: stats7d.retention,
+        warnings: activeWarnings,
+        absent: !!absence,
+        previousMinReq,
+        calculatedMinReq: newMinReq,
+        roleBase
+      });
+
+      const result = {
+        staffMember,
+        newMinReq,
+        stats7d,
+        activeWarnings,
+        absence,
+        previousMinReq,
+        roleBase
+      };
+
+      const roleLevel = getRoleLevel(staffMember);
+      return { ok: true, result, notify: roleLevel > 0 };
     });
 
     const results = [];
+    const notifyQueue = [];
     for (const entry of calcResults) {
       if (entry && entry.ok === false && entry.error) {
         console.error('Error recalculating staff member:', entry.error);
@@ -199,17 +183,26 @@ async function performWeeklyRecalculations(guild) {
       }
       if (!entry || !entry.ok || !entry.result) continue;
       results.push(entry.result);
+      if (entry.notify) notifyQueue.push(entry.result);
+    }
+
+    // Send DMs with limited concurrency to avoid rate limits
+    const logChannel = guild.channels && guild.channels.cache
+      ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL)
+      : null;
+    if (notifyQueue.length) {
+      await runWithConcurrency(notifyQueue, DM_CONCURRENCY, (entry) => sendWeeklyRecalculationDM(entry, { logChannel }));
+    }
+
+    const postRetentionReports = (process.env.POST_RETENTION_REPORTS || '').toLowerCase() === 'true';
+    if (postRetentionReports && results.length) {
+      await runWithConcurrency(results, 2, (entry) => postRetentionToInviteChannels(guild, entry));
     }
 
     // Check for expired absences and post return messages
     await handleExpiredAbsences(guild);
 
-    void logRuntimeEvent('info', 'service.weeklyRecalculations.completed', 'Weekly recalculation completed successfully', {
-      guildId,
-      processedCount: results.length,
-      weekStart
-    });
-    
+    console.log(`Weekly recalculation completed for ${results.length} staff members`);
     return results;
 
   } catch (error) {
@@ -219,11 +212,127 @@ async function performWeeklyRecalculations(guild) {
 }
 
 /**
+ * Send DM notification to staff member about weekly recalculation
+ */
+async function sendWeeklyRecalculationDM(result, options = {}) {
+  const { staffMember, newMinReq, stats7d, activeWarnings, absence, previousMinReq } = result;
+  const logChannel = options.logChannel || null;
+
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Weekly Recruiter Update')
+      .setDescription('Your weekly recruiting requirements have been recalculated.')
+      .addFields(
+        { name: 'New Min Requirement', value: `${newMinReq} recruits/week`, inline: true },
+        { name: 'Previous Min', value: previousMinReq ? `${previousMinReq} recruits/week` : 'First calculation', inline: true },
+        { name: 'Change', value: previousMinReq ? `${newMinReq - previousMinReq > 0 ? '+' : ''}${newMinReq - previousMinReq}` : 'N/A', inline: true }
+      )
+      .addFields(
+        { name: 'Recruits (7 days)', value: `${stats7d.recruits7d}`, inline: true },
+        { name: '7-Day Retention', value: `${Math.round(stats7d.retention * 100)}%`, inline: true },
+        { name: 'Active Warnings', value: `${activeWarnings}`, inline: true }
+      )
+      .setColor(absence ? 0xFFAA00 : (newMinReq > stats7d.recruits7d ? 0xFF6B6B : 0x51CF66))
+      .setTimestamp()
+      .setFooter({ text: 'Recalculations run every Monday at 00:00 UTC' });
+
+    // Add explanation
+    let explanation = '';
+    if (absence) {
+      explanation = '📅 **Absence Active**: Requirements suspended';
+    } else if (stats7d.recruits7d <= 1) {
+      explanation = '🔻 **Low Activity**: Floor protection applied (≤1 recruit)';
+    } else if (activeWarnings >= 2) {
+      explanation = '⚠️ **Warning Freeze**: Changes frozen due to warnings';
+    } else if (newMinReq > stats7d.recruits7d) {
+      explanation = '📈 **Below Target**: Need more recruits to reach 8/week goal';
+    } else {
+      explanation = '✅ **On Track**: Meeting or exceeding requirements';
+    }
+
+    embed.addFields({ name: 'Status', value: explanation, inline: false });
+
+    await sendWithRetries(() => staffMember.send({ embeds: [embed] })).catch(async (e) => {
+      const tag = staffMember && staffMember.user ? staffMember.user.tag : staffMember.id;
+      console.log(`Failed to send weekly DM to ${tag}`);
+      if (logChannel && typeof logChannel.send === 'function') {
+        await logChannel.send(`Weekly recalculation DM failed for <@${staffMember.id}> (DMs closed or blocked).`).catch(err => {
+          console.error('Failed to log weekly DM failure:', err);
+        });
+      }
+      throw e;
+    });
+
+  } catch (error) {
+    console.error(`Error sending weekly DM to ${staffMember.id}:`, error);
+  }
+}
+
+/**
+ * Post retention and minReq information to invite channels
+ */
+async function postRetentionToInviteChannels(guild, result) {
+  const { staffMember, stats7d, newMinReq } = result;
+  const guildId = guild ? guild.id : null;
+
+  try {
+    const embed = new EmbedBuilder()
+      .setTitle('📊 Weekly Recruiter Update')
+      .setDescription(`**${staffMember.user.tag}** - 7 Day Performance`)
+      .addFields(
+        { name: 'Recruits This Week', value: `${stats7d.recruits7d}`, inline: true },
+        { name: 'Min Required', value: `${newMinReq}`, inline: true },
+        { name: '7-Day Retention', value: `${Math.round(stats7d.retention * 100)}%`, inline: true },
+        { name: 'Date', value: formatUtcDateOnly(), inline: true }
+      )
+      .setColor(stats7d.retention >= 0.8 ? 0x51CF66 : stats7d.retention >= 0.6 ? 0xFFAA00 : 0xFF6B6B)
+      .setTimestamp();
+
+    // Post to overall invites channel
+    const overallChannel = guild.channels.cache.get(CHANNELS.INVITES_OVERALL);
+    if (overallChannel) {
+      await overallChannel.send({ embeds: [embed] }).catch(err => {
+        console.error('Failed to post retention summary to overall channel:', err);
+      });
+    }
+
+    // Post to regional invite channels based on staff member's recent recruits
+    const recentRecruits = await db.all(
+      'SELECT DISTINCT region FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND valid = 1 LIMIT 3',
+      guildId,
+      staffMember.id,
+      Date.now() - (7 * 24 * 60 * 60 * 1000)
+    );
+
+    for (const recruit of recentRecruits) {
+      const channelId = recruit.region === 'EU' ? CHANNELS.INVITES_EU :
+        recruit.region === 'NA' ? CHANNELS.INVITES_NA :
+          recruit.region === 'AS' ? CHANNELS.INVITES_AS : null;
+
+      if (channelId) {
+        const regionalChannel = guild.channels.cache.get(channelId);
+        if (regionalChannel) {
+          await regionalChannel.send({ embeds: [embed] }).catch(err => {
+            console.error('Failed to post retention summary to regional channel:', err);
+          });
+        }
+      }
+    }
+
+  } catch (error) {
+    console.error(`Error posting retention to channels for ${staffMember.id}:`, error);
+  }
+}
+
+/**
  * Handle expired absences and post return messages
  */
 async function handleExpiredAbsences(guild) {
-  const guildId = resolveGuildId(guild);
   try {
+    const guildId = guild ? guild.id : null;
+    if (!guildId) {
+      return;
+    }
     const expiredAbsences = await db.all(
       'SELECT * FROM absences WHERE guild_id = ? AND active = 1 AND end_date < date("now")',
       guildId
@@ -231,7 +340,7 @@ async function handleExpiredAbsences(guild) {
 
     for (const absence of expiredAbsences) {
       // Mark as inactive
-      await db.run('UPDATE absences SET active = 0 WHERE guild_id = ? AND id = ?', guildId, absence.id);
+      await db.run('UPDATE absences SET active = 0 WHERE id = ? AND guild_id = ?', absence.id, guildId);
 
       // Get staff member
       const staffMember = await guild.members.fetch(absence.recruiter_id).catch(() => null);
@@ -282,5 +391,6 @@ async function handleExpiredAbsences(guild) {
 
 module.exports = {
   performWeeklyRecalculations,
+  sendWeeklyRecalculationDM,
   handleExpiredAbsences
 };

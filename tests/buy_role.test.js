@@ -1,13 +1,18 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
-function makeInteraction(item = 'vip-role') {
+function makeInteraction(opts = {}) {
+  const roleAddFails = !!opts.roleAddFails;
   const reply = jest.fn();
-  const options = { getSubcommand: () => 'buy', getString: (_k) => item };
+  const options = { getSubcommand: () => 'buy', getString: (_k) => 'vip-role' };
   const member = {
     id: 'RBUY',
-    roles: { add: jest.fn().mockResolvedValue(true) }
+    roles: {
+      add: roleAddFails
+        ? jest.fn().mockRejectedValue(new Error('Missing Permissions'))
+        : jest.fn().mockResolvedValue(true)
+    }
   };
   const guild = {
     id: 'GLOBAL',
@@ -39,10 +44,8 @@ describe('buy role items', () => {
     await db.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'RBUY', 30, 0, 0, 4);
   });
   afterEach(async () => {
-    try { await require('../src/db_async').close(); } catch (e) { void e; }
-    try { delete require.cache[require.resolve('../src/db_async.js')]; } catch (e) { void e; }
-    try { await db.close(); } catch (e) { void e; }
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { await db.close(); } catch (e) { console.error(e); }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('buy vip-role deducts points and assigns role', async () => {
@@ -50,22 +53,26 @@ describe('buy role items', () => {
     const cmd = require('../src/commands/recruiting/recruiter.js');
     await cmd.execute(interaction);
     expect(interaction.reply).toHaveBeenCalled();
-    const rec = await db.get('SELECT * FROM recruiters WHERE guild_id = ? AND id = ?', 'GLOBAL', 'RBUY');
-    expect(rec.points).toBe(15); // 30 - 15
+    const rec = await require('../src/db_async').get('SELECT * FROM recruiters WHERE id = ?', 'RBUY');
+    expect(rec.points).toBe(5); // 30 - 25
     expect(member.roles.add).toHaveBeenCalled();
   });
 
-  test('custom-suggestion requires approval and does not deduct points', async () => {
-    const { interaction, member } = makeInteraction('custom-suggestion');
+  test('buy vip-role refunds points when role grant fails', async () => {
+    const { interaction, member } = makeInteraction({ roleAddFails: true });
     const cmd = require('../src/commands/recruiting/recruiter.js');
     await cmd.execute(interaction);
 
     expect(interaction.reply).toHaveBeenCalled();
-    const arg = interaction.reply.mock.calls[0][0];
-    expect(arg.embeds[0].data.title).toBe('Approval Required');
+    const payload = interaction.reply.mock.calls[0][0];
+    const description = payload && payload.embeds && payload.embeds[0] && payload.embeds[0].data
+      ? payload.embeds[0].data.description
+      : '';
+    expect(description).toMatch(/Purchase was canceled/i);
 
-    const rec = await db.get('SELECT * FROM recruiters WHERE guild_id = ? AND id = ?', 'GLOBAL', 'RBUY');
+    const rec = await require('../src/db_async').get('SELECT * FROM recruiters WHERE id = ?', 'RBUY');
     expect(rec.points).toBe(30);
-    expect(member.roles.add).not.toHaveBeenCalled();
+    expect(member.roles.add).toHaveBeenCalled();
   });
 });
+

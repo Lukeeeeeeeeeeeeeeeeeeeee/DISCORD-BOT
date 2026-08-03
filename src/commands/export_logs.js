@@ -1,5 +1,6 @@
 const { AttachmentBuilder, EmbedBuilder } = require('discord.js');
-const { ensureCommandAccess } = require('../lib/command-auth');
+const { hasAdministrator } = require('../lib/permissions');
+const { createResponder } = require('../lib/respond');
 const runtime = require('../lib/runtime');
 const { formatUtcDate } = require('../lib/time');
 const { replyError } = require('../lib/embeds');
@@ -35,18 +36,17 @@ module.exports = {
     ]
   },
   async execute(interaction) {
-    const allowed = await ensureCommandAccess(interaction, {
-      allowStaff: false,
-      deniedMessage: 'Administrator permission required.'
-    });
-    if (!allowed) return null;
+    if (!hasAdministrator(interaction.member)) {
+      return replyError(interaction, 'Administrator permission required.', { flags: 64 });
+    }
 
     const antiNuke = runtime.getAntiNuke();
     if (!antiNuke) {
       return replyError(interaction, 'Anti-nuke system not initialized.', { flags: 64 });
     }
 
-    await interaction.deferReply({ flags: 64 });
+    const { respond, defer } = createResponder(interaction, { defaultFlags: 64, allowedMentions: { parse: [] } });
+    await defer();
 
     const limit = Math.min(200, Math.max(1, interaction.options.getInteger('limit') || 200));
     const format = (interaction.options.getString('format') || 'json').toLowerCase();
@@ -112,7 +112,7 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setColor('#00FF00')
-      .setTitle('📤 Anti-Nuke Logs Exported')
+      .setTitle('Anti-Nuke Logs Exported')
       .setDescription(`Exported ${logs.length} log entries as ${format.toUpperCase()} (${attachments.length} file${attachments.length === 1 ? '' : 's'}).`)
       .addFields(
         { name: 'Guild', value: interaction.guild.name, inline: true },
@@ -120,6 +120,6 @@ module.exports = {
       )
       .setTimestamp();
 
-    return interaction.editReply({ embeds: [embed], files: attachments });
+    return respond({ embeds: [embed], files: attachments });
   }
 };

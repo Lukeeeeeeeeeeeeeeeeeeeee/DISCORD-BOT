@@ -1,152 +1,38 @@
-const { AECS, CodexError } = require('./aecs');
-
-const SECRET_KEYS = new Set(['token', 'secret', 'password', 'key', 'auth', 'authorization', 'api_key', 'apikey']);
-
-function stripSecrets(obj, depth = 0) {
-  if (depth > 5 || !obj || typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(item => stripSecrets(item, depth + 1));
-  
-  const sanitized = {};
-  for (const [key, value] of Object.entries(obj)) {
-    const lowerKey = key.toLowerCase();
-    let isSecret = false;
-    for (const secretKey of SECRET_KEYS) {
-      const regex = new RegExp(`\\b${secretKey}\\b`, 'i');
-      if (regex.test(lowerKey)) {
-        isSecret = true;
-        break;
-      }
-    }
-    
-    if (isSecret) {
-      sanitized[key] = '[REDACTED]';
-    } else if (typeof value === 'object' && value !== null) {
-      sanitized[key] = stripSecrets(value, depth + 1);
-    } else {
-      sanitized[key] = value;
-    }
-  }
-  return sanitized;
-}
-
 function formatErrorForLog(error) {
   if (!error) return { message: 'Unknown error' };
   if (error instanceof Error) {
-    const base = {
+    return {
       name: error.name,
       message: error.message,
       stack: error.stack,
       code: error.code
     };
-    // Copy any extra properties but strip secrets
-    for (const key of Object.keys(error)) {
-      if (!(key in base)) base[key] = error[key];
-    }
-    return stripSecrets(base);
   }
   return { message: String(error) };
 }
 
-function inferCodeFromScope(scope, error) {
-  const value = String(scope || '').toLowerCase();
-  const message = error instanceof Error ? String(error.message || '').toLowerCase() : String(error || '').toLowerCase();
-
-  if (value.startsWith('command') || value.includes('interaction')) return 'CMD-500';
-  if (value.startsWith('scheduler') || value.includes('weekly') || value.includes('cron')) return 'SCH-500';
-  if (value.includes('db') || message.includes('sqlite') || message.includes('constraint')) return 'DB-500';
-  return 'SYS-500';
-}
-
-function toMeta(scope, error, meta) {
-  const payload = {
-    scope,
-    ...(meta || {})
-  };
-
-  if (error instanceof Error) {
-    payload.name = error.name;
-    payload.message = error.message;
-    if (error.code !== undefined) payload.errorCode = String(error.code);
-    
-    // Include extra error properties if safe
-    for (const key of Object.keys(error)) {
-       if (!['name', 'message', 'stack', 'code'].includes(key)) {
-         payload[`err_${key}`] = error[key];
-       }
-    }
-  } else if (error !== undefined && error !== null) {
-    payload.message = String(error);
-  }
-
-  return stripSecrets(payload);
-}
+const VERBOSE_LOGGING = (() => {
+  const raw = String(process.env.VERBOSE_LOGGING || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+})();
 
 function logUnexpectedError(scope, error, meta = {}) {
-  const code = inferCodeFromScope(scope, error);
-  const codex = error instanceof CodexError
-    ? error
-    : CodexError.fromUnknown(error, code, toMeta(scope, error, meta));
-
-  return AECS.dispatch(codex, {
+  const payload = {
     scope,
-    meta: toMeta(scope, error, meta)
-  }).catch((dispatchError) => {
-    const payload = {
-      scope,
-      error: formatErrorForLog(error),
-      dispatchError: formatErrorForLog(dispatchError)
-    };
-    console.error('Unexpected error (AECS dispatch failed)', payload);
-    return { supportId: null, suppressed: false, record: null };
-  });
+    ...meta,
+    error: formatErrorForLog(error)
+  };
+  console.error('Unexpected error', payload);
 }
 
-function normalizeRuntimeEventLevel(level, scope, message) {
-  const normalizedLevel = String(level || 'info').toLowerCase();
-  if (
-    normalizedLevel === 'warn'
-    && scope === 'startup.commands'
-    && typeof message === 'string'
-    && message.startsWith('Skipping compatibility command shim:')
-  ) {
-    return 'info';
-  }
-  return normalizedLevel;
-}
-
-function logRuntimeEvent(level, scope, message, meta = {}) {
-  const normalizedLevel = normalizeRuntimeEventLevel(level, scope, message);
-  const payload = stripSecrets({
+function logVerbose(scope, message, meta = {}) {
+  if (!VERBOSE_LOGGING) return;
+  const payload = {
     scope,
     message,
-    level: normalizedLevel,
-    ...(meta || {})
-  });
-
-  const code = normalizedLevel === 'error' ? 'SYS-500' : (normalizedLevel === 'warn' ? 'SYS-210' : 'SYS-110');
-  const codex = new CodexError(code, payload, { message: String(message || 'Runtime event') });
-
-  return AECS.dispatch(codex, {
-    scope: scope || 'runtime',
-    meta: payload
-  }).catch((dispatchError) => {
-    const fallback = {
-      scope,
-      message,
-      level: normalizedLevel,
-      meta: stripSecrets(meta),
-      dispatchError: formatErrorForLog(dispatchError)
-    };
-    if (normalizedLevel === 'error') {
-      console.error('Runtime event', fallback);
-      return;
-    }
-    if (normalizedLevel === 'warn') {
-      console.warn('Runtime event', fallback);
-      return;
-    }
-    console.log('Runtime event', fallback);
-  });
+    ...meta
+  };
+  console.log('Verbose', payload);
 }
 
 const ANTINUKE_COMMANDS = new Set([
@@ -183,7 +69,7 @@ function getInteractionMeta(interaction) {
     if (interaction.options && typeof interaction.options.getSubcommand === 'function') {
       subcommand = interaction.options.getSubcommand(false);
     }
-  } catch (_error) {
+  } catch (e) {
     subcommand = null;
   }
   return {
@@ -197,8 +83,7 @@ function getInteractionMeta(interaction) {
 
 module.exports = {
   logUnexpectedError,
-  logRuntimeEvent,
+  logVerbose,
   getCommandCategory,
-  getInteractionMeta,
-  formatErrorForLog
+  getInteractionMeta
 };

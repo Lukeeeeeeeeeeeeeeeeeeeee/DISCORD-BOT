@@ -2,12 +2,10 @@ const { ROLE_IDS, RECRUITER_ROLE_IDS } = require('../constants');
 const { hasAdministrator } = require('./permissions');
 const { resolveGuildId } = require('./guild');
 const { fetchMembersByIds } = require('./member-fetch');
-const { logUnexpectedError } = require('./logger');
-const { ensureRecruiter } = require('../repos/recruiters-repo');
+const { RECRUITING_RULES } = require('../services/recruiting/rules-service');
 
 // Role hierarchy for permissions
 const ROLE_HIERARCHY = {
-  [ROLE_IDS.HELPER_MINUS]: 1,
   [ROLE_IDS.HELPER]: 1,
   [ROLE_IDS.HELPER_PLUS]: 1,
   [ROLE_IDS.MOD]: 2,
@@ -22,7 +20,6 @@ const ROLE_HIERARCHY = {
 
 // Base requirements by role
 const ROLE_BASE_REQUIREMENTS = {
-  [ROLE_IDS.HELPER_MINUS]: 4,
   [ROLE_IDS.HELPER]: 4,
   [ROLE_IDS.HELPER_PLUS]: 4,
   [ROLE_IDS.MOD]: 5,
@@ -36,15 +33,27 @@ const ROLE_BASE_REQUIREMENTS = {
 };
 
 // Constants
-const TARGET_RECRUITS_PER_WEEK = 8;
+const TARGET_RECRUITS_PER_WEEK = RECRUITING_RULES.TARGET_RECRUITS_PER_WEEK;
+const PIVOT_RECRUITS_PER_WEEK = TARGET_RECRUITS_PER_WEEK / 2;
 const ACTIVITY_MAX_STEP = 1.5;
+const VERIFY_MAX_STEP = 1.0;
 const RETENTION_MAX_STEP = 0.5;
-const MIN_MIN_REQ = 2;
-const MAX_MIN_REQ = 8;
+const MIN_MIN_REQ = RECRUITING_RULES.MIN_MIN_REQ;
+const MAX_MIN_REQ = RECRUITING_RULES.MAX_MIN_REQ;
+const RETENTION_COHORT_LIMIT = Number.parseInt(process.env.RETENTION_COHORT_LIMIT || '250', 10);
 
+const PROGRESSION_TARGET = 4;
+const PROGRESSION_RATE = 0.5;
+const PROGRESSION_MAX = 1.5;
 const BASE_MAX_DELTA_UP = 2;
 const BASE_MAX_DELTA_DOWN = 1;
 const NEW_RECRUITER_GRACE_DAYS = 14;
+
+void PIVOT_RECRUITS_PER_WEEK;
+void VERIFY_MAX_STEP;
+void PROGRESSION_TARGET;
+void PROGRESSION_RATE;
+void PROGRESSION_MAX;
 
 /**
  * Get role hierarchy level for a user
@@ -93,8 +102,6 @@ function hasModPlusPermissions(member) {
 async function isNewStaff(db, recruiterId, opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const guildId = resolveGuildId(opts.guild || opts.guildId);
-  
-  // Strategy: Prioritize high-fidelity role-change analytics if available.
   try {
     const recruiterRoleIds = [
       ROLE_IDS.RECRUITER,
@@ -116,19 +123,15 @@ async function isNewStaff(db, recruiterId, opts = {}) {
         const ageMs = now - Number(row.last_added);
         const graceMs = NEW_RECRUITER_GRACE_DAYS * 24 * 60 * 60 * 1000;
         if (ageMs >= 0 && ageMs <= graceMs) return true;
-        
-        // If we found a record and it exceeds the grace period, they are NOT new staff.
-        return false;
       }
     }
   } catch (error) {
     const msg = (error && error.message) ? String(error.message) : '';
     if (!msg.toLowerCase().includes('no such table: analytics_role_changes')) {
-      void logUnexpectedError('recruiting.isNewStaff.analytics', error, { recruiterId });
+      console.error('Error checking recruiter start date:', error);
     }
   }
 
-  // Fallback: Check calculation history. A veteran will have multiple weekly historical records.
   try {
     const calculationCount = await db.get(
       'SELECT COUNT(*) as c FROM weekly_calculations WHERE guild_id = ? AND recruiter_id = ?',
@@ -141,7 +144,7 @@ async function isNewStaff(db, recruiterId, opts = {}) {
     if (msg.toLowerCase().includes('no such table: weekly_calculations')) {
       return true;
     }
-    void logUnexpectedError('recruiting.isNewStaff.fallback', error, { recruiterId });
+    console.error('Error checking if new staff:', error);
     return false;
   }
 }
@@ -156,6 +159,7 @@ function calculateMinRecruitsFixed({
   member,
   recruits7d,
   activityRate: _activityRate,
+  verifyRate: _verifyRate,
   retention,
   warnings,
   previousMinReq,
@@ -195,45 +199,40 @@ function calculateMinRecruitsFixed({
 
   let smoothed = rawMin;
   if (previousMinReq != null) {
-    // If a user has active warnings, prevent their requirement from decreasing (no maxDeltaDown).
-    const hasWarnings = (warnings || 0) > 0;
-    const maxDeltaUp = BASE_MAX_DELTA_UP;
-    const maxDeltaDown = hasWarnings ? 0 : BASE_MAX_DELTA_DOWN;
-
+    const maxDeltaUp = Math.max(0, BASE_MAX_DELTA_UP - (warnings || 0));
+    const maxDeltaDown = Math.max(0, BASE_MAX_DELTA_DOWN - (warnings || 0));
     let delta = rawMin - previousMinReq;
     delta = Math.max(-maxDeltaDown, Math.min(maxDeltaUp, delta));
     smoothed = previousMinReq + delta;
   }
 
-  const finalMin = Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, Math.ceil(smoothed)));
-  return Number.isFinite(finalMin) ? finalMin : MIN_MIN_REQ;
+  return Math.max(MIN_MIN_REQ, Math.min(MAX_MIN_REQ, Math.ceil(smoothed)));
 }
 
 function getRecruiterStatus({ recruits7d = 0, minReq = 0, activeWarnings = 0, absent = false, attention = false } = {}) {
-  // Audit Fix: Use robust Unicode escapes to prevent mangling across environments.
   if (absent || minReq === 0) {
-    return { bucket: 'ABSENT', label: '\uD83D\uDCD3 Absent', color: 0x808080 };
+    return { bucket: 'ABSENT', label: '??? Absent', color: 0x808080 };
   }
 
   if (activeWarnings >= 2) {
-    return { bucket: 'DEMOTION', label: '\u26A0\uFE0F Demotion Watch (2+ warnings)', color: 0x992D22 };
+    return { bucket: 'DEMOTION', label: '?? Demotion Watch (2+ warnings)', color: 0x992D22 };
   }
 
   // Per requested rules: failing if you got none.
   if ((recruits7d || 0) === 0) {
-    return { bucket: 'FAILING', label: `\u274C Failing (0/${minReq})`, color: 0xFF4444 };
+    return { bucket: 'FAILING', label: `? Failing (0/${minReq})`, color: 0xFF4444 };
   }
 
   // Attention if you meet the auto-warning criteria (computed by caller).
   if (attention && (recruits7d || 0) < (minReq || 0)) {
-    return { bucket: 'ATTENTION', label: `\uD83D\uDD35 Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
+    return { bucket: 'ATTENTION', label: `?? Attention (${recruits7d}/${minReq})`, color: 0x00AAFF };
   }
 
   if ((recruits7d || 0) < (minReq || 0)) {
-    return { bucket: 'FAILING', label: `\u26A0\uFE0F Below Minimum (${recruits7d}/${minReq})`, color: 0xFFAA00 };
+    return { bucket: 'FAILING', label: `?? Below Minimum (${recruits7d}/${minReq})`, color: 0xFFAA00 };
   }
 
-  return { bucket: 'PASSING', label: `\u2705 Passing (${recruits7d}/${minReq})`, color: 0x00CC66 };
+  return { bucket: 'PASSING', label: `? Passing (${recruits7d}/${minReq})`, color: 0x00CC66 };
 }
 
 /**
@@ -248,9 +247,6 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
   const windowStart = Number.isFinite(opts.sinceTs)
     ? opts.sinceTs
     : (windowEnd - (7 * 24 * 60 * 60 * 1000));
-  const overrideWeekStart = Number.isFinite(opts.overrideWeekStart)
-    ? opts.overrideWeekStart
-    : (Number.isFinite(opts.weekStart) ? opts.weekStart : windowStart);
   const retentionEnd = Number.isFinite(opts.retentionEndTs) ? opts.retentionEndTs : windowStart;
   const retentionStart = Number.isFinite(opts.retentionStartTs)
     ? opts.retentionStartTs
@@ -266,18 +262,7 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
       windowEnd
     );
 
-    let recruits7d = recruitsRow ? Number(recruitsRow.c || 0) : 0;
-    if (Number.isFinite(overrideWeekStart)) {
-      const overrideRow = await db.get(
-        'SELECT total FROM weekly_recruit_overrides WHERE guild_id = ? AND recruiter_id = ? AND week_start = ?',
-        guildId,
-        recruiterId,
-        overrideWeekStart
-      ).catch(() => null);
-      if (overrideRow && Number.isFinite(Number(overrideRow.total))) {
-        recruits7d = Math.max(recruits7d, Math.max(0, Number(overrideRow.total)));
-      }
-    }
+    const recruits7d = recruitsRow ? Number(recruitsRow.c || 0) : 0;
     const activityRate = recruits7d; // 7-day activity rate
 
     let verifyRate = 0;
@@ -298,24 +283,26 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
       verifyRate = 0;
     }
 
-    // Calculate retention for cohort (with Sampling Strategy to prevent rate-limits)
+    // Calculate retention for 7-day window
     let retention = 0;
     if (guild) {
-      // P-03: Sampling Strategy — Cap retention checks at 50 most recent recruits.
-      // This is statistically sufficient and protects the Discord API during raids/mass-recruit events.
+      const cohortLimit = Number.isFinite(RETENTION_COHORT_LIMIT) && RETENTION_COHORT_LIMIT > 0
+        ? RETENTION_COHORT_LIMIT
+        : 250;
       const retentionCohort = await db.all(
-        'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC LIMIT 50',
+        'SELECT recruited_id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND created_at >= ? AND created_at < ? AND valid = 1 ORDER BY created_at DESC LIMIT ?',
         guildId,
         recruiterId,
         retentionStart,
-        retentionEnd
+        retentionEnd,
+        cohortLimit
       );
 
       const cohortSize = retentionCohort.length;
       if (cohortSize > 0) {
         const recruitedIds = retentionCohort.map(r => r.recruited_id);
         const members = await fetchMembersByIds(guild, recruitedIds).catch(() => new Map());
-        retention = members.size / cohortSize;
+        retention = cohortSize > 0 ? (members.size / cohortSize) : 0;
       }
     }
 
@@ -326,7 +313,7 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
       retention: Math.max(0, Math.min(1, retention)) // Clamp between 0-1
     };
   } catch (error) {
-    void logUnexpectedError('recruiting.calculate7DayStats', error, { recruiterId });
+    console.error('Error calculating 7-day stats:', error);
     return {
       recruits7d: 0,
       activityRate: 0,
@@ -344,52 +331,29 @@ async function calculate7DayStats(db, recruiterId, guild = null, opts = {}) {
 async function storeWeeklyCalculation(db, data) {
   try {
     const guildId = resolveGuildId(data.guild || data.guildId);
-    await ensureRecruiter(db, guildId, data.recruiterId);
-    let weekStart = data.weekStart ?? null;
-    
-    // Audit Fix: Snapshot Isolation Strategy.
-    // If this is a promotion snapshot, offset the key by -1ms to prevent current-week overwrites.
-    if (data.isSnapshot && Number.isFinite(weekStart)) {
-      weekStart = weekStart - 1;
-    }
-
+    const weekStart = data.weekStart ?? null;
     const absent = data.absent ? 1 : 0;
-    const nowTs = Date.now();
-    const values = [
+    await db.run(`
+      INSERT OR REPLACE INTO weekly_calculations 
+      (guild_id, recruiter_id, timestamp, week_start, recruits7d, activity_rate, verify_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
       guildId,
       data.recruiterId,
-      nowTs,
+      Date.now(),
       weekStart,
-      data.recruits7d || 0,
-      data.activityRate || 0,
+      data.recruits7d,
+      data.activityRate,
       data.verifyRate != null ? data.verifyRate : 0,
-      data.retention || 0,
-      data.warnings || 0,
-      absent || 0,
-      data.previousMinReq ?? null,
-      Math.floor(Number.isFinite(data.calculatedMinReq) ? data.calculatedMinReq : 2),
-      data.roleBase ?? 2
-    ];
-
-    await db.run(
-      `INSERT INTO weekly_calculations
-       (guild_id, recruiter_id, timestamp, week_start, recruits7d, activity_rate, verify_rate, retention, warnings, absent, previous_min_req, calculated_min_req, role_base)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 2), COALESCE(?, 2))
-       ON CONFLICT(guild_id, recruiter_id, week_start) DO UPDATE SET
-         timestamp = excluded.timestamp,
-         recruits7d = excluded.recruits7d,
-         activity_rate = excluded.activity_rate,
-         verify_rate = excluded.verify_rate,
-         retention = excluded.retention,
-         warnings = excluded.warnings,
-         absent = excluded.absent,
-         previous_min_req = excluded.previous_min_req,
-         calculated_min_req = COALESCE(excluded.calculated_min_req, 2),
-         role_base = COALESCE(excluded.role_base, 2)`,
-      ...values
-    );
+      data.retention,
+      data.warnings,
+      absent,
+      data.previousMinReq,
+      data.calculatedMinReq,
+      data.roleBase
+    ]);
   } catch (error) {
-    void logUnexpectedError('recruiting.storeWeeklyCalculation', error, { recruiterId: data.recruiterId });
+    console.error('Error storing weekly calculation:', error);
   }
 }
 

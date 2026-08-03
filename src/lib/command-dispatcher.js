@@ -1,9 +1,14 @@
 const path = require('path');
+const { AppError } = require('./errors');
 
 async function dispatchCommand(cmd, interaction, ctx = {}, ...extraArgs) {
   if (!cmd || typeof cmd.execute !== 'function') {
     const name = cmd && cmd.data && cmd.data.name ? cmd.data.name : 'unknown';
-    throw new Error(`Invalid command module for ${name}: missing execute()`);
+    throw new AppError(`Invalid command module for ${name}: missing execute()`, {
+      code: 'CMD_INVALID',
+      userMessage: 'This command is unavailable right now.',
+      title: 'Command Error'
+    });
   }
 
   const client = ctx.client;

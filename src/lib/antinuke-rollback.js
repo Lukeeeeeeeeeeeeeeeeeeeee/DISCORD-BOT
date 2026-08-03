@@ -1,171 +1,82 @@
-const fs = require('fs').promises;
+﻿const fs = require('fs').promises;
 const path = require('path');
-
-const rollbackSaveQueuesByPath = new Map();
-
-function enqueueRollbackSave(filePath, task) {
-  const key = path.resolve(filePath);
-  const previous = rollbackSaveQueuesByPath.get(key) || Promise.resolve();
-  const next = previous
-    .catch(() => {})
-    .then(task);
-  rollbackSaveQueuesByPath.set(key, next);
-  return next;
-}
 
 class AntiNukeRollback {
   constructor() {
     this.rollbackData = new Map(); // guildId -> rollback data
     this.ROLLBACK_FILE = path.join(__dirname, '../data/antinuke_rollback.json');
-    this.OWNER_ID = process.env.OWNER_ID || null;
-    this.ROLLBACK_TTL_MS = Number.parseInt(process.env.ANTINUKE_ROLLBACK_TTL_MS || `${7 * 24 * 60 * 60 * 1000}`, 10);
-    this.ROLLBACK_MAX_ACTIONS_PER_GUILD = Number.parseInt(process.env.ANTINUKE_ROLLBACK_MAX_ACTIONS || '200', 10);
-    this.ROLLBACK_MAX_GUILDS = Number.parseInt(process.env.ANTINUKE_ROLLBACK_MAX_GUILDS || '250', 10);
+    this.ROLLBACK_FILE_BAK = `${this.ROLLBACK_FILE}.bak`;
+    this.OWNER_ID = process.env.ANTINUKE_OWNER_ID || process.env.OWNER_ID || null;
+    this._saveQueue = Promise.resolve();
   }
 
   async ensureDataDir() {
     try {
       await fs.mkdir(path.dirname(this.ROLLBACK_FILE), { recursive: true });
     } catch (e) {
-      void e;
-    }
-  }
-
-  getRollbackFileCandidates() {
-    const candidates = [
-      this.ROLLBACK_FILE,
-      `${this.ROLLBACK_FILE}.tmp`
-    ].map(filePath => path.resolve(filePath));
-    return Array.from(new Set(candidates));
-  }
-
-  async writeRollbackFileAtomic(payload) {
-    const tmpFile = `${this.ROLLBACK_FILE}.tmp`;
-    const handle = await fs.open(tmpFile, 'w');
-    try {
-      await handle.writeFile(payload, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close().catch(() => {});
-    }
-    await fs.rename(tmpFile, this.ROLLBACK_FILE);
-
-    // Best-effort directory sync for crash consistency.
-    try {
-      const dirHandle = await fs.open(path.dirname(this.ROLLBACK_FILE), 'r');
-      try {
-        await dirHandle.sync();
-      } finally {
-        await dirHandle.close().catch(() => {});
-      }
-    } catch (_error) {
-      // ignored
+      console.error(e);
     }
   }
 
   // Initialize rollback system
   async init() {
     try {
+      const data = await fs.readFile(this.ROLLBACK_FILE, 'utf8');
       let parsed = null;
-      let loadedFrom = null;
-      let lastError = null;
-      const candidates = this.getRollbackFileCandidates();
-
-      for (const candidate of candidates) {
+      try {
+        parsed = JSON.parse(data);
+      } catch (parseErr) {
+        console.error('Failed to parse rollback data file; attempting backup recovery.', parseErr);
+        const corruptPath = `${this.ROLLBACK_FILE}.corrupt-${Date.now()}`;
         try {
-          const data = await fs.readFile(candidate, 'utf8');
-          parsed = JSON.parse(data);
-          loadedFrom = candidate;
-          break;
-        } catch (error) {
-          lastError = error;
-        }
+          await fs.rename(this.ROLLBACK_FILE, corruptPath);
+        } catch (renameErr) { console.error('Failed to rename corrupt rollback file:', renameErr); }
+        const backupData = await fs.readFile(this.ROLLBACK_FILE_BAK, 'utf8');
+        parsed = JSON.parse(backupData);
+        console.warn('Recovered rollback state from backup file.');
       }
-
-      if (!parsed || !loadedFrom) {
-        throw lastError || new Error('No rollback state file could be loaded');
-      }
-
-      this.rollbackData = new Map(Object.entries(parsed || {}));
-      this.pruneRollbackData();
-      if (loadedFrom !== path.resolve(this.ROLLBACK_FILE)) {
-        await this.saveRollbackData();
-      }
-      console.log('🔄 Anti-nuke rollback system loaded');
+      this.rollbackData = new Map(Object.entries(parsed));
+      console.log('ðŸ”„ Anti-nuke rollback system loaded');
     } catch (error) {
-      console.log('🔄 No existing rollback data found, starting fresh');
+      console.log('ðŸ”„ No existing rollback data found, starting fresh');
       this.rollbackData = new Map();
     }
   }
 
-  normalizeGuildRollbackData(guildId, guildData = {}) {
-    const actions = Array.isArray(guildData.actions) ? guildData.actions.filter(Boolean) : [];
-    return {
-      guildId,
-      guildName: guildData.guildName || guildId,
-      actions,
-      timestamp: Number(guildData.timestamp || Date.now())
-    };
-  }
-
-  pruneRollbackData(now = Date.now()) {
-    const ttlMs = Number.isFinite(this.ROLLBACK_TTL_MS) && this.ROLLBACK_TTL_MS > 0
-      ? this.ROLLBACK_TTL_MS
-      : (7 * 24 * 60 * 60 * 1000);
-    const maxActions = Number.isFinite(this.ROLLBACK_MAX_ACTIONS_PER_GUILD) && this.ROLLBACK_MAX_ACTIONS_PER_GUILD > 0
-      ? this.ROLLBACK_MAX_ACTIONS_PER_GUILD
-      : 200;
-    const maxGuilds = Number.isFinite(this.ROLLBACK_MAX_GUILDS) && this.ROLLBACK_MAX_GUILDS > 0
-      ? this.ROLLBACK_MAX_GUILDS
-      : 250;
-    const cutoff = now - ttlMs;
-
-    const normalized = [];
-    for (const [guildId, guildData] of this.rollbackData.entries()) {
-      const safe = this.normalizeGuildRollbackData(guildId, guildData);
-      const keptActions = safe.actions
-        .filter(action => action && Number.isFinite(Number(action.timestamp)) && Number(action.timestamp) >= cutoff)
-        .sort((a, b) => Number(a.timestamp) - Number(b.timestamp));
-      const sliced = keptActions.length > maxActions
-        ? keptActions.slice(keptActions.length - maxActions)
-        : keptActions;
-      if (!sliced.length) continue;
-      safe.actions = sliced;
-      safe.timestamp = Math.max(
-        Number(safe.timestamp || 0),
-        Number(sliced[sliced.length - 1].timestamp || 0)
-      );
-      normalized.push([guildId, safe]);
-    }
-
-    normalized.sort((a, b) => Number((b[1] && b[1].timestamp) || 0) - Number((a[1] && a[1].timestamp) || 0));
-    this.rollbackData = new Map(normalized.slice(0, maxGuilds));
-  }
-
   // Save rollback data to file
   async saveRollbackData() {
-    return enqueueRollbackSave(this.ROLLBACK_FILE, async () => {
+    this._saveQueue = this._saveQueue.then(async () => {
       try {
         await this.ensureDataDir();
-        this.pruneRollbackData();
         const data = Object.fromEntries(this.rollbackData);
-        await this.writeRollbackFileAtomic(JSON.stringify(data, null, 2));
+        const serialized = JSON.stringify(data, null, 2);
+        const tmpPath = `${this.ROLLBACK_FILE}.tmp`;
+        await fs.writeFile(tmpPath, serialized, 'utf8');
+        try {
+          await fs.copyFile(this.ROLLBACK_FILE, this.ROLLBACK_FILE_BAK);
+        } catch (copyErr) { console.error('Failed to copy rollback file:', copyErr); }
+        try {
+          await fs.rename(tmpPath, this.ROLLBACK_FILE);
+        } catch (renameErr) {
+          if (renameErr && (renameErr.code === 'EEXIST' || renameErr.code === 'EPERM')) {
+            try {
+              await fs.unlink(this.ROLLBACK_FILE);
+            } catch (unlinkErr) { console.error('Failed to remove old rollback file:', unlinkErr); }
+            await fs.rename(tmpPath, this.ROLLBACK_FILE);
+          } else {
+            throw renameErr;
+          }
+        }
       } catch (error) {
-        console.error('❌ Failed to save rollback data:', error);
+        console.error('âŒ Failed to save rollback data:', error);
       }
     });
 
-  }
-
-  normalizeCaptureActionType(actionType) {
-    if (!actionType) return actionType;
-    if (actionType === 'beast_mode') return 'beast_mode';
-    if (typeof actionType === 'string' && actionType.startsWith('rapid_')) return 'rapid_action';
-    return actionType;
+    return this._saveQueue;
   }
 
   // Record state before anti-nuke action
-  async recordPreActionState(guild, actionType, targetData, metadata = null) {
+  async recordPreActionState(guild, actionType, targetData) {
     const guildId = guild.id;
     
     if (!this.rollbackData.has(guildId)) {
@@ -182,20 +93,18 @@ class AntiNukeRollback {
       timestamp: Date.now(),
       preState: this.captureState(guild, actionType, targetData),
       postState: null, // Will be filled after action
-      reverted: false,
-      meta: metadata && typeof metadata === 'object' ? { ...metadata } : null
+      reverted: false
     };
 
     const guildData = this.rollbackData.get(guildId);
     guildData.actions.push(rollbackEntry);
-    guildData.timestamp = rollbackEntry.timestamp;
     
-    console.log(`🔄 Recorded pre-action state for ${actionType} in ${guild.name}`);
+    console.log(`ðŸ”„ Recorded pre-action state for ${actionType} in ${guild.name}`);
     await this.saveRollbackData();
   }
 
   // Record state after anti-nuke action
-  async recordPostActionState(guild, actionType, targetData, metadata = null) {
+  async recordPostActionState(guild, actionType, targetData) {
     const guildId = guild.id;
     const guildData = this.rollbackData.get(guildId);
     
@@ -213,14 +122,7 @@ class AntiNukeRollback {
 
     if (action) {
       action.postState = this.captureState(guild, actionType, targetData);
-      if (metadata && typeof metadata === 'object') {
-        action.meta = {
-          ...(action.meta && typeof action.meta === 'object' ? action.meta : {}),
-          ...metadata
-        };
-      }
-      guildData.timestamp = Math.max(Number(guildData.timestamp || 0), Number(action.timestamp || Date.now()));
-      console.log(`🔄 Recorded post-action state for ${actionType} in ${guild.name}`);
+      console.log(`ðŸ”„ Recorded post-action state for ${actionType} in ${guild.name}`);
       await this.saveRollbackData();
     }
   }
@@ -236,12 +138,9 @@ class AntiNukeRollback {
       }
     };
 
-    const normalizedActionType = this.normalizeCaptureActionType(actionType);
-    switch (normalizedActionType) {
+    switch (actionType) {
       case 'ban':
       case 'kick':
-      case 'beast_mode':
-      case 'rapid_action':
         state.member = targetData ? {
           id: targetData.id,
           tag: targetData.user?.tag,
@@ -347,13 +246,18 @@ class AntiNukeRollback {
       return { success: false, message: 'No anti-nuke actions to rollback.' };
     }
 
-    console.log(`🔄 Starting rollback for ${guild.name} - ${guildData.actions.length} actions`);
+    console.log(`ðŸ”„ Starting rollback for ${guild.name} - ${guildData.actions.length} actions`);
     
     let results = {
       total: guildData.actions.length,
       reverted: 0,
       failed: 0,
       details: []
+    };
+
+    const remapContext = {
+      roleIdMap: new Map(),
+      channelIdMap: new Map()
     };
 
     // Process actions in reverse order (last first)
@@ -365,7 +269,7 @@ class AntiNukeRollback {
       }
 
       try {
-        const result = await this.rollbackAction(guild, action, client);
+        const result = await this.rollbackAction(guild, action, client, remapContext);
         results.details.push(result);
         
         if (result.success) {
@@ -375,7 +279,7 @@ class AntiNukeRollback {
           results.failed++;
         }
       } catch (error) {
-        console.error(`❌ Failed to rollback action ${action.actionType}:`, error);
+        console.error(`âŒ Failed to rollback action ${action.actionType}:`, error);
         results.failed++;
         results.details.push({
           actionType: action.actionType,
@@ -395,28 +299,27 @@ class AntiNukeRollback {
   }
 
   // Rollback individual action
-  async rollbackAction(guild, action, _client) {
+  async rollbackAction(guild, action, _client, remapContext = null) {
     const { actionType, preState } = action;
 
     switch (actionType) {
       case 'ban':
-      case 'beast_mode':
         return await this.rollbackBan(guild, preState);
       
       case 'kick':
         return await this.rollbackKick(guild, preState);
       
       case 'channel_delete':
-        return await this.rollbackChannelDelete(guild, preState);
+        return await this.rollbackChannelDelete(guild, preState, remapContext);
       
       case 'role_delete':
-        return await this.rollbackRoleDelete(guild, preState);
+        return await this.rollbackRoleDelete(guild, preState, remapContext);
       
       case 'role_permissions':
-        return await this.rollbackRolePermissions(guild, preState);
+        return await this.rollbackRolePermissions(guild, preState, remapContext);
       
       case 'emergency_lockdown':
-        return await this.rollbackEmergencyLockdown(guild, preState);
+        return await this.rollbackEmergencyLockdown(guild, preState, remapContext);
       
       case 'bot_add':
         return await this.rollbackBotAdd(guild, preState);
@@ -428,9 +331,6 @@ class AntiNukeRollback {
         return await this.rollbackMemberPrune(guild, preState);
       
       default:
-        if (typeof actionType === 'string' && actionType.startsWith('rapid_')) {
-          return await this.rollbackBan(guild, preState);
-        }
         return { success: false, error: `Unknown action type: ${actionType}` };
     }
   }
@@ -460,18 +360,88 @@ class AntiNukeRollback {
     return { success: false, error: 'Cannot restore kicked members (Discord API limitation)' };
   }
 
-  async rollbackChannelDelete(guild, preState) {
+  rememberRoleMapping(oldId, newId, remapContext) {
+    if (!remapContext || !oldId || !newId || oldId === newId) return;
+    remapContext.roleIdMap.set(oldId, newId);
+  }
+
+  rememberChannelMapping(oldId, newId, remapContext) {
+    if (!remapContext || !oldId || !newId || oldId === newId) return;
+    remapContext.channelIdMap.set(oldId, newId);
+  }
+
+  resolveRole(guild, roleData, remapContext) {
+    if (!guild || !roleData) return null;
+    const mappedId = remapContext && remapContext.roleIdMap ? remapContext.roleIdMap.get(roleData.id) : null;
+    let role = mappedId ? guild.roles.cache.get(mappedId) : null;
+    if (!role && roleData.id) role = guild.roles.cache.get(roleData.id);
+    if (!role && roleData.name) role = guild.roles.cache.find(r => r.name === roleData.name);
+    if (role && roleData.id) this.rememberRoleMapping(roleData.id, role.id, remapContext);
+    return role || null;
+  }
+
+  resolveChannel(guild, channelData, remapContext) {
+    if (!guild || !channelData) return null;
+    const mappedId = remapContext && remapContext.channelIdMap ? remapContext.channelIdMap.get(channelData.id) : null;
+    let channel = mappedId ? guild.channels.cache.get(mappedId) : null;
+    if (!channel && channelData.id) channel = guild.channels.cache.get(channelData.id);
+    if (!channel && channelData.name != null && channelData.type != null) {
+      channel = guild.channels.cache.find(ch =>
+        ch.name === channelData.name
+        && ch.type === channelData.type
+      ) || null;
+    }
+    if (channel && channelData.id) this.rememberChannelMapping(channelData.id, channel.id, remapContext);
+    return channel || null;
+  }
+
+  remapOverwriteId(id, remapContext) {
+    if (!id || !remapContext || !remapContext.roleIdMap) return id;
+    return remapContext.roleIdMap.get(id) || id;
+  }
+
+  async withRetries(fn, delays = [0, 300, 1200]) {
+    let lastError = null;
+    for (let i = 0; i < delays.length; i++) {
+      const delay = delays[i];
+      if (delay > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      try {
+        return await fn();
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    throw lastError || new Error('Operation failed after retries');
+  }
+
+  async applyFailSafeChannelLock(channel, guildId) {
+    if (!channel || !channel.permissionOverwrites || !guildId) return;
+    await this.withRetries(() => channel.permissionOverwrites.create(guildId, {
+      ViewChannel: false,
+      SendMessages: false,
+      Connect: false
+    }));
+  }
+
+  async rollbackChannelDelete(guild, preState, remapContext = null) {
     if (!preState.channel) {
       return { success: false, error: 'No channel data to restore' };
     }
 
+    let newChannel = null;
     try {
+      const mappedParentId = remapContext && remapContext.channelIdMap
+        ? (remapContext.channelIdMap.get(preState.channel.parentId) || preState.channel.parentId)
+        : preState.channel.parentId;
       const existing = guild.channels.cache.find(ch =>
         ch.name === preState.channel.name
         && ch.type === preState.channel.type
-        && (ch.parentId || null) === (preState.channel.parentId || null)
+        && (ch.parentId || null) === (mappedParentId || null)
       );
       if (existing) {
+        this.rememberChannelMapping(preState.channel.id, existing.id, remapContext);
         return { success: true, action: 'Restored channel', target: preState.channel.name };
       }
 
@@ -485,31 +455,40 @@ class AntiNukeRollback {
       };
 
       // Create the channel
-      const newChannel = await guild.channels.create(channelData);
+      newChannel = await this.withRetries(() => guild.channels.create(channelData));
       
       // Restore parent category
-      if (preState.channel.parentId) {
-        const parent = guild.channels.cache.get(preState.channel.parentId);
+      if (mappedParentId) {
+        const parent = guild.channels.cache.get(mappedParentId);
         if (parent) {
-          await newChannel.setParent(parent);
+          await this.withRetries(() => newChannel.setParent(parent));
         }
       }
 
       // Restore permission overwrites
       for (const overwrite of preState.channel.permissionOverwrites || []) {
-        await newChannel.permissionOverwrites.create(overwrite.id, {
+        await this.withRetries(() => newChannel.permissionOverwrites.create(this.remapOverwriteId(overwrite.id, remapContext), {
           allow: overwrite.allow,
           deny: overwrite.deny
-        });
+        }));
       }
+
+      this.rememberChannelMapping(preState.channel.id, newChannel.id, remapContext);
 
       return { success: true, action: 'Restored channel', target: preState.channel.name };
     } catch (error) {
+      if (newChannel) {
+        try {
+          await this.applyFailSafeChannelLock(newChannel, guild.id);
+        } catch (lockErr) {
+          console.error('Failed applying fail-safe lock to partially restored channel:', lockErr);
+        }
+      }
       return { success: false, error: `Failed to restore channel: ${error.message}` };
     }
   }
 
-  async rollbackRoleDelete(guild, preState) {
+  async rollbackRoleDelete(guild, preState, remapContext = null) {
     if (!preState.role) {
       return { success: false, error: 'No role data to restore' };
     }
@@ -517,6 +496,7 @@ class AntiNukeRollback {
     try {
       const existing = guild.roles.cache.find(r => r.name === preState.role.name);
       if (existing) {
+        this.rememberRoleMapping(preState.role.id, existing.id, remapContext);
         return { success: true, action: 'Restored role', target: preState.role.name };
       }
 
@@ -537,14 +517,15 @@ class AntiNukeRollback {
         roleData.unicodeEmoji = preState.role.emoji;
       }
 
-      await guild.roles.create(roleData);
+      const createdRole = await guild.roles.create(roleData);
+      this.rememberRoleMapping(preState.role.id, createdRole.id, remapContext);
       return { success: true, action: 'Restored role', target: preState.role.name };
     } catch (error) {
       return { success: false, error: `Failed to restore role: ${error.message}` };
     }
   }
 
-  async rollbackRolePermissions(guild, preState) {
+  async rollbackRolePermissions(guild, preState, remapContext = null) {
     if (!preState.roles) {
       return { success: false, error: 'No role data to restore' };
     }
@@ -556,7 +537,7 @@ class AntiNukeRollback {
       const positionUpdates = [];
 
       for (const roleData of preState.roles) {
-        const role = guild.roles.cache.get(roleData.id);
+        const role = this.resolveRole(guild, roleData, remapContext);
         if (!role) continue;
         tasks.push(async () => {
           try {
@@ -590,7 +571,7 @@ class AntiNukeRollback {
     }
   }
 
-  async rollbackEmergencyLockdown(guild, preState) {
+  async rollbackEmergencyLockdown(guild, preState, remapContext = null) {
     if (!preState.roles) {
       return { success: false, error: 'No emergency data to restore' };
     }
@@ -600,7 +581,7 @@ class AntiNukeRollback {
       const tasks = [];
       let failed = 0;
       for (const roleData of preState.roles) {
-        const role = guild.roles.cache.get(roleData.id);
+        const role = this.resolveRole(guild, roleData, remapContext);
         if (!role) continue;
         tasks.push(async () => {
           try {
@@ -618,25 +599,38 @@ class AntiNukeRollback {
       }
 
       // Restore channel permission overwrites
+      let channelOverwriteFailures = 0;
       for (const channelData of preState.channels || []) {
-        const channel = guild.channels.cache.get(channelData.id);
+        const channel = this.resolveChannel(guild, channelData, remapContext);
         if (channel) {
           const overwritePayload = (channelData.permissionOverwrites || [])
             .filter(ow => ow && ow.id)
             .map(ow => ({
-              id: ow.id,
+              id: this.remapOverwriteId(ow.id, remapContext),
               allow: ow.allow,
               deny: ow.deny,
               type: ow.type
             }));
 
           // Apply full overwrite set in a single request to avoid a mid-run "public channel" state.
-          await channel.permissionOverwrites.set(overwritePayload);
+          try {
+            await this.withRetries(() => channel.permissionOverwrites.set(overwritePayload));
+          } catch (e) {
+            channelOverwriteFailures++;
+            try {
+              await this.applyFailSafeChannelLock(channel, guild.id);
+            } catch (lockErr) {
+              console.error('Failed applying fail-safe lock after overwrite restore failure:', lockErr);
+            }
+          }
         }
       }
 
-      if (failed > 0) {
-        return { success: false, error: `Failed to restore ${failed} role permissions` };
+      if (failed > 0 || channelOverwriteFailures > 0) {
+        const issues = [];
+        if (failed > 0) issues.push(`${failed} role permission updates`);
+        if (channelOverwriteFailures > 0) issues.push(`${channelOverwriteFailures} channel overwrite sets`);
+        return { success: false, error: `Failed to restore ${issues.join(' and ')}` };
       }
       return { success: true, action: 'Restored emergency lockdown', target: 'All permissions' };
     } catch (error) {
@@ -696,7 +690,6 @@ class AntiNukeRollback {
 
   // Get rollback status for a guild
   getRollbackStatus(guildId) {
-    this.pruneRollbackData();
     const guildData = this.rollbackData.get(guildId);
     if (!guildData) {
       return { hasActions: false, actions: [] };
@@ -717,11 +710,13 @@ class AntiNukeRollback {
   }
 
   // Check if user is owner
-  isOwner(userId) {
+  isOwner(userId, guild = null) {
     if (!userId) return false;
     if (this.OWNER_ID) return userId === this.OWNER_ID;
+    if (guild && guild.ownerId) return guild.ownerId === userId;
     return false;
   }
 }
 
 module.exports = AntiNukeRollback;
+

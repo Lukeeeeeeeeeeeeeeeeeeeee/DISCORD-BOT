@@ -9,17 +9,8 @@
     "build": "npm run lint",
     "register-commands": "node src/register-commands.js",
     "backup": "node scripts/backup-db.js",
-    "db:preflight": "node scripts/db-referential-preflight.js --fix",
-    "db:verify-indexes": "node scripts/verify_recruit_indexes.js",
-    "migration:dry": "node scripts/migration-dry-run.js",
     "backup:drill": "node scripts/backup-restore-drill.js",
-    "test:synthetic:analytics": "node scripts/synthetic-analytics-load.js",
-    "test:p0": "node scripts/run-p0-regression.js",
-    "test:verbose:log": "node scripts/run-jest-verbose-log.js",
-    "verify:commands": "node scripts/verify_commands.js",
-    "codex:query": "node utils/codex-query.js",
-    "aecs:sync": "node utils/aecs-sync.js",
-    "stability:check": "npm run lint && npm run verify:commands && npm test && npm run require-walk",
+    "migration:dry": "node scripts/migration-dry-run.js",
     "lint": "eslint . --ext .js",
     "test": "jest --runInBand",
     "require-walk": "node scripts/require-walk.js"
@@ -48,15 +39,6 @@
     "sqlite3": "^5.1.6"
   },
   "engines": {
-    "node": ">=18.0.0"
-  },
-  "jest": {
-    "setupFiles": [
-      "<rootDir>/tests/setup-env.js"
-    ],
-    "testPathIgnorePatterns": [
-      "<rootDir>/DISCORD-BOT/",
-      "<rootDir>/tests/diagnostic/"
-    ]
+    "node": ">=18.17.0"
   }
 }

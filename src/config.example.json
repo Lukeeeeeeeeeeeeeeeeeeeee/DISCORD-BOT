@@ -1,7 +1,5 @@
 {
   "guildId": "REPLACE_WITH_GUILD_ID",
-  "brandName": "Solace",
-  "brandRookieHeaderIcon": "<:SOLACEONTOP:1460693669391765750>",
   "roleIds": {
     "onboarding": ["1459880782108692521","1459880774168739892","1459878495290261839","1459878488751476930"],
     "rookie": "1331020584473329726",
@@ -19,21 +17,6 @@
     "invites_na": "1331020766296150190",
     "invites_as": "1331020771476242544",
     "recruiter_warnings": "1331020754090987570"
-  },
-  "activityCheck": {
-    "ownerIds": ["1381692847018868778"],
-    "teamToInactiveRole": {
-      "EU": "INACTIVE_ROLE_EU",
-      "NA": "INACTIVE_ROLE_NA",
-      "AS": "INACTIVE_ROLE_AS"
-    },
-    "inactiveRolePool": ["INACTIVE_ROLE_EU", "INACTIVE_ROLE_NA", "INACTIVE_ROLE_AS"],
-    "targetRoleIds": ["MEMBER_ROLE_ID"],
-    "preserveRoleIds": ["REACTION_ROLE_ID_1", "REACTION_ROLE_ID_2"],
-    "exemptRoleIds": [],
-    "preserveRegionRoles": true,
-    "preserveOnboardingRoles": false,
-    "preserveStaffRoles": true
   },
   "limits": {
     "max_join_age_minutes": 120,
