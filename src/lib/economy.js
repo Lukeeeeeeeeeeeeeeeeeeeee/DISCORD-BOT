@@ -92,7 +92,7 @@ async function getActiveMultiplier(db, recruiterId, opts = {}) {
     const guildId = resolveGuildId(opts.guild || opts.guildId);
     const now = Date.now();
     const row = await db.get(
-      'SELECT * FROM multipliers WHERE guild_id = ? AND recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1',
+      'SELECT * FROM multipliers WHERE guild_id = ? AND recruiter_id = ? AND expires_at > ? ORDER BY expires_at DESC, value DESC LIMIT 1',
       guildId,
       recruiterId,
       now
@@ -104,7 +104,7 @@ async function getActiveMultiplier(db, recruiterId, opts = {}) {
       try {
         const now = Date.now();
         const row = await db.get(
-          'SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY value DESC LIMIT 1',
+          'SELECT * FROM multipliers WHERE recruiter_id = ? AND expires_at > ? ORDER BY expires_at DESC, value DESC LIMIT 1',
           recruiterId,
           now
         );

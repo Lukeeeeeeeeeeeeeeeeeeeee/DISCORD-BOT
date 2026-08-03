@@ -326,9 +326,7 @@ async function upsertLeaderboardMessage(db, channel, region, content, embed, gui
             region,
             PENDING_MESSAGE_ID
           );
-        } catch (cleanupErr) {
-          void cleanupErr;
-        }
+        } catch (cleanupErr) { console.error('Failed to clean up pending message:', cleanupErr); }
         throw sendErr;
       }
     }

@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
@@ -170,17 +170,17 @@ async function deleteVoiceSession(guildId, userId) {
 }
 
 const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
-  console.log('🛡️ Complete anti-nuke system with rollback ready!');
+  console.log('ðŸ›¡ï¸ Complete anti-nuke system with rollback ready!');
 }).catch(err => {
-  console.error('❌ Failed to initialize anti-nuke:', err);
+  console.error('âŒ Failed to initialize anti-nuke:', err);
 });
 
 const inviteInitPromise = (async () => {
   await createInviteTables();
   await initInviteSystem(GUILD_ID, db);
-  console.log('🔗 Invite system ready!');
+  console.log('ðŸ”— Invite system ready!');
 })().catch(err => {
-  console.error('❌ Failed to initialize invite system:', err);
+  console.error('âŒ Failed to initialize invite system:', err);
 });
 
 const commandsPath = path.join(__dirname, 'commands');
@@ -240,7 +240,9 @@ async function onReady() {
     await antiNukeInitPromise;
     scheduler.start(client, db);
 
-    await inviteInitPromise;
+    await inviteInitPromise.catch(err => {
+      logUnexpectedError('startup.inviteInitAwait', err);
+    });
     for (const cachedGuild of client.guilds.cache.values()) {
       const snapshot = await loadInviteSnapshotFromDb(cachedGuild.id).catch(() => null);
       if (snapshot && snapshot.size) {
@@ -319,14 +321,14 @@ async function flushShutdown(signal) {
       runtime.clearDb();
       runtime.clearClient();
     } catch (stateErr) {
-      void stateErr;
+      console.error('Error during runtime state cleanup:', stateErr);
     }
     if (signal) process.exit(0);
   }
 }
 
-process.on('SIGINT', () => void flushShutdown('SIGINT'));
-process.on('SIGTERM', () => void flushShutdown('SIGTERM'));
+process.on('SIGINT', () => flushShutdown('SIGINT').catch(err => console.error('Flush shutdown (SIGINT) failed:', err)));
+process.on('SIGTERM', () => flushShutdown('SIGTERM').catch(err => console.error('Flush shutdown (SIGTERM) failed:', err)));
 process.on('message', async (msg) => {
   if (msg === 'shutdown') {
     await flushShutdown('SHARD_MANAGER');
@@ -431,7 +433,7 @@ if (typeof process.send === 'function') {
     try {
       process.send({ type: 'heartbeat', timestamp: Date.now(), pid: process.pid });
     } catch (e) {
-      void e;
+      console.error(e);
     }
   }, safeHeartbeatMs);
   if (typeof timer.unref === 'function') timer.unref();
@@ -676,13 +678,15 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     process.exit(1);
   }
   if (token.length < 40) {
-    console.error('FATAL: DISCORD_TOKEN appears too short — ensure you pasted the full bot token with no quotes or trailing spaces.');
+    console.error('FATAL: DISCORD_TOKEN appears too short â€” ensure you pasted the full bot token with no quotes or trailing spaces.');
     process.exit(1);
   }
 
   try {
     await antiNukeInitPromise;
-    await inviteInitPromise;
+    await inviteInitPromise.catch(err => {
+      logUnexpectedError('startup.inviteInitAwait', err);
+    });
     await client.login(token);
   } catch (err) {
     if (err && err.code === 'TokenInvalid') {
@@ -693,3 +697,4 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     process.exit(1);
   }
 })();
+

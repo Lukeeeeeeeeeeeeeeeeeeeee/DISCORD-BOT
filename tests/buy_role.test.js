@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -44,8 +44,8 @@ describe('buy role items', () => {
     await db.run('INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'RBUY', 30, 0, 0, 4);
   });
   afterEach(async () => {
-    try { await db.close(); } catch (e) { void e; }
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { await db.close(); } catch (e) { console.error(e); }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('buy vip-role deducts points and assigns role', async () => {
@@ -75,3 +75,4 @@ describe('buy role items', () => {
     expect(member.roles.add).toHaveBeenCalled();
   });
 });
+

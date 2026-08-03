@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -17,8 +17,8 @@ describe('/status command', () => {
     require('../src/db_async.js');
   });
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
-    try { const bdir = path.join(path.dirname(dbPath),'backups'); fs.rmSync(bdir,{ recursive: true, force: true }); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
+    try { const bdir = path.join(path.dirname(dbPath),'backups'); fs.rmSync(bdir,{ recursive: true, force: true }); } catch (e) { console.error(e); }
   });
 
   test('returns status embed with counts and backup info', async () => {
@@ -41,3 +41,4 @@ describe('/status command', () => {
     expect(arg.embeds[0].data.fields.find(f => f.name === 'Last Backup').value).toMatch(/recruiter-test-backup.db/);
   });
 });
+

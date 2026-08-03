@@ -1,4 +1,4 @@
-const { ROLE_IDS, REGION_ROLE_IDS } = require('../constants');
+﻿const { ROLE_IDS, REGION_ROLE_IDS } = require('../constants');
 const { getRegionInfo } = require('./regions');
 const scheduler = require('../scheduler');
 
@@ -110,7 +110,7 @@ async function promoteMember({ member, db, guild, verifierId }) {
             member.id
         );
         recruiterId = recruitRow ? recruitRow.recruiter_id : null;
-    } catch (e) { void e; }
+    } catch (e) { console.error(e); }
 
     try {
         await db.run(
@@ -128,9 +128,10 @@ async function promoteMember({ member, db, guild, verifierId }) {
     // Recompute leaderboards
     try {
         await scheduler.recomputeLeaderboards(db, guild);
-    } catch (e) { void e; }
+    } catch (e) { console.error(e); }
 
     return { team, teamName, teamEmoji, promoted: true };
 }
 
 module.exports = { promoteMember, stripRookiePoints };
+

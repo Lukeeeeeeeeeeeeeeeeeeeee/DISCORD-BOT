@@ -51,7 +51,7 @@ async function createInviteTables() {
       await db.run('CREATE INDEX IF NOT EXISTS idx_used ON recruiter_invites (used)');
       await db.exec('COMMIT');
     } catch (innerError) {
-      try { await db.exec('ROLLBACK'); } catch (rollbackErr) { void rollbackErr; }
+      try { await db.exec('ROLLBACK'); } catch (rollbackErr) { console.error('Rollback failed:', rollbackErr); }
       throw innerError;
     }
 

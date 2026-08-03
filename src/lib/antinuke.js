@@ -1,4 +1,4 @@
-const {
+﻿const {
   EmbedBuilder,
   PermissionsBitField,
   AuditLogEvent,
@@ -217,7 +217,7 @@ class AntiNuke {
 
   async handleBanAuditEntry(entry, guild) {
     if (!entry || !guild || !entry.executor) return;
-    if (entry.executor.id === this.client.user.id) return;
+    if (entry.executor.id === (this.client && this.client.user && this.client.user.id)) return;
     if (!this.markAuditEventHandled(guild.id, entry.id)) return;
     const eventTime = Date.now();
     const targetId = entry && entry.target && entry.target.id ? entry.target.id : null;
@@ -234,7 +234,7 @@ class AntiNuke {
 
   async handleKickAuditEntry(entry, guild) {
     if (!entry || !guild || !entry.executor) return;
-    if (entry.executor.id === this.client.user.id) return;
+    if (entry.executor.id === (this.client && this.client.user && this.client.user.id)) return;
     if (!this.markAuditEventHandled(guild.id, entry.id)) return;
     const eventTime = Date.now();
     const targetId = entry && entry.target && entry.target.id ? entry.target.id : null;
@@ -247,7 +247,7 @@ class AntiNuke {
   }
 
   async handleMemberPrune(entry, guild) {
-    if (!entry.executor || entry.executor.id === this.client.user.id) return;
+    if (!entry.executor || entry.executor.id === (this.client && this.client.user && this.client.user.id)) return;
     const lastPruneId = this.pruneTracker.get(guild.id);
     if (lastPruneId === entry.id) return;
     this.pruneTracker.set(guild.id, entry.id);
@@ -356,7 +356,7 @@ class AntiNuke {
     // Set up event listeners
     this.setupEventListeners();
 
-    console.log('🛡️ Anti-nuke system initialized with 45+ protection features');
+    console.log('ðŸ›¡ï¸ Anti-nuke system initialized with 45+ protection features');
   }
 
   resolveStateBackend() {
@@ -689,9 +689,7 @@ class AntiNuke {
         const corruptPath = `${this.DATA_FILE}.corrupt-${Date.now()}`;
         try {
           await fs.rename(this.DATA_FILE, corruptPath);
-        } catch (renameErr) {
-          void renameErr;
-        }
+        } catch (renameErr) { console.error('Failed to rename corrupt antinuke file:', renameErr); }
 
         try {
           const backupData = await fs.readFile(this.DATA_FILE_BAK, 'utf8');
@@ -839,7 +837,7 @@ class AntiNuke {
       try {
         await fs.mkdir(path.dirname(this.DATA_FILE), { recursive: true });
       } catch (e) {
-        void e;
+        console.error(e);
       }
 
       const beastModeActions = {};
@@ -913,25 +911,21 @@ class AntiNuke {
       await fs.writeFile(tmpPath, serialized, 'utf8');
       try {
         await fs.copyFile(this.DATA_FILE, this.DATA_FILE_BAK);
-      } catch (copyErr) {
-        void copyErr;
-      }
+      } catch (copyErr) { console.error('Failed to copy antinuke backup:', copyErr); }
       try {
         await fs.rename(tmpPath, this.DATA_FILE);
       } catch (renameErr) {
         if (renameErr && (renameErr.code === 'EEXIST' || renameErr.code === 'EPERM')) {
           try {
             await fs.unlink(this.DATA_FILE);
-          } catch (unlinkErr) {
-            void unlinkErr;
-          }
+          } catch (unlinkErr) { console.error('Failed to remove old antinuke file:', unlinkErr); }
           await fs.rename(tmpPath, this.DATA_FILE);
         } else {
           throw renameErr;
         }
       }
     } catch (error) {
-      console.error('❌ Failed to save anti-nuke data:', error);
+      console.error('âŒ Failed to save anti-nuke data:', error);
     }
   }
 
@@ -1433,7 +1427,7 @@ class AntiNuke {
 
     const embed = new EmbedBuilder()
       .setColor(this.COLORS.orange)
-      .setTitle('🛑 Anti-Nuke Confirmation Required')
+      .setTitle('ðŸ›‘ Anti-Nuke Confirmation Required')
       .setDescription(context.description)
       .addFields(
         { name: 'Server', value: guild.name, inline: true },
@@ -1475,11 +1469,11 @@ class AntiNuke {
         }
 
         if (interaction.customId === confirmId) {
-          await interaction.update({ content: '✅ Approved. Executing action...', embeds: [], components: [] });
+          await interaction.update({ content: 'âœ… Approved. Executing action...', embeds: [], components: [] });
           collector.stop('confirmed');
           resolve(true);
         } else if (interaction.customId === cancelId) {
-          await interaction.update({ content: '❌ Action ignored.', embeds: [], components: [] });
+          await interaction.update({ content: 'âŒ Action ignored.', embeds: [], components: [] });
           collector.stop('cancelled');
           resolve(false);
         }
@@ -1487,7 +1481,7 @@ class AntiNuke {
 
       collector.on('end', async (_collected, reason) => {
         if (reason === 'confirmed' || reason === 'cancelled') return;
-        await message.edit({ content: '⏰ Confirmation timed out. Action ignored.', embeds: [], components: [] }).catch((e) => {
+        await message.edit({ content: 'â° Confirmation timed out. Action ignored.', embeds: [], components: [] }).catch((e) => {
           console.error('Failed to update confirmation timeout message', e);
         });
         resolve(false);
@@ -1497,7 +1491,7 @@ class AntiNuke {
 
   canActOnMember(guild, member) {
     if (!member) return { allowed: false, reason: 'member_not_found' };
-    if (member.id === this.client.user.id) return { allowed: false, reason: 'target_is_bot' };
+    if (member.id === (this.client && this.client.user && this.client.user.id)) return { allowed: false, reason: 'target_is_bot' };
     if (member.id === guild.ownerId) return { allowed: false, reason: 'target_is_owner' };
 
     const botMember = guild.members.me;
@@ -2251,7 +2245,7 @@ class AntiNuke {
     const entry = await this.waitForAuditLog(guild, AuditLogEvent.MemberBanAdd, ban.user.id);
     const executor = entry && entry.executor ? entry.executor : null;
 
-    if (!executor || executor.id === this.client.user.id) return;
+    if (!executor || executor.id === (this.client && this.client.user && this.client.user.id)) return;
     if (entry && !this.markAuditEventHandled(guild.id, entry.id)) return;
 
     this.trackAction(guild.id, executor.id, 'ban', {
@@ -2275,7 +2269,7 @@ class AntiNuke {
 
     // If there's no recent kick audit entry for this member, treat it as a normal leave
     if (!executor) return;
-    if (executor.id === this.client.user.id) return;
+    if (executor.id === (this.client && this.client.user && this.client.user.id)) return;
     if (entry && !this.markAuditEventHandled(guild.id, entry.id)) return;
 
     this.trackAction(guild.id, executor.id, 'kick', {
@@ -2294,7 +2288,7 @@ class AntiNuke {
     const entry = await this.waitForAuditLog(guild, AuditLogEvent.ChannelDelete, channel.id);
     const executor = entry && entry.executor ? entry.executor : null;
 
-    if (!executor || executor.id === this.client.user.id) return;
+    if (!executor || executor.id === (this.client && this.client.user && this.client.user.id)) return;
 
     this.trackAction(guild.id, executor.id, 'channelDelete', {
       channelId: channel.id,
@@ -2313,7 +2307,7 @@ class AntiNuke {
     const entry = await this.waitForAuditLog(guild, AuditLogEvent.RoleDelete, role.id);
     const executor = entry && entry.executor ? entry.executor : null;
 
-    if (!executor || executor.id === this.client.user.id) return;
+    if (!executor || executor.id === (this.client && this.client.user && this.client.user.id)) return;
 
     this.trackAction(guild.id, executor.id, 'roleDelete', {
       roleId: role.id,
@@ -2363,7 +2357,7 @@ class AntiNuke {
     const entry = await this.waitForAuditLog(guild, AuditLogEvent.BotAdd, member.id);
     const executor = entry && entry.executor ? entry.executor : null;
 
-    if (!executor || executor.id === this.client.user.id) return;
+    if (!executor || executor.id === (this.client && this.client.user && this.client.user.id)) return;
 
     const beastResult = this.trackAction(guild.id, executor.id, 'botAdd', {
       botId: member.id,
@@ -2399,7 +2393,7 @@ class AntiNuke {
     const eventTime = Date.now();
     const guild = channel.guild;
     const entry = await this.waitForAuditLog(guild, AuditLogEvent.WebhookCreate, null, 15000); // Longer window for webhooks
-    if (!entry || !entry.executor || entry.executor.id === this.client.user.id) return;
+    if (!entry || !entry.executor || entry.executor.id === (this.client && this.client.user && this.client.user.id)) return;
     const targetChannelId = entry.target?.channelId || entry.extra?.channel?.id || null;
     if (targetChannelId && targetChannelId !== channel.id) return;
     const webhookId = entry.target?.id || null;
@@ -2800,7 +2794,7 @@ class AntiNuke {
   async sendCriticalAlert(guild, message) {
     const embed = new EmbedBuilder()
       .setColor(this.COLORS.critical)
-      .setTitle('🚨 CRITICAL ANTI-NUKE ALERT')
+      .setTitle('ðŸš¨ CRITICAL ANTI-NUKE ALERT')
       .setDescription(message)
       .addFields(
         { name: 'Server', value: guild.name, inline: true },
@@ -2890,7 +2884,7 @@ class AntiNuke {
     if (typeof actionData.scoreBefore === 'number' || typeof actionData.scoreAfter === 'number') {
       embed.addFields({
         name: 'Beast Score',
-        value: `${actionData.scoreBefore ?? 'N/A'} → ${actionData.scoreAfter ?? actionData.score ?? 'N/A'}`,
+        value: `${actionData.scoreBefore ?? 'N/A'} â†’ ${actionData.scoreAfter ?? actionData.score ?? 'N/A'}`,
         inline: true
       });
     }
@@ -3029,123 +3023,123 @@ class AntiNuke {
   getTitleForAction(action) {
     switch (action.type) {
       case 'ban':
-        return '⚠️ Ban Detected';
+        return 'âš ï¸ Ban Detected';
       case 'kick':
-        return '⚠️ Kick Detected';
+        return 'âš ï¸ Kick Detected';
       case 'channelDelete':
-        return '⚠️ Channel Deleted';
+        return 'âš ï¸ Channel Deleted';
       case 'roleDelete':
-        return '⚠️ Role Deleted';
+        return 'âš ï¸ Role Deleted';
       case 'webhookCreate':
-        return '⚠️ Webhook Created';
+        return 'âš ï¸ Webhook Created';
       case 'botAdd':
-        return '⚠️ Bot Added';
+        return 'âš ï¸ Bot Added';
       case 'prune':
-        return '⚠️ Member Prune Detected';
+        return 'âš ï¸ Member Prune Detected';
       case 'protective_ban':
-        return '🔴 Protective Ban';
+        return 'ðŸ”´ Protective Ban';
       case 'protective_ban_failed':
-        return '⚠️ Protective Ban Failed';
+        return 'âš ï¸ Protective Ban Failed';
       case 'quarantine_applied':
-        return '🛑 Quarantine Applied';
+        return 'ðŸ›‘ Quarantine Applied';
       case 'quarantine_removed':
-        return '✅ Quarantine Removed';
+        return 'âœ… Quarantine Removed';
       case 'quarantine_failed':
-        return '⚠️ Quarantine Failed';
+        return 'âš ï¸ Quarantine Failed';
       case 'beast_mode_ban':
-        return '🔴 Beast Mode Ban';
+        return 'ðŸ”´ Beast Mode Ban';
       case 'beast_mode_ban_failed':
-        return '⚠️ Beast Mode Ban Failed';
+        return 'âš ï¸ Beast Mode Ban Failed';
       case 'beast_mode_confirm_denied':
-        return '🟠 Beast Mode Confirmation Denied';
+        return 'ðŸŸ  Beast Mode Confirmation Denied';
       case 'beast_mode_simulated':
-        return '🧪 Beast Mode Simulated';
+        return 'ðŸ§ª Beast Mode Simulated';
       case 'rapid_action_ban':
-        return '🔴 Rapid Action Ban';
+        return 'ðŸ”´ Rapid Action Ban';
       case 'rapid_action_ban_failed':
-        return '⚠️ Rapid Action Ban Failed';
+        return 'âš ï¸ Rapid Action Ban Failed';
       case 'rapid_action_confirm_denied':
-        return '🟠 Rapid Action Confirmation Denied';
+        return 'ðŸŸ  Rapid Action Confirmation Denied';
       case 'rapid_action_ignored':
-        return '🟠 Rapid Action Ignored';
+        return 'ðŸŸ  Rapid Action Ignored';
       case 'rapid_action_simulated':
-        return '🧪 Rapid Action Simulated';
+        return 'ðŸ§ª Rapid Action Simulated';
       case 'beast_mode_warning':
-        return '🟡 Beast Mode Warning';
+        return 'ðŸŸ¡ Beast Mode Warning';
       case 'beast_mode_danger':
-        return '🟠 Beast Mode Danger';
+        return 'ðŸŸ  Beast Mode Danger';
       case 'beast_mode_whitelisted':
-        return '🟡 Beast Mode (Whitelisted)';
+        return 'ðŸŸ¡ Beast Mode (Whitelisted)';
       case 'rapid_action_whitelisted':
-        return '🟡 Rapid Action (Whitelisted)';
+        return 'ðŸŸ¡ Rapid Action (Whitelisted)';
       case 'prune_ban':
-        return '🔴 Prune Ban';
+        return 'ðŸ”´ Prune Ban';
       case 'prune_ban_failed':
-        return '⚠️ Prune Ban Failed';
+        return 'âš ï¸ Prune Ban Failed';
       case 'prune_whitelisted':
-        return '🟡 Prune (Whitelisted)';
+        return 'ðŸŸ¡ Prune (Whitelisted)';
       case 'bot_beast_mode_ban':
-        return '🔴 Bot Banned (Beast Mode)';
+        return 'ðŸ”´ Bot Banned (Beast Mode)';
       case 'bot_beast_mode_ban_failed':
-        return '⚠️ Bot Ban Failed (Beast Mode)';
+        return 'âš ï¸ Bot Ban Failed (Beast Mode)';
       case 'emergency_mode':
-        return '🚨 EMERGENCY MODE ACTIVATED';
+        return 'ðŸš¨ EMERGENCY MODE ACTIVATED';
       case 'emergency_mode_failed':
-        return '⚠️ Emergency Mode Failed';
+        return 'âš ï¸ Emergency Mode Failed';
       case 'emergency_mode_pending':
-        return '🟠 Emergency Mode Pending Approval';
+        return 'ðŸŸ  Emergency Mode Pending Approval';
       case 'emergency_mode_confirm_denied':
-        return '🟠 Emergency Mode Denied';
+        return 'ðŸŸ  Emergency Mode Denied';
       case 'emergency_mode_simulated':
-        return '🧪 Emergency Mode Simulated';
+        return 'ðŸ§ª Emergency Mode Simulated';
       case 'mass_ban_lockdown':
-        return '🚨 MASS BAN LOCKDOWN';
+        return 'ðŸš¨ MASS BAN LOCKDOWN';
       case 'mass_ban_lockdown_failed':
-        return '⚠️ Mass Ban Lockdown Failed';
+        return 'âš ï¸ Mass Ban Lockdown Failed';
       case 'mass_ban_lockdown_pending':
-        return '🟠 Mass Ban Lockdown Pending';
+        return 'ðŸŸ  Mass Ban Lockdown Pending';
       case 'mass_ban_lockdown_confirm_denied':
-        return '🟠 Mass Ban Lockdown Denied';
+        return 'ðŸŸ  Mass Ban Lockdown Denied';
       case 'mass_ban_lockdown_simulated':
-        return '🧪 Mass Ban Lockdown Simulated';
+        return 'ðŸ§ª Mass Ban Lockdown Simulated';
       case 'backup_created':
-        return '💾 Backup Created';
+        return 'ðŸ’¾ Backup Created';
       case 'backup_incremental_created':
-        return '💾 Incremental Backup Created';
+        return 'ðŸ’¾ Incremental Backup Created';
       case 'manual_backup_created':
-        return '💾 Manual Backup Created';
+        return 'ðŸ’¾ Manual Backup Created';
       case 'emergency_recover':
-        return '✅ Emergency Recovery';
+        return 'âœ… Emergency Recovery';
       case 'emergency_recover_failed':
-        return '❌ Emergency Recovery Failed';
+        return 'âŒ Emergency Recovery Failed';
       case 'whitelist_pending':
-        return '🟡 Whitelist Pending Approval';
+        return 'ðŸŸ¡ Whitelist Pending Approval';
       case 'whitelist_add':
-        return '✅ Whitelist Approved';
+        return 'âœ… Whitelist Approved';
       case 'whitelist_remove':
-        return '➖ Whitelist Removed';
+        return 'âž– Whitelist Removed';
       case 'log_channel_configured':
-        return '📝 Log Channel Configured';
+        return 'ðŸ“ Log Channel Configured';
       case 'score_reset':
-        return '🔄 Score Reset';
+        return 'ðŸ”„ Score Reset';
       case 'beast_mode_reset':
-        return '🔄 Beast Mode Reset';
+        return 'ðŸ”„ Beast Mode Reset';
       case 'strict_mode_enabled':
-        return '🛑 Strict Mode Enabled';
+        return 'ðŸ›‘ Strict Mode Enabled';
       case 'strict_mode_disabled':
-        return '✅ Strict Mode Disabled';
+        return 'âœ… Strict Mode Disabled';
       case 'aggressive_ban_enabled':
-        return '⚡ Aggressive Ban Enabled';
+        return 'âš¡ Aggressive Ban Enabled';
       case 'aggressive_ban_disabled':
-        return '⚡ Aggressive Ban Disabled';
+        return 'âš¡ Aggressive Ban Disabled';
       case 'quarantine_options_updated':
-        return '🛡️ Quarantine Options Updated';
+        return 'ðŸ›¡ï¸ Quarantine Options Updated';
       case 'export_logs':
-        return '📤 Anti-Nuke Logs Exported';
+        return 'ðŸ“¤ Anti-Nuke Logs Exported';
       case 'simulation_run':
-        return '🧪 Simulation Run';
+        return 'ðŸ§ª Simulation Run';
       default:
-        return '🔵 Anti-Nuke Action';
+        return 'ðŸ”µ Anti-Nuke Action';
     }
   }
 
@@ -3327,7 +3321,7 @@ class AntiNuke {
       }, refreshMs);
     }
 
-    console.log('⏰ Automated tasks started (cleanup + backups)');
+    console.log('â° Automated tasks started (cleanup + backups)');
   }
 
   // Clean up old data
@@ -3451,7 +3445,7 @@ class AntiNuke {
       }
     }
 
-    console.log('🧹 Anti-nuke data cleanup completed');
+    console.log('ðŸ§¹ Anti-nuke data cleanup completed');
   }
 
   // Create automatic backups
@@ -3464,7 +3458,7 @@ class AntiNuke {
       }
     }
 
-    console.log('💾 Automatic backups completed');
+    console.log('ðŸ’¾ Automatic backups completed');
   }
 
   // Create incremental backups
@@ -3965,3 +3959,4 @@ class AntiNuke {
 }
 
 module.exports = AntiNuke;
+

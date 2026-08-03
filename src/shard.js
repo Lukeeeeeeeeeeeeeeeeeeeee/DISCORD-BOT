@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 const path = require('path');
 const { ShardingManager } = require('discord.js');
 const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
@@ -56,7 +56,7 @@ const heartbeatTimer = setInterval(async () => {
         await new Promise(resolve => setTimeout(resolve, 2000));
       } catch (e) {
         // Best effort; continue with respawn even if graceful signal failed.
-        void e;
+        console.error(e);
       }
       await shard.respawn({ delay: 1_000, timeout: 30_000 });
       lastHeartbeat.set(shard.id, Date.now());
@@ -92,10 +92,11 @@ async function gracefulShutdown(signal) {
   }
 }
 
-process.on('SIGINT', () => void gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT').catch(err => console.error('Graceful shutdown (SIGINT) failed:', err)));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM').catch(err => console.error('Graceful shutdown (SIGTERM) failed:', err)));
 
 manager.spawn().catch(err => {
   console.error('Failed to spawn shards:', err);
   process.exit(1);
 });
+

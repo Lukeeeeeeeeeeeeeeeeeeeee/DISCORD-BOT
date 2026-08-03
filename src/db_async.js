@@ -1,4 +1,4 @@
-const sqlite3 = require('sqlite3');
+﻿const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const fs = require('fs');
 const path = require('path');
@@ -37,12 +37,12 @@ async function acquireSchemaLock(dbPath) {
       await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
       done = true;
       return async () => {
-        try { await handle.close(); } catch (e) { void e; }
+        try { await handle.close(); } catch (e) { console.error(e); }
         try { await fs.promises.unlink(lockPath); } catch (e) { if (!e || e.code !== 'ENOENT') console.error('Failed to release schema lock:', e); }
       };
     } catch (e) {
       if (handle) {
-        try { await handle.close(); } catch (closeErr) { void closeErr; }
+        try { await handle.close(); } catch (closeErr) { console.error('Failed to close schema lock handle:', closeErr); }
       }
       if (!e || e.code !== 'EEXIST') throw e;
 
@@ -136,21 +136,21 @@ async function init(dbPath = getConfiguredDbPath()) {
   ensureDbPath(dbPath);
   const db = await open({ filename: dbPath, driver: sqlite3.Database });
   // Reduce "database is locked" errors under concurrent access.
-  try { await db.exec('PRAGMA foreign_keys = ON'); } catch (e) { void e; }
+  try { await db.exec('PRAGMA foreign_keys = ON'); } catch (e) { console.error(e); }
   const disableWal = (process.env.SQLITE_DISABLE_WAL || '').toLowerCase() === 'true';
   const journalModeRaw = (process.env.SQLITE_JOURNAL_MODE || 'WAL').toUpperCase();
   const allowedModes = new Set(['WAL', 'DELETE', 'TRUNCATE', 'PERSIST', 'MEMORY', 'OFF']);
   if (!disableWal) {
     if (allowedModes.has(journalModeRaw)) {
-      try { await db.exec(`PRAGMA journal_mode = ${journalModeRaw}`); } catch (e) { void e; }
+      try { await db.exec(`PRAGMA journal_mode = ${journalModeRaw}`); } catch (e) { console.error(e); }
     } else {
       console.warn(`Invalid SQLITE_JOURNAL_MODE "${journalModeRaw}" - skipping journal_mode PRAGMA.`);
     }
   }
   const busyTimeoutRaw = Number.parseInt(process.env.SQLITE_BUSY_TIMEOUT_MS || '15000', 10);
   const busyTimeoutMs = Number.isFinite(busyTimeoutRaw) && busyTimeoutRaw > 0 ? busyTimeoutRaw : 15000;
-  try { await db.exec('PRAGMA synchronous = NORMAL'); } catch (e) { void e; }
-  try { await db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`); } catch (e) { void e; }
+  try { await db.exec('PRAGMA synchronous = NORMAL'); } catch (e) { console.error(e); }
+  try { await db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`); } catch (e) { console.error(e); }
 
   const releaseSchemaLock = await acquireSchemaLock(dbPath);
   const strictMigrations = (() => {
@@ -460,72 +460,72 @@ async function init(dbPath = getConfiguredDbPath()) {
   try {
     await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_leaderboard_channel_region ON leaderboard_messages(guild_id, channel_id, region)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_recruiter_created_valid ON recruits(guild_id, recruiter_id, created_at, valid)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_recruits_guild_region_created_valid ON recruits(guild_id, region, created_at, valid)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_warnings_guild_recruiter_active ON warnings(guild_id, recruiter_id, revoked, expired_at)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_absences_guild_recruiter_active_end ON absences(guild_id, recruiter_id, active, end_date)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_weekly_calcs_guild_week ON weekly_calculations(guild_id, week_start)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_guild_recruiter_created ON purchases(guild_id, recruiter_id, created_at)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_multipliers_guild_recruiter_expires ON multipliers(guild_id, recruiter_id, expires_at)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_recruiter_points_ledger_guild_user_time ON recruiter_points_ledger(guild_id, recruiter_id, created_at DESC)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_invite_snapshots_guild ON invite_snapshots(guild_id)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_daily_channels_guild_channel_dayts ON analytics_daily_channels(guild_id, channel_id, day_ts)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_analytics_daily_guild_guild_dayts ON analytics_daily_guild(guild_id, day_ts)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_rookie_war_message ON rookie_war_logs(message_id)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
   try {
     await db.exec('CREATE INDEX IF NOT EXISTS idx_rookie_war_member_time ON rookie_war_logs(member_id, created_at)');
   } catch (e) {
-    void e;
+    console.error(e);
   }
 
     const applyMigration = async (id, fn) => {
@@ -664,7 +664,8 @@ async function init(dbPath = getConfiguredDbPath()) {
       try {
         await db.exec(sql);
       } catch (e) {
-        void e;
+        if (e && String(e.message || '').includes('duplicate column name')) return;
+        console.warn('Migration alter failed', { sql, error: e && e.message ? e.message : String(e) });
       }
     };
 
@@ -1305,24 +1306,24 @@ async function init(dbPath = getConfiguredDbPath()) {
   });
 
   // Add columns if missing (best-effort)
-  try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE flags ADD COLUMN dismissed INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE recruits ADD COLUMN points INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE warnings ADD COLUMN expired_at INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE warnings ADD COLUMN revoked INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN week_start INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { void e; }
-  try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { void e; }
-  try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_daily_guild ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
-  try { await db.exec("ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER"); } catch (e) { void e; }
+  try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE flags ADD COLUMN dismissed INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE recruits ADD COLUMN points INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE warnings ADD COLUMN expired_at INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE warnings ADD COLUMN revoked INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN week_start INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { console.error(e); }
+  try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { console.error(e); }
+  try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_daily_guild ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  try { await db.exec("ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
 
   await ensureNormalizedViews();
   await ensureRecruiterInsertTriggers();
@@ -1374,7 +1375,7 @@ async function getDb() {
       const previousDb = await previousPromise;
       await previousDb.close();
     } catch (e) {
-      void e;
+      console.error(e);
     }
   }
   return dbPromise;
@@ -1397,3 +1398,4 @@ module.exports = {
     run: async (...params) => (await getDb()).run(sql, ...params),
   })
 };
+

@@ -1,4 +1,4 @@
-function createGuildMemberRemoveHandler({
+﻿function createGuildMemberRemoveHandler({
   isSystemsReady,
   analytics,
   voiceSessions,
@@ -26,7 +26,7 @@ function createGuildMemberRemoveHandler({
         await deleteVoiceSession(member.guild.id, member.id);
       }
     } catch (e) {
-      void e;
+      console.error(e);
     }
 
     try {
@@ -38,3 +38,4 @@ function createGuildMemberRemoveHandler({
 }
 
 module.exports = { createGuildMemberRemoveHandler };
+

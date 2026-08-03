@@ -1,4 +1,4 @@
-const fs = require('fs').promises;
+﻿const fs = require('fs').promises;
 const path = require('path');
 
 class AntiNukeRollback {
@@ -14,7 +14,7 @@ class AntiNukeRollback {
     try {
       await fs.mkdir(path.dirname(this.ROLLBACK_FILE), { recursive: true });
     } catch (e) {
-      void e;
+      console.error(e);
     }
   }
 
@@ -30,17 +30,15 @@ class AntiNukeRollback {
         const corruptPath = `${this.ROLLBACK_FILE}.corrupt-${Date.now()}`;
         try {
           await fs.rename(this.ROLLBACK_FILE, corruptPath);
-        } catch (renameErr) {
-          void renameErr;
-        }
+        } catch (renameErr) { console.error('Failed to rename corrupt rollback file:', renameErr); }
         const backupData = await fs.readFile(this.ROLLBACK_FILE_BAK, 'utf8');
         parsed = JSON.parse(backupData);
         console.warn('Recovered rollback state from backup file.');
       }
       this.rollbackData = new Map(Object.entries(parsed));
-      console.log('🔄 Anti-nuke rollback system loaded');
+      console.log('ðŸ”„ Anti-nuke rollback system loaded');
     } catch (error) {
-      console.log('🔄 No existing rollback data found, starting fresh');
+      console.log('ðŸ”„ No existing rollback data found, starting fresh');
       this.rollbackData = new Map();
     }
   }
@@ -56,25 +54,21 @@ class AntiNukeRollback {
         await fs.writeFile(tmpPath, serialized, 'utf8');
         try {
           await fs.copyFile(this.ROLLBACK_FILE, this.ROLLBACK_FILE_BAK);
-        } catch (copyErr) {
-          void copyErr;
-        }
+        } catch (copyErr) { console.error('Failed to copy rollback file:', copyErr); }
         try {
           await fs.rename(tmpPath, this.ROLLBACK_FILE);
         } catch (renameErr) {
           if (renameErr && (renameErr.code === 'EEXIST' || renameErr.code === 'EPERM')) {
             try {
               await fs.unlink(this.ROLLBACK_FILE);
-            } catch (unlinkErr) {
-              void unlinkErr;
-            }
+            } catch (unlinkErr) { console.error('Failed to remove old rollback file:', unlinkErr); }
             await fs.rename(tmpPath, this.ROLLBACK_FILE);
           } else {
             throw renameErr;
           }
         }
       } catch (error) {
-        console.error('❌ Failed to save rollback data:', error);
+        console.error('âŒ Failed to save rollback data:', error);
       }
     });
 
@@ -105,7 +99,7 @@ class AntiNukeRollback {
     const guildData = this.rollbackData.get(guildId);
     guildData.actions.push(rollbackEntry);
     
-    console.log(`🔄 Recorded pre-action state for ${actionType} in ${guild.name}`);
+    console.log(`ðŸ”„ Recorded pre-action state for ${actionType} in ${guild.name}`);
     await this.saveRollbackData();
   }
 
@@ -128,7 +122,7 @@ class AntiNukeRollback {
 
     if (action) {
       action.postState = this.captureState(guild, actionType, targetData);
-      console.log(`🔄 Recorded post-action state for ${actionType} in ${guild.name}`);
+      console.log(`ðŸ”„ Recorded post-action state for ${actionType} in ${guild.name}`);
       await this.saveRollbackData();
     }
   }
@@ -252,7 +246,7 @@ class AntiNukeRollback {
       return { success: false, message: 'No anti-nuke actions to rollback.' };
     }
 
-    console.log(`🔄 Starting rollback for ${guild.name} - ${guildData.actions.length} actions`);
+    console.log(`ðŸ”„ Starting rollback for ${guild.name} - ${guildData.actions.length} actions`);
     
     let results = {
       total: guildData.actions.length,
@@ -285,7 +279,7 @@ class AntiNukeRollback {
           results.failed++;
         }
       } catch (error) {
-        console.error(`❌ Failed to rollback action ${action.actionType}:`, error);
+        console.error(`âŒ Failed to rollback action ${action.actionType}:`, error);
         results.failed++;
         results.details.push({
           actionType: action.actionType,
@@ -725,3 +719,4 @@ class AntiNukeRollback {
 }
 
 module.exports = AntiNukeRollback;
+

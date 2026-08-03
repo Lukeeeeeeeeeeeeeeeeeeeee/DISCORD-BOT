@@ -1,4 +1,4 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
@@ -45,7 +45,7 @@ async function main() {
       fs.rmSync(tempPath, { force: true });
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch (e) {
-      void e;
+      console.error(e);
     }
     process.exit(ok ? 0 : 2);
   } catch (err) {
@@ -53,16 +53,17 @@ async function main() {
     try {
       if (db && typeof db.close === 'function') await db.close();
     } catch (e) {
-      void e;
+      console.error(e);
     }
     try {
       fs.rmSync(tempPath, { force: true });
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch (e) {
-      void e;
+      console.error(e);
     }
     process.exit(1);
   }
 }
 
 main();
+

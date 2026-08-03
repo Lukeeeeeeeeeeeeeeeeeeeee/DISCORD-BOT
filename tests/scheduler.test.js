@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -55,8 +55,8 @@ describe('scheduler recompute & persistence', () => {
     `);
   });
   afterEach(async () => {
-    try { await db.close(); } catch (e) { void e; }
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { await db.close(); } catch (e) { console.error(e); }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('recomputeLeaderboards writes leaderboard_messages on new messages', async () => {
@@ -101,3 +101,4 @@ describe('scheduler recompute & persistence', () => {
     expect(text).toMatch(/recruits/);
   });
 });
+

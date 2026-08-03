@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -26,7 +26,7 @@ describe('multiplier purchase and admin application', () => {
     process.env.DATABASE_PATH = dbPath;
   });
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('recruiter can buy a multiplier when they have enough points', async () => {
@@ -103,3 +103,4 @@ describe('multiplier purchase and admin application', () => {
     await db.close();
   });
 });
+

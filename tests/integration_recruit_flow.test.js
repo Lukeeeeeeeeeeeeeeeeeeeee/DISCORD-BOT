@@ -1,4 +1,4 @@
-jest.setTimeout(15000);
+﻿jest.setTimeout(15000);
 
 const path = require('path');
 const fs = require('fs');
@@ -132,10 +132,10 @@ describe('integration: /recruit -> scheduler -> leaderboard_messages', () => {
     try {
       if (db && typeof db.close === 'function') await db.close();
     } catch (e) {
-      void e;
+      console.error(e);
     }
 
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('creates/updates leaderboard_messages after a recruit', async () => {
@@ -171,3 +171,4 @@ describe('integration: /recruit -> scheduler -> leaderboard_messages', () => {
     expect(rowCentral).toBeDefined();
   });
 });
+

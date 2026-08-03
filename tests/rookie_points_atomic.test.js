@@ -1,4 +1,4 @@
-const sqlite3 = require('sqlite3');
+﻿const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
 const path = require('path');
 const fs = require('fs');
@@ -44,7 +44,7 @@ describe('rookie points atomic updates', () => {
 
   afterEach(async () => {
     if (db) await db.close();
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('concurrent addRookiePoints does not lose increments', async () => {
@@ -82,3 +82,4 @@ describe('rookie points atomic updates', () => {
     expect(parsed.points).toBeNull();
   });
 });
+

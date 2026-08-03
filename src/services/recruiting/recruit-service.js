@@ -1,4 +1,4 @@
-const {
+﻿const {
   ROLE_IDS,
   RECRUITER_ROLE_IDS,
   REGION_ROLE_IDS,
@@ -74,7 +74,7 @@ Make sure you read how to war, whats a war and see readme!
 
 # <:SOLACEONTOP:1460693669391765750> SOLACE ROOKIE INFO
 Hello there and welcome to Solace! 
-The first thought that crosses your mind might be the reason behind your being given the ${rookieRole}—it's our basic role. You will have to earn ${fullRole} to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
+The first thought that crosses your mind might be the reason behind your being given the ${rookieRole}â€”it's our basic role. You will have to earn ${fullRole} to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
 
  Point Earning Methods
 
@@ -650,7 +650,7 @@ async function execute(interaction, _client, dbHandle = null) {
           });
         }
       } catch (e) {
-        void e;
+        console.error(e);
       }
 
       try {
@@ -712,3 +712,4 @@ async function execute(interaction, _client, dbHandle = null) {
 }
 
 module.exports = { execute };
+

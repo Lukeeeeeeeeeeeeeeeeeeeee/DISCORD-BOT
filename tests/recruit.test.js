@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -130,14 +130,14 @@ describe('/recruit command', () => {
     const cnt = cntRow ? cntRow.c : 0;
     if (cnt !== 0) {
       // reset DB file if unexpected rows exist
-      try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+      try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
       delete require.cache[require.resolve('../src/db_async.js')];
       await require('../src/db_async').exec('SELECT 1');
     }
   });
 
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('successfully recruits a member and updates DB and roles', async () => {
@@ -312,3 +312,4 @@ describe('/recruit command', () => {
     spy.mockRestore();
   });
 });
+

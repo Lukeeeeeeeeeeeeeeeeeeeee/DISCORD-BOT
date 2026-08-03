@@ -1,4 +1,4 @@
-async function acquireJobLock(db, { guildId, key, ttlMs, failOpen = false } = {}) {
+﻿async function acquireJobLock(db, { guildId, key, ttlMs, failOpen = false } = {}) {
   if (!db || !guildId || !key || !Number.isFinite(ttlMs)) return !!failOpen;
   const now = Date.now();
   const expiryCutoff = now - ttlMs;
@@ -45,10 +45,11 @@ async function acquireJobLock(db, { guildId, key, ttlMs, failOpen = false } = {}
     await db.run('COMMIT');
     return true;
   } catch (err) {
-    try { await db.run('ROLLBACK'); } catch (e) { void e; }
+    try { await db.run('ROLLBACK'); } catch (e) { console.error(e); }
     console.error('Job lock acquisition failed (fallback)', { key, error: err });
     return !!failOpen;
   }
 }
 
 module.exports = { acquireJobLock };
+

@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -25,7 +25,7 @@ describe('member leave handling', () => {
     process.env.DATABASE_PATH = dbPath;
   });
   afterEach(() => {
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('removes recruit and deducts points from recruiter', async () => {
@@ -45,3 +45,4 @@ describe('member leave handling', () => {
     await db.close();
   });
 });
+

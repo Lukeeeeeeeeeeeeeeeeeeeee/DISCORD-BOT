@@ -1,4 +1,4 @@
-const db = require('../db_async');
+﻿const db = require('../db_async');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -61,14 +61,18 @@ function scheduleFlush() {
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    void flushAll();
+    flushAll().catch(err => {
+      console.error('Analytics flush failed:', err);
+    });
   }, FLUSH_INTERVAL_MS);
 }
 
 function bumpPending(count = 1) {
   pendingWrites += count;
   if (pendingWrites >= MAX_BUFFER_SIZE) {
-    void flushAll();
+    flushAll().catch(err => {
+      console.error('Analytics flush failed:', err);
+    });
   } else {
     scheduleFlush();
   }
@@ -248,13 +252,13 @@ async function restorePendingFromDisk() {
     const parsed = JSON.parse(content);
     const snapshot = deserializeSnapshot(parsed && parsed.snapshot ? parsed.snapshot : parsed);
     if (!snapshot || !hasPending(snapshot)) {
-      try { await fs.unlink(ANALYTICS_PENDING_FILE); } catch (e) { void e; }
+      try { await fs.unlink(ANALYTICS_PENDING_FILE); } catch (e) { console.error(e); }
       return 0;
     }
     const entryCount = countSnapshotEntries(snapshot);
     mergeSnapshot(snapshot);
     pendingWrites = Math.min(MAX_BUFFER_SIZE, pendingWrites + entryCount);
-    try { await fs.unlink(ANALYTICS_PENDING_FILE); } catch (e) { void e; }
+    try { await fs.unlink(ANALYTICS_PENDING_FILE); } catch (e) { console.error(e); }
     scheduleFlush();
     return entryCount;
   } catch (e) {
@@ -603,3 +607,4 @@ module.exports = {
   spillPendingToDisk,
   restorePendingFromDisk
 };
+

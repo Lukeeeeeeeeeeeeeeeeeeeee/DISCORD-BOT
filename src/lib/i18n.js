@@ -1,4 +1,4 @@
-const path = require('path');
+﻿const path = require('path');
 const fs = require('fs');
 
 const localeCache = new Map();
@@ -80,7 +80,9 @@ async function preloadLocales() {
 function startPreload() {
   if (preloadStarted) return;
   preloadStarted = true;
-  void preloadLocales();
+   preloadLocales().catch(err => {
+    console.error('Failed to preload locales:', err);
+  });
 }
 
 function loadLocale(lang) {
@@ -90,11 +92,13 @@ function loadLocale(lang) {
   startPreload();
   if (!missingLocaleCache.has(key)) {
     missingLocaleCache.add(key);
-    void readLocaleFileAsync(key).then((parsed) => {
-      if (!parsed) return;
-      localeCache.set(key, parsed);
-      missingLocaleCache.delete(key);
-    });
+     readLocaleFileAsync(key).then((parsed) => {
+       if (!parsed) return;
+       localeCache.set(key, parsed);
+       missingLocaleCache.delete(key);
+     }).catch(err => {
+       console.error('Failed to load locale:', key, err);
+     });
   }
 
   return localeCache.get('en') || {};
@@ -130,3 +134,4 @@ function t(key, lang='en', vars={}) {
 }
 
 module.exports = { t, loadLocale, initI18n };
+

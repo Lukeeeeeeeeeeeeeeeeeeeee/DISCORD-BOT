@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -24,8 +24,8 @@ describe('multiplier-active admin', () => {
     await db.run('INSERT INTO multipliers (guild_id, recruiter_id, value, type, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)', 'GLOBAL', 'A', 1.25, 'm1.25_14d', Date.now(), Date.now() + (14 * 24 * 60 * 60 * 1000));
   });
   afterEach(async () => {
-    try { await db.close(); } catch (e) { void e; }
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { await db.close(); } catch (e) { console.error(e); }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
   test('multiplier-active returns embed with list', async () => {
     const { interaction } = makeInteraction('multiplier-active');
@@ -36,3 +36,4 @@ describe('multiplier-active admin', () => {
     expect(arg.embeds[0].data.title).toMatch(/Active Multipliers/);
   });
 });
+

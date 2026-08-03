@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 const fs = require('fs/promises');
 const path = require('path');
 const { REST } = require('@discordjs/rest');
@@ -66,8 +66,8 @@ async function withRegistrationLock(run) {
   try {
     return await run();
   } finally {
-    try { await lockHandle.close(); } catch (e) { void e; }
-    try { await fs.unlink(REGISTER_LOCK_FILE); } catch (e) { void e; }
+    try { await lockHandle.close(); } catch (e) { console.error(e); }
+    try { await fs.unlink(REGISTER_LOCK_FILE); } catch (e) { console.error(e); }
   }
 }
 
@@ -210,11 +210,11 @@ const commands = [
 async function registerCommands({ guildId = null, global = false } = {}) {
   validateRuntimeEnvironment({ minNodeMajor: 18 });
   const token = sanitizeEnvToken(process.env.DISCORD_TOKEN);
-  if (!token) throw new Error('DISCORD_TOKEN missing — cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
+  if (!token) throw new Error('DISCORD_TOKEN missing â€” cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
 
   const rest = new REST({ version: '10' }).setToken(token);
   const clientId = process.env.CLIENT_ID;
-  if (!clientId) throw new Error('CLIENT_ID missing — set CLIENT_ID in .env');
+  if (!clientId) throw new Error('CLIENT_ID missing â€” set CLIENT_ID in .env');
 
   return withRegistrationLock(async () => {
     console.log('Started refreshing application (/) commands.');
@@ -252,11 +252,11 @@ if (require.main === module) {
       await registerCommands({ guildId, global: useGlobal });
     } catch (error) {
       if (error && error.message && error.message.includes('DISCORD_TOKEN missing')) {
-        console.error('DISCORD_TOKEN missing — cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
+        console.error('DISCORD_TOKEN missing â€” cannot register slash commands. Set DISCORD_TOKEN in .env and try again.');
         process.exit(1);
       }
       if (error && error.message && error.message.includes('CLIENT_ID missing')) {
-        console.error('CLIENT_ID missing — set CLIENT_ID in .env and try again.');
+        console.error('CLIENT_ID missing â€” set CLIENT_ID in .env and try again.');
         process.exit(1);
       }
       if (error && error.code === 'TokenInvalid') {
@@ -268,3 +268,4 @@ if (require.main === module) {
     }
   })();
 }
+

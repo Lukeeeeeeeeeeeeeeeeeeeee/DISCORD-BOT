@@ -1,4 +1,4 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const path = require('path');
 
 test('db is created at DATABASE_PATH when required', () => {
@@ -15,6 +15,7 @@ test('db is created at DATABASE_PATH when required', () => {
   // Clean up
   try {
     if (db && typeof db.close === 'function') db.close();
-  } catch (e) { void e; }
-  try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+  } catch (e) { console.error(e); }
+  try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
 });
+

@@ -1,4 +1,4 @@
-jest.setTimeout(10000);
+﻿jest.setTimeout(10000);
 const path = require('path');
 const fs = require('fs');
 
@@ -45,8 +45,8 @@ describe('warnings leaderboard', () => {
     `);
   });
   afterEach(async () => {
-    try { await db.close(); } catch (e) { void e; }
-    try { fs.unlinkSync(dbPath); } catch (e) { void e; }
+    try { await db.close(); } catch (e) { console.error(e); }
+    try { fs.unlinkSync(dbPath); } catch (e) { console.error(e); }
   });
 
   test('recomputeWarningsLeaderboard posts/upserts a leaderboard message', async () => {
@@ -68,3 +68,4 @@ describe('warnings leaderboard', () => {
     expect(row.message_id).toBeTruthy();
   });
 });
+
