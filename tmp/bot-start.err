@@ -1,0 +1,24 @@
+[AECS] SYS-210 recruit.reconciliation.summary {
+  scope: 'recruit.reconciliation.summary',
+  message: 'Recruit reconciliation complete',
+  level: 'warn'
+}
+[AECS] SYS-210 startup.hierarchy {
+  scope: 'startup.hierarchy',
+  message: 'Bot role is NOT at the top of the hierarchy. Anti-nuke actions may fail.',
+  level: 'warn'
+}
+⚠️ [ANTI-NUKE] WARNING: The bot's highest role is NOT at the top of the hierarchy. Higher roles: *. Anti-nuke will be powerless against users with these roles.
+Health check server error: Error: listen EADDRINUSE: address already in use :::3000
+    at Server.setupListenHandle [as _listen2] (node:net:1948:16)
+    at listenInCluster (node:net:2005:12)
+    at Server.listen (node:net:2110:7)
+    at startHealthServer (C:\discord-bot\src\lib\health-server.js:76:10)
+    at Client.onReady (C:\discord-bot\src\index.js:357:20)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 3000
+}

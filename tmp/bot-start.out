@@ -1,0 +1,22 @@
+Creating recruiter invite tables...
+BOOT: startup entered
+Anti-nuke data loaded from file: antinuke_data.local.json
+⏰ Automated tasks started (cleanup + backups)
+🛡️ Anti-nuke system initialized with 45+ protection features
+🔄 No existing rollback data found, starting fresh
+🔄 Anti-nuke rollback integration enabled
+🛡️ Complete Anti-Nuke System initialized with rollback support!
+BOOT: database connectivity ok
+BOOT: awaiting anti-nuke init
+BOOT: anti-nuke init resolved
+BOOT: awaiting invite init
+Recruiter invite tables created successfully
+Loaded 0 active invites for guild 1412808625017065544
+Invite system initialized for guild 1412808625017065544
+BOOT: invite init resolved
+BOOT: internal worker enabled=false
+BOOT: extra worker tokens=5
+BOOT: calling client.login
+BOOT: client.login resolved
+Started refreshing application (/) commands.
+Successfully reloaded application (/) commands for guild 1412808625017065544.
