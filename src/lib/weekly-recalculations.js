@@ -194,7 +194,6 @@ async function performWeeklyRecalculations(guild) {
     });
 
     const results = [];
-    const notifyQueue = [];
     for (const entry of calcResults) {
       if (entry && entry.ok === false && entry.error) {
         console.error('Error recalculating staff member:', entry.error);
@@ -202,15 +201,6 @@ async function performWeeklyRecalculations(guild) {
       }
       if (!entry || !entry.ok || !entry.result) continue;
       results.push(entry.result);
-      if (entry.notify) notifyQueue.push(entry.result);
-    }
-
-    // Send DMs with limited concurrency to avoid rate limits
-    const logChannel = guild.channels && guild.channels.cache
-      ? guild.channels.cache.get(CHANNELS.INVITES_OVERALL)
-      : null;
-    if (notifyQueue.length) {
-      await runWithConcurrency(notifyQueue, DM_CONCURRENCY, (entry) => sendWeeklyRecalculationDM(entry, { logChannel }));
     }
 
     // Check for expired absences and post return messages
@@ -227,63 +217,6 @@ async function performWeeklyRecalculations(guild) {
   } catch (error) {
     console.error('Weekly recalculation failed:', error);
     throw error;
-  }
-}
-
-/**
- * Send DM notification to staff member about weekly recalculation
- */
-async function sendWeeklyRecalculationDM(result, options = {}) {
-  const { staffMember, newMinReq, stats7d, activeWarnings, absence, previousMinReq } = result;
-  const logChannel = options.logChannel || null;
-
-  try {
-    const embed = new EmbedBuilder()
-      .setTitle('📊 Weekly Recruiter Update')
-      .setDescription('Your weekly recruiting requirements have been recalculated.')
-      .addFields(
-        { name: 'New Min Requirement', value: `${newMinReq} recruits/week`, inline: true },
-        { name: 'Previous Min', value: previousMinReq ? `${previousMinReq} recruits/week` : 'First calculation', inline: true },
-        { name: 'Change', value: previousMinReq ? `${newMinReq - previousMinReq > 0 ? '+' : ''}${newMinReq - previousMinReq}` : 'N/A', inline: true }
-      )
-      .addFields(
-        { name: 'Recruits (7 days)', value: `${stats7d.recruits7d}`, inline: true },
-        { name: '7-Day Retention', value: `${Math.round(stats7d.retention * 100)}%`, inline: true },
-        { name: 'Active Warnings', value: `${activeWarnings}`, inline: true }
-      )
-      .setColor(absence ? 0xFFAA00 : (newMinReq > stats7d.recruits7d ? 0xFF6B6B : 0x51CF66))
-      .setTimestamp()
-      .setFooter({ text: 'Recalculations run every Monday at 00:00 UTC' });
-
-    // Add explanation
-    let explanation = '';
-    if (absence) {
-      explanation = '📅 **Absence Active**: Requirements suspended';
-    } else if (stats7d.recruits7d <= 1) {
-      explanation = '🔻 **Low Activity**: Floor protection applied (≤1 recruit)';
-    } else if (activeWarnings >= 2) {
-      explanation = '⚠️ **Warning Freeze**: Changes frozen due to warnings';
-    } else if (newMinReq > stats7d.recruits7d) {
-      explanation = '📈 **Below Target**: Need more recruits to reach 8/week goal';
-    } else {
-      explanation = '✅ **On Track**: Meeting or exceeding requirements';
-    }
-
-    embed.addFields({ name: 'Status', value: explanation, inline: false });
-
-    await sendWithRetries(() => staffMember.send({ embeds: [embed] })).catch(async (e) => {
-      const tag = staffMember && staffMember.user ? staffMember.user.tag : staffMember.id;
-      console.log(`Failed to send weekly DM to ${tag}`);
-      if (logChannel && typeof logChannel.send === 'function') {
-        await logChannel.send(`Weekly recalculation DM failed for <@${staffMember.id}> (DMs closed or blocked).`).catch(err => {
-          console.error('Failed to log weekly DM failure:', err);
-        });
-      }
-      throw e;
-    });
-
-  } catch (error) {
-    console.error(`Error sending weekly DM to ${staffMember.id}:`, error);
   }
 }
 
@@ -412,7 +345,5 @@ async function handleExpiredAbsences(guild) {
 
 module.exports = {
   performWeeklyRecalculations,
-  sendWeeklyRecalculationDM,
-  postRetentionToInviteChannels,
   handleExpiredAbsences
 };
