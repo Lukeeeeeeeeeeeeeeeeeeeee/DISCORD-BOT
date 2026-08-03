@@ -1305,25 +1305,38 @@ async function init(dbPath = getConfiguredDbPath()) {
     `);
   });
 
-  // Add columns if missing (best-effort)
-  try { await db.exec("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE flags ADD COLUMN dismissed INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE recruits ADD COLUMN points INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE warnings ADD COLUMN expired_at INTEGER"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE warnings ADD COLUMN revoked INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN week_start INTEGER"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0"); } catch (e) { console.error(e); }
+  // Add columns if missing (best-effort — skip duplicate column errors)
+  const ignoreDuplicateColumn = (e) => {
+    const msg = String((e && e.message) || '').toLowerCase();
+    return msg.includes('duplicate column name');
+  };
+
+  const alter = async (sql) => {
+    try {
+      await db.exec(sql);
+    } catch (e) {
+      if (!ignoreDuplicateColumn(e)) console.warn('ALTER TABLE failed:', { sql, error: e && e.message ? e.message : String(e) });
+    }
+  };
+
+  await alter("ALTER TABLE recruiters ADD COLUMN promoted INTEGER DEFAULT 0");
+  await alter("ALTER TABLE recruiters ADD COLUMN channel_base INTEGER DEFAULT 4");
+  await alter("ALTER TABLE flags ADD COLUMN dismissed INTEGER DEFAULT 0");
+  await alter("ALTER TABLE recruits ADD COLUMN points INTEGER DEFAULT 0");
+  await alter("ALTER TABLE warnings ADD COLUMN expired_at INTEGER");
+  await alter("ALTER TABLE warnings ADD COLUMN revoked INTEGER DEFAULT 0");
+  await alter("ALTER TABLE weekly_calculations ADD COLUMN week_start INTEGER");
+  await alter("ALTER TABLE weekly_calculations ADD COLUMN absent INTEGER DEFAULT 0");
+  await alter("ALTER TABLE weekly_calculations ADD COLUMN verify_rate REAL DEFAULT 0");
   try { await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uniq_weekly_calc_recruiter_week ON weekly_calculations(guild_id, recruiter_id, week_start)'); } catch (e) { console.error(e); }
   try { await db.exec("CREATE TABLE IF NOT EXISTS multipliers (id INTEGER PRIMARY KEY AUTOINCREMENT, recruiter_id TEXT NOT NULL, value REAL NOT NULL, type TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE analytics_daily_guild ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
-  try { await db.exec("ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER"); } catch (e) { console.error(e); }
+  await alter("ALTER TABLE analytics_daily_channels ADD COLUMN day_ts INTEGER");
+  await alter("ALTER TABLE analytics_daily_channel_speakers ADD COLUMN day_ts INTEGER");
+  await alter("ALTER TABLE analytics_daily_guild ADD COLUMN day_ts INTEGER");
+  await alter("ALTER TABLE analytics_daily_guild_speakers ADD COLUMN day_ts INTEGER");
+  await alter("ALTER TABLE analytics_voice_daily ADD COLUMN day_ts INTEGER");
+  await alter("ALTER TABLE analytics_user_daily_messages ADD COLUMN day_ts INTEGER");
+  await alter("ALTER TABLE analytics_command_usage ADD COLUMN day_ts INTEGER");
 
   await ensureNormalizedViews();
   await ensureRecruiterInsertTriggers();
