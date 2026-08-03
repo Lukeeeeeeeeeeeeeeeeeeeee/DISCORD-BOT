@@ -80,7 +80,7 @@ async function preloadLocales() {
 function startPreload() {
   if (preloadStarted) return;
   preloadStarted = true;
-   preloadLocales().catch(err => {
+  preloadLocales().catch(err => {
     console.error('Failed to preload locales:', err);
   });
 }
@@ -92,13 +92,13 @@ function loadLocale(lang) {
   startPreload();
   if (!missingLocaleCache.has(key)) {
     missingLocaleCache.add(key);
-     readLocaleFileAsync(key).then((parsed) => {
-       if (!parsed) return;
-       localeCache.set(key, parsed);
-       missingLocaleCache.delete(key);
-     }).catch(err => {
-       console.error('Failed to load locale:', key, err);
-     });
+    readLocaleFileAsync(key).then((parsed) => {
+      if (!parsed) return;
+      localeCache.set(key, parsed);
+      missingLocaleCache.delete(key);
+    }).catch(err => {
+      console.error('Failed to load locale:', key, err);
+    });
   }
 
   return localeCache.get('en') || {};
