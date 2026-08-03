@@ -1,7 +1,6 @@
 const db = require('../db_async');
 const { EmbedBuilder } = require('discord.js');
 const { getWeekStartUtcTs } = require('./week');
-const { formatUtcDateOnly } = require('./time');
 const {
   getPreviousMinReq,
   storeWeeklyCalculation,
