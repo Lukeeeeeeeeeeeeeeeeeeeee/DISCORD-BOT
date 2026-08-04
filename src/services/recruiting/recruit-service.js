@@ -132,7 +132,7 @@ function getRecruitPolicy() {
   const defaults = RECRUIT_POLICY || {};
   const maxJoinMinutes = parseThreshold(
     process.env.RECRUIT_MAX_JOIN_MINUTES,
-    parseThreshold(defaults.MAX_JOIN_MINUTES, 120)
+    parseThreshold(defaults.MAX_JOIN_MINUTES, 1440)
   );
   const minAccountAgeDays = parseThreshold(
     process.env.RECRUIT_MIN_ACCOUNT_AGE_DAYS,
