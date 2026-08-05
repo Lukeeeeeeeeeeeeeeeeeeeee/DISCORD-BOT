@@ -32,6 +32,11 @@ function inferTeamFromRecruiter(member) {
   if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU && member.roles.cache.has(RECRUITER_ROLE_IDS.EU)) return 'EU';
   if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA && member.roles.cache.has(RECRUITER_ROLE_IDS.NA)) return 'NA';
   if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS && member.roles.cache.has(RECRUITER_ROLE_IDS.AS)) return 'AS';
+  if (ROLE_IDS.TEAM_MEMBER) {
+    if (ROLE_IDS.TEAM_MEMBER.EU && member.roles.cache.has(ROLE_IDS.TEAM_MEMBER.EU)) return 'EU';
+    if (ROLE_IDS.TEAM_MEMBER.NA && member.roles.cache.has(ROLE_IDS.TEAM_MEMBER.NA)) return 'NA';
+    if (ROLE_IDS.TEAM_MEMBER.AS && member.roles.cache.has(ROLE_IDS.TEAM_MEMBER.AS)) return 'AS';
+  }
   return null;
 }
 
