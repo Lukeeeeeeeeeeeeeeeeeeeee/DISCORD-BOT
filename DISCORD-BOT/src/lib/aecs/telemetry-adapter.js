@@ -199,8 +199,9 @@ class TelemetryAdapter {
     let result = await this.sendToWebhook(url, payload);
     let attempt = 0;
 
-    while (!result.ok && result.retryable && attempt < DEFAULT_MAX_RETRIES) {
+     while (!result.ok && result.retryable && attempt < DEFAULT_MAX_RETRIES) {
       const backoffMs = RETRY_BACKOFF_MS[attempt] || RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1];
+      console.warn('[AECS] Telemetry retry attempt', attempt + 1, 'for', url, 'in', backoffMs + 'ms');
       await new Promise(resolve => setTimeout(resolve, backoffMs));
       result = await this.sendToWebhook(url, payload);
       attempt += 1;
