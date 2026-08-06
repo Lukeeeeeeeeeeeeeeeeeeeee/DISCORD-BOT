@@ -12,7 +12,6 @@ const defaultDb = require('../../db_async');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
-const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { hasRecruiterOrStaffPermissions, hasAdministrator } = require('../../lib/permissions');
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
@@ -23,7 +22,6 @@ const rookiePointsRepo = require('../../repos/rookie-points-repo');
 const trialFastTrackRepo = require('../../repos/trial-fast-track-repo');
 const { changeRecruiterPoints } = require('./ledger-service');
 const scheduler = require('../../scheduler');
-const campaignService = require('../dm/dm-campaign-service');
 
 function createTraceId() {
   return `recruit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -41,6 +39,11 @@ function inferTeamFromRecruiter(member) {
   if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.EU && member.roles.cache.has(RECRUITER_ROLE_IDS.EU)) return 'EU';
   if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.NA && member.roles.cache.has(RECRUITER_ROLE_IDS.NA)) return 'NA';
   if (RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS.AS && member.roles.cache.has(RECRUITER_ROLE_IDS.AS)) return 'AS';
+  if (ROLE_IDS.TEAM_MEMBER) {
+    if (ROLE_IDS.TEAM_MEMBER.EU && member.roles.cache.has(ROLE_IDS.TEAM_MEMBER.EU)) return 'EU';
+    if (ROLE_IDS.TEAM_MEMBER.NA && member.roles.cache.has(ROLE_IDS.TEAM_MEMBER.NA)) return 'NA';
+    if (ROLE_IDS.TEAM_MEMBER.AS && member.roles.cache.has(ROLE_IDS.TEAM_MEMBER.AS)) return 'AS';
+  }
   return null;
 }
 
@@ -795,19 +798,6 @@ async function execute(interaction, _client, dbHandle = null) {
         }
       } catch (e) {
         reportRecruitServiceError('service.recruit.recomputeLeaderboards', e, { guildId, recruiterId: interaction.user.id });
-      }
-
-      try {
-        await campaignService.createCampaign({
-          guild: interaction.guild,
-          requestedBy: interaction.user.id,
-          messageType: 'system_welcome',
-          messageBody: buildRecruitWelcomeMessage(teamName),
-          targetMode: 'direct',
-          directUserIds: [member.id]
-        });
-      } catch (e) {
-        reportRecruitServiceError('service.recruit.welcomeDm.queue', e, { guildId, recruitedId: member.id });
       }
 
       const totalRecruits = await recruitsRepo.countValidByRecruiter(db, guildId, creditedRecruiterId);

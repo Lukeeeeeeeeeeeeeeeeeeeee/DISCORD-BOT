@@ -7,13 +7,11 @@ const {
 const { getRegionInfo, getTeamLabel } = require('../../lib/regions');
 const { replyError } = require('../../lib/embeds');
 const db = require('../../db_async');
-const { buildRecruitWelcomeMessage } = require('../../lib/join-welcome');
 const { getActiveMultiplier, calculateRecruitPoints, formatPointsValue } = require('../../lib/economy');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const { resolveGuildId } = require('../../lib/guild');
 const { logUnexpectedError, logRuntimeEvent } = require('../../lib/logger');
 const { hasRecruiterOrStaffPermissions, hasAdminOrStaffPermissions } = require('../../lib/permissions');
-const campaignService = require('../../services/dm/dm-campaign-service');
 
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
@@ -111,33 +109,6 @@ function normalizeIgn(rawIgn, suffix) {
   const maxLen = Math.max(1, 32 - suffix.length);
   if (cleaned.length > maxLen) return cleaned.slice(0, maxLen).trim();
   return cleaned;
-}
-
-function isExpectedWelcomeDmFailure(err) {
-  const code = Number(
-    err?.code
-    ?? err?.rawError?.code
-    ?? err?.data?.code
-    ?? NaN
-  );
-  if ([50007, 50013, 50001].includes(code)) return true;
-
-  const status = Number(
-    err?.status
-    ?? err?.rawError?.status
-    ?? err?.statusCode
-    ?? err?.rawError?.statusCode
-    ?? NaN
-  );
-
-  const rawMessage = err?.message ?? err?.rawError?.message ?? err?.data?.message ?? '';
-  const message = String(rawMessage).toLowerCase();
-  if (message.includes('cannot send messages to this user')) return true;
-  if (message.includes('cannot message this user')) return true;
-  if (message.includes('dms are closed')) return true;
-  if (status === 403 && message.includes('missing access')) return true;
-
-  return false;
 }
 
 async function storeMinReqSnapshotAfterPromotion(db, guild, recruiterMember) {
@@ -686,49 +657,8 @@ module.exports = {
           reportRecruitError('command.recruit.recomputeLeaderboards', e);
         }
 
-        try {
-          await campaignService.createCampaign({
-            guild: interaction.guild,
-            requestedBy: interaction.user.id,
-            messageType: 'system_welcome',
-            messageBody: buildRecruitWelcomeMessage(teamName),
-            targetMode: 'direct',
-            directUserIds: [member.id]
-          });
-        } catch (e) {
-          reportRecruitError('command.recruit.welcomeDm.queue', e);
-        }
-
-        let dmFailure = null;
-        try {
-          await recruitedGuildMember.send({
-            content: buildRecruitWelcomeMessage(teamName),
-            allowedMentions: { parse: [] }
-          });
-        } catch (err) {
-          const isBlocked = isExpectedWelcomeDmFailure(err);
-          dmFailure = isBlocked ? 'blocked' : 'error';
-          const tag = member && (member.tag || member.username) ? (member.tag || member.username) : member.id;
-          if (isBlocked) {
-            void logRuntimeEvent('warn', 'command.recruit.welcomeDm.skipped', 'Rookie welcome DM skipped (DM blocked/closed)', {
-              command: 'recruit',
-              guildId,
-              recruitedId: member.id,
-              tag
-            });
-          } else {
-            reportRecruitError('command.recruit.welcomeDm.send', err);
-          }
-        }
-
-        const dmNote = dmFailure === 'blocked'
-          ? ' Note: I could not DM them (their DMs are closed).'
-          : dmFailure === 'error'
-            ? ' Note: I could not DM them due to an unexpected error.'
-            : '';
-
         const creditedText = isCreditOverride ? ` to <@${creditedRecruiterId}>` : '';
-        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}.${dmNote}` });
+        return respond({ content: `Successfully recruited ${member.tag} as ${teamName}. Awarded **${formatPointsValue(points)}** points${creditedText}.` });
       } catch (err) {
         const dispatchResult = await logUnexpectedError('command.recruit.execute.inner', err, {
           command: 'recruit',

@@ -1141,10 +1141,11 @@ async function init() {
   });
 
   // Component 10 — dm_queue defensive migration
-  // The committed HEAD of recruit.js had 'INSERT INTO dm_queue' (scope: command.recruit.queueWelcomeDm)
+  // A prior version of recruit.js queued welcome DMs into dm_queue (scope: command.recruit.queueWelcomeDm)
   // which caused CMD-500 AECS errors on every /recruit invocation because the table was never created.
-  // The working tree already sends welcome DMs directly via member.send() — this migration is defensive:
-  // it ensures the table exists so any old-code-path deployments don't crash before the new code lands.
+  // The welcome DM feature has since been removed entirely (no DMs are sent to recruited members).
+  // This migration is now purely a no-op table-creation guard for any stale deployments; it is harmless
+  // and no active code path writes to or reads from dm_queue.
   await applyMigration('2026-04-01-dm-queue', async () => {
     await db.exec(`
       CREATE TABLE IF NOT EXISTS dm_queue (
