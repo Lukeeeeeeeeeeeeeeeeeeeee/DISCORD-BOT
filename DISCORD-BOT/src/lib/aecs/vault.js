@@ -67,21 +67,21 @@ class AecsVault {
       closes.push(new Promise((resolve) => {
         this.logStream.end(() => resolve());
       }));
-      this.logStream = null;
     }
     if (this.idxStream) {
       closes.push(new Promise((resolve) => {
         this.idxStream.end(() => resolve());
       }));
-      this.idxStream = null;
     }
+    if (closes.length) {
+      await Promise.all(closes);
+    }
+    this.logStream = null;
+    this.idxStream = null;
     this.currentDateKey = null;
     this.currentJsonlPath = null;
     this.currentIdxPath = null;
     this.currentOffset = 0;
-    if (closes.length) {
-      await Promise.all(closes);
-    }
   }
 
   queue(record) {

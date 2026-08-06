@@ -392,4 +392,32 @@ describe('AECS Pre-Production Hardening', () => {
       }
     });
   });
+
+  describe('FIX-03: closeStreams race condition', () => {
+    test('streams are not nulled until end() callbacks complete', async () => {
+      const vault = new AecsVault({ logDir, flushIntervalMs: 2000 });
+      fs.mkdirSync(logDir, { recursive: true });
+
+      vault.queue({ timestamp: Date.now(), hashId: 1, severity: 'INFO', scope: 'test.streams' });
+      await vault.flush();
+
+      expect(vault.logStream).not.toBeNull();
+      expect(vault.idxStream).not.toBeNull();
+
+      let logStreamStillAliveDuringEnd = false;
+      const originalLogEnd = vault.logStream.end;
+      vault.logStream.end = jest.fn((callback) => {
+        logStreamStillAliveDuringEnd = vault.logStream !== null;
+        originalLogEnd.call(vault.logStream, callback);
+      });
+
+      await vault.closeStreams();
+
+      expect(logStreamStillAliveDuringEnd).toBe(true);
+      expect(vault.logStream).toBeNull();
+      expect(vault.idxStream).toBeNull();
+      expect(vault.currentDateKey).toBeNull();
+      expect(vault.currentOffset).toBe(0);
+    });
+  });
 });
