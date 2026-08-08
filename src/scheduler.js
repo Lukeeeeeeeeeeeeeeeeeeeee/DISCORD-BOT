@@ -1050,7 +1050,8 @@ function start(client, db) {
     if (!guild) return;
     await reconcilePendingRecruits(db, guild).catch((e) => console.error('reconcilePendingRecruits failed:', e));
     await reconcileTrialRecruiters(db, client).catch((e) => console.error('reconcileTrialRecruiters failed:', e));
-    await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
+    // DISABLED: Don't recompute leaderboards on startup - only update on schedule
+    // await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
 
     // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
     // Sanity Window: Only catch up if we are within 24 hours of the scheduled time.
