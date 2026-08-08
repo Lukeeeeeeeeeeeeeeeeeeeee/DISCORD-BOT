@@ -132,8 +132,6 @@ function makeLeaderboardText(rows, regionLabel, lang = 'en') {
   }
   const remaining = lines.length - (kept.length - 1);
   if (remaining > 0) kept.push(`...and ${remaining} more`);
-  const remaining = lines.length - (kept.length - 1);
-  if (remaining > 0) kept.push(`...and ${remaining} more`);
   text = kept.join('\n');
   return text.length > 2000 ? text.slice(0, 1997) + '...' : text;
 }
