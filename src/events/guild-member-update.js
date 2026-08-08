@@ -38,6 +38,30 @@ function createGuildMemberUpdateHandler({
       const added = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id) && trackedRoleIds.has(role.id));
       const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id) && trackedRoleIds.has(role.id));
 
+      // Auto-remove onboarding roles when promoted to Staff/Recruiter/Team Member
+      if (added.size > 0) {
+        const onboardingRoles = [
+          ROLE_IDS.ONBOARDING_FIRE,
+          ROLE_IDS.ONBOARDING_WATER,
+          ROLE_IDS.ONBOARDING_AIR,
+          ...(Array.isArray(ROLE_IDS.ONBOARDING) ? ROLE_IDS.ONBOARDING : [])
+        ].filter(Boolean);
+
+        const uniqueOnboardingRoles = Array.from(new Set(onboardingRoles));
+        const onboardingRolesToRemove = uniqueOnboardingRoles.filter(roleId => 
+          newMember.roles.cache.has(roleId)
+        );
+
+        if (onboardingRolesToRemove.length > 0) {
+          try {
+            await newMember.roles.remove(onboardingRolesToRemove, 'Auto-remove onboarding roles on promotion');
+            console.log(`Removed onboarding roles from ${newMember.user.tag} (${newMember.id}) after promotion`);
+          } catch (err) {
+            console.error(`Failed to remove onboarding roles from ${newMember.user.tag}:`, err);
+          }
+        }
+      }
+
       for (const role of added.values()) {
         await analytics.recordRoleChange({
           guildId: newMember.guild.id,

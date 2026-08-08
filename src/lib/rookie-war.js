@@ -86,11 +86,11 @@ async function handleRookieWarLogMessage({ db, message, member, guild, client })
   const totalPoints = Number.isFinite(result.points) ? formatPoints(result.points) : '0';
   let response;
   if (result.promoted) {
-    response = `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: 10/10. Promoted to ${result.teamName}.`;
+    response = `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: 2/2. Promoted to ${result.teamName}.`;
   } else if (result.promotionError) {
-    response = `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints}/10. Promotion could not be completed: ${result.promotionError}`;
+    response = `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints}/2. Promotion could not be completed: ${result.promotionError}`;
   } else {
-    response = `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints}/10.`;
+    response = `Logged war/gank for <@${member.id}> (+${WAR_GANK_POINTS} points). Total: ${totalPoints}/2.`;
   }
 
   if (message.channel && message.channel.send) {

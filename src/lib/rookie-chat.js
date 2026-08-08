@@ -122,7 +122,7 @@ async function trackRookieChatMessage({ db, member, guild, client }) {
     const logChannel = guild.channels.cache.get(logChannelId);
     if (logChannel && logChannel.send) {
       const totalPoints = Number.isFinite(result.points) ? formatPoints(result.points) : '0';
-      const msg = `💬 <@${member.id}> earned **${formatPoints(pointsToAdd)}** chat points (${messageCount} msgs this week). Total: **${totalPoints}/10**.`;
+      const msg = `💬 <@${member.id}> earned **${formatPoints(pointsToAdd)}** chat points (${messageCount} msgs this week). Total: **${totalPoints}/2**.`;
       logChannel.send(msg).catch(err => {
         console.error('Failed to post rookie chat log:', err);
       });

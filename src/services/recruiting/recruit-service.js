@@ -17,6 +17,7 @@ const { hasRecruiterOrStaffPermissions, hasAdministrator } = require('../../lib/
 const { calculate7DayStats, storeWeeklyCalculation, calculateMinRecruitsFixed, getBaseRequirement } = require('../../lib/recruiting-system');
 const { getWeekStartUtcTs } = require('../../lib/week');
 const { withTransaction } = require('../../lib/transactions');
+const { addRookiePoints } = require('../../lib/rookie-points');
 const recruitsRepo = require('../../repos/recruits-repo');
 const rookiePointsRepo = require('../../repos/rookie-points-repo');
 const trialFastTrackRepo = require('../../repos/trial-fast-track-repo');
@@ -100,7 +101,7 @@ The first thought that crosses your mind might be the reason behind your being g
 You can combine any combination of these methods or concentrate solely on one (2 & 3 are the most consistent). Also, keep in mind that they are **not** permanent points!
 
 What Are Points? 
-Points are shown beside your name (e.g., 0/10). With more wars, chat, and recruiting activities, the points go up.
+Points are shown beside your name (e.g., 0/2). With more wars, chat, and recruiting activities, the points go up.
 
 Logging Progress 
 Make sure to put down your achievements in ${logsChannel} always. This is a must to ensure the counting of your points and your elevation. **Why?**
@@ -310,7 +311,7 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
     return { promoted: false };
   }
 
-  count = Math.min(3, count + 1);
+  count = Math.min(2, count + 1);
   await trialFastTrackRepo.upsert(dbHandle, guildId, recruiterMember.id, {
     startedAt: row.started_at,
     recruit1Id: updates.recruit1Id,
@@ -328,12 +329,12 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
     windowStart
   );
 
-  const shouldPromote = (count >= 3) || (recent && recent.length >= 3);
+  const shouldPromote = (count >= 2) || (recent && recent.length >= 2);
   if (!shouldPromote) return { promoted: false };
 
-  const idsToCheck = (recent && recent.length >= 3)
+  const idsToCheck = (recent && recent.length >= 2)
     ? recent.map(r => r.recruited_id)
-    : [updates.recruit1Id, updates.recruit2Id, updates.recruit3Id].filter(Boolean);
+    : [updates.recruit1Id, updates.recruit2Id].filter(Boolean);
 
   if (idsToCheck.length) {
     const memberMap = await fetchMembersByIds(guild, idsToCheck).catch(() => new Map());
@@ -368,13 +369,17 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
   const rolesToAdd = [ROLE_IDS.AUTO_PROMOTE_ROLE, ROLE_IDS.RECRUITER, recruiterRoleId]
     .filter(Boolean)
     .filter(roleId => !recruiterMember.roles.cache.has(roleId));
+  
+  const rolesToRemove = [ROLE_IDS.TRIAL_RECRUITER, ROLE_IDS.ROOKIE]
+    .filter(Boolean)
+    .filter(roleId => recruiterMember.roles.cache.has(roleId));
 
   try {
     if (rolesToAdd.length) {
       await recruiterMember.roles.add(rolesToAdd, 'Trial recruiter auto-promotion');
     }
-    if (ROLE_IDS.TRIAL_RECRUITER && recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
-      await recruiterMember.roles.remove(ROLE_IDS.TRIAL_RECRUITER, 'Trial recruiter auto-promotion');
+    if (rolesToRemove.length) {
+      await recruiterMember.roles.remove(rolesToRemove, 'Trial recruiter auto-promotion');
     }
   } catch (err) {
     console.error('Failed to apply trial recruiter auto-promotion roles:', err);
@@ -393,8 +398,9 @@ async function updateTrialFastTrack(dbHandle, guild, recruiterMember, recruitedI
       if (rollbackRemove.length) {
         await recruiterMember.roles.remove(rollbackRemove, 'Rollback failed trial auto-promotion');
       }
-      if (ROLE_IDS.TRIAL_RECRUITER && !recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
-        await recruiterMember.roles.add(ROLE_IDS.TRIAL_RECRUITER, 'Rollback failed trial auto-promotion');
+      const rollbackAdd = rolesToRemove.filter(roleId => !recruiterMember.roles.cache.has(roleId));
+      if (rollbackAdd.length) {
+        await recruiterMember.roles.add(rollbackAdd, 'Rollback failed trial auto-promotion');
       }
     } catch (rollbackErr) {
       console.error('Failed to rollback trial recruiter role changes after DB failure:', rollbackErr);
@@ -472,7 +478,7 @@ async function execute(interaction, _client, dbHandle = null) {
     }
     const teamInfo = getRegionInfo(team);
     const teamName = teamInfo && teamInfo.name ? teamInfo.name : team;
-    const nicknameSuffix = ` | ${regionTag || team} 0/10`;
+    const nicknameSuffix = ` | ${regionTag || team} 0/2`;
     const ign = normalizeIgn(rawIgn, nicknameSuffix);
     if (!ign) {
       return replyError(interaction, 'IGN must include at least 1 visible character.');
@@ -663,6 +669,28 @@ async function execute(interaction, _client, dbHandle = null) {
           const trialResult = await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id);
           if (trialResult && trialResult.error) {
             console.error('Trial fast-track completed with warning:', trialResult.error);
+          }
+          
+          // Award 1 rookie point per recruit if the recruiter is both Trial Recruiter AND Rookie
+          const isTrialRecruiter = recruiterMember.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER);
+          const isRookie = recruiterMember.roles.cache.has(ROLE_IDS.ROOKIE);
+          
+          if (isTrialRecruiter && isRookie) {
+            try {
+              const rookiePointResult = await addRookiePoints({
+                db,
+                member: recruiterMember,
+                delta: 1,
+                guild: interaction.guild,
+                verifierId: interaction.user.id
+              });
+              
+              if (rookiePointResult && rookiePointResult.promoted) {
+                console.log(`Trial Recruiter ${recruiterMember.user.tag} (${recruiterMember.id}) promoted after earning 2/2 rookie points`);
+              }
+            } catch (rookiePointErr) {
+              console.error('Failed to award rookie point to trial recruiter:', rookiePointErr);
+            }
           }
         }
       } catch (e) {

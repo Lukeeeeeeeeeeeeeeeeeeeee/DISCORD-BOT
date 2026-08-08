@@ -11,7 +11,7 @@ function parseRookieNickname(rawName) {
   if (idx === -1) return { base: trimmed.trim() || trimmed, points: null };
 
   const right = trimmed.slice(idx + 1).trim();
-  if (right !== '10') return { base: trimmed.trim() || trimmed, points: null };
+  if (right !== '2') return { base: trimmed.trim() || trimmed, points: null };
 
   const left = trimmed.slice(0, idx).trim();
   const parts = left.split(/\s+/);
@@ -26,11 +26,11 @@ function parseRookieNickname(rawName) {
 function parseStrictPointToken(token) {
   if (!token) return null;
   const raw = String(token).trim();
-  // Accept only plain decimal forms (e.g. 9, 9.5, 10) and reject scientific notation.
+  // Accept only plain decimal forms (e.g. 1, 1.5, 2) and reject scientific notation.
   if (!/^\d{1,2}(?:\.\d{1,2})?$/.test(raw)) return null;
   const value = Number(raw);
   if (!Number.isFinite(value)) return null;
-  if (value < 0 || value > 10) return null;
+  if (value < 0 || value > 2) return null;
   return value;
 }
 
@@ -90,8 +90,8 @@ async function getLinkedPoints({ db, member, guild, guildId }) {
 }
 
 async function applyPostPointEffects({ db, member, guild, verifierId, points }) {
-  const clamped = Math.max(0, Math.min(10, points));
-  if (clamped >= 10) {
+  const clamped = Math.max(0, Math.min(2, points));
+  if (clamped >= 2) {
     const promotion = await promoteMember({ member, db, guild, verifierId });
     return {
       points: clamped,
@@ -107,7 +107,7 @@ async function applyPostPointEffects({ db, member, guild, verifierId, points }) 
   }
 
   const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-  const nickname = `${baseName} ${formatPoints(clamped)}/10`;
+  const nickname = `${baseName} ${formatPoints(clamped)}/2`;
   const nicknameUpdated = await retrySetNickname(member, nickname);
 
   return { points: clamped, promoted: false, nicknameUpdated };
@@ -120,7 +120,7 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
     return { points: 0, promoted: false, skipped: true };
   }
 
-  const clamped = Math.max(0, Math.min(10, points));
+  const clamped = Math.max(0, Math.min(2, points));
   const now = Date.now();
 
   await withTransaction(db, async (tx) => {
@@ -165,7 +165,7 @@ async function addRookiePoints({ db, member, delta, guild, verifierId }) {
     previousPoints = prevRow && Number.isFinite(Number(prevRow.points)) ? Number(prevRow.points) : 0;
 
     await tx.run(
-      'UPDATE rookie_points SET points = MIN(10, MAX(0, points + ?)), updated_at = ? WHERE guild_id = ? AND member_id = ?',
+      'UPDATE rookie_points SET points = MIN(2, MAX(0, points + ?)), updated_at = ? WHERE guild_id = ? AND member_id = ?',
       safeDelta,
       now,
       resolvedGuildId,

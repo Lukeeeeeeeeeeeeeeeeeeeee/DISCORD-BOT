@@ -26,6 +26,7 @@ const BASE = {
     TRIAL_RECRUITER: "1421549298033627156",
     HELPER: "1412808626099323003",
     HELPER_PLUS: "1412808626099323004",
+    HELPER_MINUS: "1516075715500703885",
     HIGH_STAFF: "1474124708923572387",
     MOD: "1412808626136940575",
     CHIEF: "1455704259491532961",
@@ -154,6 +155,7 @@ function normalizeRoleIds(rawRoleIds) {
     trial_recruiter: 'TRIAL_RECRUITER',
     helper: 'HELPER',
     helper_plus: 'HELPER_PLUS',
+    helper_minus: 'HELPER_MINUS',
     high_staff: 'HIGH_STAFF',
     mod: 'MOD',
     chief: 'CHIEF',
@@ -269,6 +271,7 @@ function applyDerivedRoleIds(config) {
   if (roleIds.AUTO_PROMOTE_ROLE) roleIds.SOLACE = roleIds.AUTO_PROMOTE_ROLE;
   if (!Array.isArray(roleIds.STAFF) || roleIds.STAFF.length === 0) {
     roleIds.STAFF = [
+      roleIds.HELPER_MINUS,
       roleIds.HELPER,
       roleIds.HELPER_PLUS,
       roleIds.HIGH_STAFF,

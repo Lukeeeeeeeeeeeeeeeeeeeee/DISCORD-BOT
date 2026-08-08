@@ -30,7 +30,7 @@ module.exports = {
       { name: 'Region', value: String(data.recruit.region || 'Unknown'), inline: true },
       { name: 'IGN', value: String(data.recruit.ign || 'Unknown'), inline: true },
       { name: 'Verified', value: data.verification ? 'Yes' : 'No', inline: true },
-      { name: 'Points', value: data.points != null ? `${data.formatPoints(data.points)}/10` : 'N/A', inline: true },
+      { name: 'Points', value: data.points != null ? `${data.formatPoints(data.points)}/2` : 'N/A', inline: true },
       { name: 'Points updated', value: data.pointsUpdatedAt ? `<t:${data.toUnixSeconds(data.pointsUpdatedAt)}:R>` : 'Unknown', inline: true }
     );
 

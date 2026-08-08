@@ -5,18 +5,42 @@ const { hasModPlusPermissions } = require('../../lib/recruiting-system');
 const { addRookiePoints, formatPoints } = require('../../lib/rookie-points');
 const { replyError } = require('../../lib/embeds');
 
+/**
+ * Check if member can add rookie points
+ * Helper- can only ADD rookie points, not remove
+ * MOD+ can add or remove
+ */
+function canManageRookiePoints(member, isRemove = false) {
+  // Check if MOD+ (can do anything)
+  if (hasModPlusPermissions(member)) return true;
+  
+  // Check if Helper- (can only add, not remove)
+  if (!isRemove && member.roles && member.roles.cache && ROLE_IDS.HELPER_MINUS) {
+    if (member.roles.cache.has(ROLE_IDS.HELPER_MINUS)) return true;
+  }
+  
+  return false;
+}
+
 async function execute(interaction, _client, dbHandle = null) {
   const db = dbHandle || defaultDb;
-  if (!hasModPlusPermissions(interaction.member)) {
-    return replyError(interaction, 'MOD+ only.', { flags: 64 });
-  }
-
+  
   const sub = interaction.options && typeof interaction.options.getSubcommand === 'function'
     ? interaction.options.getSubcommand()
     : 'add';
 
   if (sub !== 'add' && sub !== 'remove') {
     return replyError(interaction, 'Unsupported subcommand.', { flags: 64 });
+  }
+
+  const isRemove = sub === 'remove';
+  
+  // Permission check: Helper- can only add, MOD+ can add or remove
+  if (!canManageRookiePoints(interaction.member, isRemove)) {
+    if (isRemove) {
+      return replyError(interaction, 'MOD+ required to remove rookie points.', { flags: 64 });
+    }
+    return replyError(interaction, 'Helper- or MOD+ required to add rookie points.', { flags: 64 });
   }
 
   const targetUser = interaction.options.getUser('member');
@@ -66,18 +90,18 @@ async function execute(interaction, _client, dbHandle = null) {
 
   if (result.promoted) {
     return interaction.editReply({
-      content: `Updated ${targetUser.tag} to 10/10 points. Promoted to ${result.teamName}.`
+      content: `Updated ${targetUser.tag} to 2/2 points. Promoted to ${result.teamName}.`
     });
   }
 
   if (result.promotionError) {
     return interaction.editReply({
-      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/10 points, but promotion failed: ${result.promotionError}`
+      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/2 points, but promotion failed: ${result.promotionError}`
     });
   }
 
   return interaction.editReply({
-    content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/10 points.`
+    content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/2 points.`
   });
 }
 
