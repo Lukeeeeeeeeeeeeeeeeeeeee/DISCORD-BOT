@@ -5,11 +5,11 @@ async function restorePointsOnStartup(db) {
   console.log('🔄 Restoring recruiter points and recruits...');
   
   const recruitersToRestore = [
-    { userId: '1381692847018868778', points: 6, recruits: 3 },   // AvoidMyRevol
-    { userId: '1238882108097953864', points: 4, recruits: 2 },   // Str1k3_C0re
-    { userId: '882597723864449054', points: 2, recruits: 2 },    // Centurion5866
-    { userId: '573654608971563029', points: 10, recruits: 10 },  // Hikaru
-    { userId: '1385608712080851075', points: 1, recruits: 2 }    // pero0244421
+    { userId: '1381692847018868778', points: 6, recruits: 6, region: 'EU' },   // AvoidMyRevol - Fire/EU
+    { userId: '1238882108097953864', points: 4, recruits: 2, region: 'EU' },   // Str1k3_C0re - Fire/EU
+    { userId: '882597723864449054', points: 2, recruits: 2, region: 'NA' },    // Centurion5866 - Water/NA
+    { userId: '573654608971563029', points: 10, recruits: 10, region: 'AS' },  // Hikaru - Air/AS
+    { userId: '1385608712080851075', points: 1, recruits: 1, region: 'AS' }    // pero0244421 - Air/AS
   ];
   
   // Get the actual current week start (Monday 00:05 UTC)
@@ -17,7 +17,7 @@ async function restorePointsOnStartup(db) {
   const now = Date.now();
   const baseTs = weekStart + (24 * 60 * 60 * 1000); // 1 day after week start
   
-  for (const { userId, points, recruits } of recruitersToRestore) {
+  for (const { userId, points, recruits, region } of recruitersToRestore) {
     try {
       // Restore recruiter points
       await db.run(
@@ -42,8 +42,8 @@ async function restorePointsOnStartup(db) {
           
           await db.run(
             `INSERT OR IGNORE INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points)
-             VALUES (?, ?, ?, 'EU', ?, ?, 1, 1)`,
-            [GUILD_ID, userId, dummyId, `Restored_Recruit_${i+1}`, createdAt]
+             VALUES (?, ?, ?, ?, ?, ?, 1, 1)`,
+            [GUILD_ID, userId, dummyId, region, `Restored_Recruit_${i+1}`, createdAt]
           );
         }
         console.log(`  ✓ Created ${needed} dummy recruits for ${userId} (timestamps from ${new Date(baseTs).toISOString()})`);
