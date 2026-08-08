@@ -62,7 +62,15 @@ function scheduleFlush() {
   flushTimer = setTimeout(() => {
     flushTimer = null;
     flushAll().catch(err => {
-      console.error('Analytics flush failed:', err);
+      // Check if this is database corruption
+      if (err && (err.code === 'SQLITE_CORRUPT' || (err.message && err.message.includes('malformed')))) {
+        console.error('❌ Analytics flush failed: DATABASE CORRUPTION DETECTED');
+        console.error('   The database is corrupted and needs recovery.');
+        console.error('   Run: node scripts/fix-corrupted-db.js');
+        console.error('   Analytics data will be lost until recovery is complete.');
+      } else {
+        console.error('Analytics flush failed:', err);
+      }
     });
   }, FLUSH_INTERVAL_MS);
 }
@@ -71,7 +79,12 @@ function bumpPending(count = 1) {
   pendingWrites += count;
   if (pendingWrites >= MAX_BUFFER_SIZE) {
     flushAll().catch(err => {
-      console.error('Analytics flush failed:', err);
+      if (err && (err.code === 'SQLITE_CORRUPT' || (err.message && err.message.includes('malformed')))) {
+        console.error('❌ Analytics flush failed: DATABASE CORRUPTION');
+        console.error('   Run: node scripts/fix-corrupted-db.js');
+      } else {
+        console.error('Analytics flush failed:', err);
+      }
     });
   } else {
     scheduleFlush();

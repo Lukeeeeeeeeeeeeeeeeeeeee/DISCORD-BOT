@@ -9,7 +9,7 @@ function parseRookieNickname(rawName) {
   const trimmed = capped.trim();
   if (!trimmed) return { base: null, points: null };
 
-  const pointsMatch = trimmed.match(/(?:^|\s)(-?\d+(?:\.\d+)?)\s*\/\s*10\s*$/);
+  const pointsMatch = trimmed.match(/(?:^|\s)(-?\d+(?:\.\d+)?)\s*\/\s*2\s*$/);
   if (!pointsMatch) {
     return { base: sanitizeRookieBase(trimmed), points: null };
   }

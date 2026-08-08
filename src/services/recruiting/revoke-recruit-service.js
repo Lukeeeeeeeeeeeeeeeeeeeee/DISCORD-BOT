@@ -10,13 +10,13 @@ async function revokeRecruit({ interaction, db, guildId, member, reason }) {
   // Validate member exists
   const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
   if (!targetMember) {
-    return replyError(interaction, 'Member not found in this guild.');
+    return { content: '❌ Member not found in this guild.' };
   }
 
   // Get the recruit record to find region and recruiter info
   const recruit = await recruitsRepo.getActiveByRecruitedId(db, guildId, member.id);
   if (!recruit) {
-    return replyError(interaction, 'No valid recruit record found for this member.');
+    return { content: '❌ No valid recruit record found for this member.' };
   }
 
   const recruitPoints = recruit.points || 0;

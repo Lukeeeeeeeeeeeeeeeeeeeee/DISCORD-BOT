@@ -4,6 +4,7 @@
   "description": "Recruiter/leaderboard bot",
   "main": "src/index.js",
   "scripts": {
+    "prestart": "node scripts/startup-health-check.js",
     "start": "node src/index.js",
     "start:shard": "node src/shard.js",
     "build": "npm run lint",
@@ -11,6 +12,8 @@
     "backup": "node scripts/backup-db.js",
     "backup:drill": "node scripts/backup-restore-drill.js",
     "migration:dry": "node scripts/migration-dry-run.js",
+    "health-check": "node scripts/startup-health-check.js",
+    "db-recovery": "node scripts/fix-corrupted-db.js",
     "lint": "eslint . --ext .js",
     "test": "jest --runInBand",
     "require-walk": "node scripts/require-walk.js"
