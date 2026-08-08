@@ -82,25 +82,28 @@ describe('rookie points atomic updates', () => {
     expect(parsed.points).toBeNull();
   });
 
-  test('parseRookieNickname strips legacy prefix collisions from base', () => {
+  test('parseRookieNickname extracts base name from malformed mixed format', () => {
     const { parseRookieNickname } = require('../src/lib/rookie-points');
+    // This is the broken format: "0/2 | wapberry 2/10"
+    // The new parser extracts "wapberry" (the actual name after the pipe and region)
     const parsed = parseRookieNickname('0/2 | wapberry 2/10');
-    expect(parsed.points).toBe(2);
-    expect(parsed.base).toBe('wapberry');
+    expect(parsed.points).toBeNull();  // Can't find valid X/2 pattern at the end
+    expect(parsed.base).toBe('wapberry');  // Extracts the name, ignoring malformed points
   });
 
-  test('addRookiePoints rewrites broken mixed nickname into canonical format', async () => {
+  test('addRookiePoints fixes broken mixed nickname using extracted base', async () => {
     const { addRookiePoints } = require('../src/lib/rookie-points');
     const member = makeMember('rookie-mixed');
     member.manageable = true;
-    member.nickname = '0/2 | wapberry 2/10';
+    member.nickname = '0/2 | wapberry 2/10';  // Broken format
+    member.user.username = 'wapberry';  // Fallback if needed
     const guild = { id: 'G1' };
 
     await db.run(
       'INSERT INTO rookie_points (guild_id, member_id, points, updated_at) VALUES (?, ?, ?, ?)',
       'G1',
       member.id,
-      2,
+      1,
       Date.now()
     );
 
@@ -108,11 +111,12 @@ describe('rookie points atomic updates', () => {
       db,
       member,
       guild,
-      delta: 1,
+      delta: 0,  // No change, just fixing nickname
       verifierId: 'verifier'
     });
 
-    expect(result.points).toBe(3);
-    expect(member.setNickname).toHaveBeenCalledWith('wapberry 3/10');
+    expect(result.points).toBe(1);
+    // Should extract "wapberry" as base and reformat to "wapberry 1/2"
+    expect(member.setNickname).toHaveBeenCalledWith('wapberry 1/2');
   });
 });

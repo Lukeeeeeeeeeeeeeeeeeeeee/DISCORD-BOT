@@ -7,19 +7,58 @@ function parseRookieNickname(rawName) {
   if (!rawName) return { base: null, points: null };
   const s = String(rawName);
   const trimmed = s.length > 128 ? s.slice(0, 128) : s;
-  const idx = trimmed.lastIndexOf('/');
-  if (idx === -1) return { base: trimmed.trim() || trimmed, points: null };
-
-  const right = trimmed.slice(idx + 1).trim();
-  if (right !== '10') return { base: trimmed.trim() || trimmed, points: null };
-
-  const left = trimmed.slice(0, idx).trim();
-  const parts = left.split(/\s+/);
-  if (!parts.length) return { base: trimmed.trim() || trimmed, points: null };
-  const maybePoints = parts[parts.length - 1];
-  const points = parseStrictPointToken(maybePoints);
-  if (!Number.isFinite(points)) return { base: trimmed.trim() || trimmed, points: null };
-  const base = parts.slice(0, -1).join(' ').trim();
+  
+  // Match pattern: "name 0/2" or "name | REGION 0/2"
+  // The points pattern is always "X/2" at the end
+  const pointsPattern = /\s+(\d+(?:\.\d+)?)\s*\/\s*2\s*$/;
+  const match = trimmed.match(pointsPattern);
+  
+  if (!match) {
+    // No valid points found
+    // Check if this is a malformed nickname like "0/2 | wapberry 2/10" or "testing123 | EU 0/2 1/10"
+    // Pattern: look for " | " and extract either:
+    //   - What comes before the pipe if it looks like a name (no slashes)
+    //   - What comes after the pipe and before any point patterns
+    const pipeIndex = trimmed.indexOf(' | ');
+    if (pipeIndex > 0) {
+      const beforePipe = trimmed.slice(0, pipeIndex).trim();
+      const afterPipe = trimmed.slice(pipeIndex + 3).trim(); // +3 for " | "
+      
+      // If the part before the pipe doesn't contain a slash, it's likely the actual name
+      if (!beforePipe.includes('/')) {
+        return { base: beforePipe, points: null };
+      }
+      
+      // Otherwise, try to extract the name from after the pipe
+      // Remove region tags (2-3 capital letters) and any point patterns
+      let nameOnly = afterPipe
+        .replace(/^[A-Z]{2,3}\s+/, '') // Remove leading region tag like "EU "
+        .replace(/\s+\d+(?:\.\d+)?\/\d+.*$/, '').trim(); // Remove point patterns
+      
+      if (nameOnly) {
+        return { base: nameOnly, points: null };
+      }
+    }
+    
+    return { base: trimmed.trim() || trimmed, points: null };
+  }
+  
+  // Extract points value
+  const pointsStr = match[1];
+  const points = parseStrictPointToken(pointsStr);
+  
+  if (!Number.isFinite(points)) {
+    return { base: trimmed.trim() || trimmed, points: null };
+  }
+  
+  // Remove the points suffix to get the base name
+  // Also strip any trailing " | REGION" pattern if present
+  let base = trimmed.slice(0, match.index).trim();
+  
+  // If there's a " | REGION" pattern before the points, remove it too
+  const regionPattern = /\s*\|\s*[A-Z]{2,3}\s*$/;
+  base = base.replace(regionPattern, '').trim();
+  
   return { base: base || trimmed.trim() || trimmed, points: points };
 }
 
@@ -30,7 +69,7 @@ function parseStrictPointToken(token) {
   if (!/^\d{1,2}(?:\.\d{1,2})?$/.test(raw)) return null;
   const value = Number(raw);
   if (!Number.isFinite(value)) return null;
-  if (value < 0 || value > 10) return null;
+  if (value < 0 || value > 2) return null;
   return value;
 }
 
@@ -90,8 +129,8 @@ async function getLinkedPoints({ db, member, guild, guildId }) {
 }
 
 async function applyPostPointEffects({ db, member, guild, verifierId, points }) {
-  const clamped = Math.max(0, Math.min(10, points));
-  if (clamped >= 10) {
+  const clamped = Math.max(0, Math.min(2, points));
+  if (clamped >= 2) {
     const promotion = await promoteMember({ member, db, guild, verifierId });
     return {
       points: clamped,
@@ -106,8 +145,12 @@ async function applyPostPointEffects({ db, member, guild, verifierId, points }) 
     return { points: clamped, promoted: false, nicknameUpdated: false, skippedNickname: true };
   }
 
-  const baseName = parseRookieNickname(member.nickname || member.user.username).base || member.user.username;
-  const nickname = `${baseName} ${formatPoints(clamped)}/10`;
+  // Try to parse the existing nickname to extract the base name
+  const parsed = parseRookieNickname(member.nickname || member.user.username);
+  // If we can't parse it (e.g., malformed), fall back to username
+  const baseName = parsed.base || member.user.username;
+  
+  const nickname = `${baseName} ${formatPoints(clamped)}/2`;
   const nicknameUpdated = await retrySetNickname(member, nickname);
 
   return { points: clamped, promoted: false, nicknameUpdated };
@@ -120,7 +163,7 @@ async function setLinkedPoints({ db, member, points, guild, verifierId }) {
     return { points: 0, promoted: false, skipped: true };
   }
 
-  const clamped = Math.max(0, Math.min(10, points));
+  const clamped = Math.max(0, Math.min(2, points));
   const now = Date.now();
 
   await withTransaction(db, async (tx) => {
@@ -165,7 +208,7 @@ async function addRookiePoints({ db, member, delta, guild, verifierId }) {
     previousPoints = prevRow && Number.isFinite(Number(prevRow.points)) ? Number(prevRow.points) : 0;
 
     await tx.run(
-      'UPDATE rookie_points SET points = MIN(10, MAX(0, points + ?)), updated_at = ? WHERE guild_id = ? AND member_id = ?',
+      'UPDATE rookie_points SET points = MIN(2, MAX(0, points + ?)), updated_at = ? WHERE guild_id = ? AND member_id = ?',
       safeDelta,
       now,
       resolvedGuildId,

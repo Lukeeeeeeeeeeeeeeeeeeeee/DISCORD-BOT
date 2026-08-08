@@ -66,18 +66,18 @@ async function execute(interaction, _client, dbHandle = null) {
 
   if (result.promoted) {
     return interaction.editReply({
-      content: `Updated ${targetUser.tag} to 10/10 points. Promoted to ${result.teamName}.`
+      content: `Updated ${targetUser.tag} to 2/2 points. Promoted to ${result.teamName}.`
     });
   }
 
   if (result.promotionError) {
     return interaction.editReply({
-      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/10 points, but promotion failed: ${result.promotionError}`
+      content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/2 points, but promotion failed: ${result.promotionError}`
     });
   }
 
   return interaction.editReply({
-    content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/10 points.`
+    content: `Updated ${targetUser.tag} to ${formatPoints(result.points)}/2 points.`
   });
 }
 
