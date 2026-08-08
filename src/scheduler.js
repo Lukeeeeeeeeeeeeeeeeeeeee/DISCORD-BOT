@@ -544,9 +544,20 @@ async function recomputeLeaderboardsInternal(db, guild) {
     }
   }
   if (cachedRecruiterCount === 0 && recruiterRolesForCache.length) {
+    console.log('⚠️ No recruiters in cache, fetching all guild members...');
     await primeMemberCache(guild, 'recomputeLeaderboards', {
-      force: FORCE_FULL_FETCH_ON_EMPTY && !hasDbRecruiters
+      force: FORCE_FULL_FETCH_ON_EMPTY || true  // Always fetch if no recruiters cached
     });
+    
+    // Re-check cached count after fetch
+    cachedRecruiterCount = 0;
+    if (guild && guild.roles && guild.roles.cache) {
+      for (const roleId of recruiterRolesForCache) {
+        const role = guild.roles.cache.get(roleId);
+        if (role && role.members) cachedRecruiterCount += role.members.size;
+      }
+    }
+    console.log(`✓ After fetch: ${cachedRecruiterCount} recruiters in cache`);
   }
 
   if (dbRecruiterIds.length) {
