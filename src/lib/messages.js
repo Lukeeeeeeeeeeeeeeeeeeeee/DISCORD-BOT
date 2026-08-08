@@ -107,8 +107,8 @@ function makeLeaderboardText(rows, regionLabel, lang = 'en') {
     info = getRegionInfo(regionLabel);
   }
 
-  // Use simple hardcoded title - don't rely on i18n
-  const title = `${info.emoji} Leaderboard (${info.name})`;
+  // Use big text header with #
+  const title = `# ${info.emoji} Leaderboard (${info.name})`;
   if (!rows || rows.length === 0) {
     const msg = `${title}\nNo recruiters found.`;
     return msg.length > 2000 ? msg.slice(0, 1997) + '...' : msg;
