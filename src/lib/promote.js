@@ -94,9 +94,9 @@ async function promoteMember({ member, db, guild, verifierId }) {
       };
     }
 
-    // Update Nickname - removed emoji, just use clean name
+    // Update Nickname - format: "REGION | name"
     const cleanedNickname = stripRookiePoints(member.nickname) || member.user.username;
-    const newNick = cleanedNickname.trim();
+    const newNick = `${team} | ${cleanedNickname}`.trim();
     if (newNick !== member.nickname) {
         await retrySetNickname(member, newNick);
     }
