@@ -1,4 +1,4 @@
-﻿const {
+﻿﻿const {
   ROLE_IDS,
   RECRUITER_ROLE_IDS,
   REGION_ROLE_IDS,
@@ -58,51 +58,11 @@ function pickOnboardingRole(team) {
   return list[0];
 }
 
-function mentionRole(roleId, fallback) {
-  if (!roleId) return fallback || 'role';
-  return `<@&${roleId}>`;
-}
-
-function buildRookieWelcomeMessage(teamName) {
-  const logsChannel = CHANNELS && CHANNELS.ROOKIE_LOGS ? `<#${CHANNELS.ROOKIE_LOGS}>` : 'the rookie logs channel';
-  const rookieRole = mentionRole(ROLE_IDS.ROOKIE, 'rookie role');
-  const fullRole = mentionRole(ROLE_IDS.AUTO_PROMOTE_ROLE, 'full member role');
-  const recruiterRole = mentionRole(ROLE_IDS.RECRUITER, 'recruiter role');
-  const trialRole = mentionRole(ROLE_IDS.TRIAL_RECRUITER, 'trial recruiter role');
-  return `Welcome to Solace! You have been recruited in ${teamName}.
-Make sure you read how to war, whats a war and see readme!
-
-# <:SOLACEONTOP:1460693669391765750> SOLACE ROOKIE INFO
-Hello there and welcome to Solace! 
-The first thought that crosses your mind might be the reason behind your being given the ${rookieRole}â€”it's our basic role. You will have to earn ${fullRole} to gain full access to Solace. To gain full access to Solace, you have to collect points to help you move up. There are three methods available to you:
-
- Point Earning Methods
-
-> 1. Wars / Ganks
-> Take part in 2 wars or ganks in a 2-week period
-> <:greenarrow:1459897308610039900> 5 points apiece
-> -# **Wars / Ganks happen randomly**
-
-2. Recruiting (Fast Track)
-> As ${trialRole}, get 3 people on board in 9 days
-> <:greenarrow:1459897308610039900> Direct promotion to ${fullRole} + ${recruiterRole}
-*** If 3 recruits are not reached within the specified time, the process goes back to zero.***
-
-3. Activity (Chatting)
-> In a week's time send 550 messages
-> <:greenarrow:1459897308610039900> 1.5 points for every 105 messages (public channels only)
-
-You can combine any combination of these methods or concentrate solely on one (2 & 3 are the most consistent). Also, keep in mind that they are **not** permanent points!
-
-What Are Points? 
-Points are shown beside your name (e.g., 0/10). With more wars, chat, and recruiting activities, the points go up.
-
-Logging Progress 
-Make sure to put down your achievements in ${logsChannel} always. This is a must to ensure the counting of your points and your elevation. **Why?**
-<:greenarrow:1459897308610039900> Logging your progression insures that you get the points you worked for. It also is a chart of your progression if that helps you in terms of motivation.
-
-Wishing you good luck and once again welcoming you to Solace `;
-}
+// REMOVED: mentionRole helper function (only used by deleted buildRookieWelcomeMessage)
+// REMOVED: buildRookieWelcomeMessage function (lines 66-104) - DEAD CODE
+// This function built a welcome DM message but was NEVER called anywhere in the codebase.
+// The DM you saw was likely from a different source or a cached message.
+// DO NOT re-add automatic welcome DMs without explicit user consent.
 
 function normalizeIgn(rawIgn, suffix) {
   const base = rawIgn == null ? '' : String(rawIgn);
@@ -644,16 +604,6 @@ async function execute(interaction, _client, dbHandle = null) {
       }
 
       try {
-        if (recruitedGuildMember) {
-          await recruitedGuildMember.send(buildRookieWelcomeMessage(teamName)).catch(err => {
-            console.error('Failed to DM rookie welcome message:', err);
-          });
-        }
-      } catch (e) {
-        console.error(e);
-      }
-
-      try {
         if (recruiterMember) {
           const trialResult = await updateTrialFastTrack(db, interaction.guild, recruiterMember, member.id);
           if (trialResult && trialResult.error) {
@@ -712,4 +662,3 @@ async function execute(interaction, _client, dbHandle = null) {
 }
 
 module.exports = { execute };
-
