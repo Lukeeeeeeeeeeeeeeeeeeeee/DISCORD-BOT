@@ -1,0 +1,16 @@
+{
+  "recruit": {
+    "title": "Nuevo Recluta",
+    "reason_warning": "Has recibido una advertencia",
+    "issued": "Advertencia emitida a {user}",
+    "flags_dismissed": "Banderas para {user} descartadas"
+  },
+  "leaderboard": {
+    "title": "Clasificación ({region})",
+    "no_recruits": "No hay reclutas semanales todavía.",
+    "not_enough": "No hay suficientes datos (se necesitan al menos {min} reclutadores activos esta semana).",
+    "podium": "🏆 Podio",
+    "people_with_3": "🔥 Personas con 3+",
+    "other": "Otros"
+  }
+}

@@ -1,0 +1,70 @@
+const fs = require('fs/promises');
+const path = require('path');
+const { EmbedBuilder } = require('discord.js');
+const { ensureCommandAccess } = require('../../lib/command-auth');
+const { resolveGuildId } = require('../../lib/guild');
+
+module.exports = {
+  data: { name: 'status' },
+  async execute(interaction) {
+    const allowed = await ensureCommandAccess(interaction, {
+      allowStaff: false,
+      deniedMessage: 'Administrator permission required.'
+    });
+    if (!allowed) return null;
+
+    if (typeof interaction.deferReply === 'function') {
+      await interaction.deferReply({ flags: 64 });
+    }
+
+    const { DB_PATH } = require('../../db_async');
+    const guildId = resolveGuildId(interaction.guild);
+    let dbSize = 'N/A';
+    try {
+      const s = await fs.stat(DB_PATH);
+      dbSize = `${Math.round(s.size / 1024)} KB`;
+    } catch (e) { void e; }
+
+    const backupsDir = path.join(path.dirname(DB_PATH), 'backups');
+    let lastBackup = 'None';
+    try {
+      const dbExt = path.extname(DB_PATH) || '.db';
+      const files = await fs.readdir(backupsDir);
+      const candidates = files.filter(f => f.endsWith(dbExt));
+      if (candidates.length) {
+        const stats = await Promise.all(
+          candidates.map(async f => ({ f, t: (await fs.stat(path.join(backupsDir, f))).mtime.getTime() }))
+        );
+        stats.sort((a, b) => b.t - a.t);
+        lastBackup = stats[0].f;
+      }
+    } catch (e) { void e; }
+
+    const uptime = `${Math.round(process.uptime())}s`;
+
+    // gather DB counts
+    const db = require('../../db_async');
+    const recruitsRow = await db.get('SELECT COUNT(*) as c FROM recruits WHERE guild_id = ?', guildId);
+    const recruitersRow = await db.get('SELECT COUNT(*) as c FROM recruiters WHERE guild_id = ?', guildId);
+    const recruits = recruitsRow ? recruitsRow.c : 0;
+    const recruiters = recruitersRow ? recruitersRow.c : 0;
+
+    const embed = new EmbedBuilder()
+      .setTitle('Bot Status')
+      .addFields(
+        { name: 'DB Size', value: dbSize, inline: true },
+        { name: 'Uptime', value: uptime, inline: true },
+        { name: 'Last Backup', value: lastBackup, inline: true },
+        { name: 'Recruits', value: `${recruits}`, inline: true },
+        { name: 'Recruiters', value: `${recruiters}`, inline: true }
+      )
+      .setTimestamp();
+
+    if (interaction.deferred || interaction.replied) {
+      if (typeof interaction.editReply === 'function') {
+        return interaction.editReply({ embeds: [embed] });
+      }
+    }
+    return interaction.reply({ embeds: [embed], flags: 64 });
+  }
+};

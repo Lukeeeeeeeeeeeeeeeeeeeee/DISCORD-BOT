@@ -1,0 +1,1090 @@
+require('dotenv').config();
+const path = require('path');
+const { Client, GatewayIntentBits, Collection, PermissionsBitField } = require('discord.js');
+const db = require('./db_async');
+const scheduler = require('./scheduler');
+const { GUILD_ID, ROLE_IDS, RECRUITER_ROLE_IDS } = require('./constants');
+const { withTransaction } = require('./lib/transactions');
+const AntiNukeSystem = require('./lib/antinuke-system');
+const { dispatchCommand } = require('./lib/command-dispatcher');
+const { trackRookieChatMessage } = require('./lib/rookie-chat');
+const { handleRookieWarLogMessage } = require('./lib/rookie-war');
+const { createInteractionCreateHandler } = require('./events/interaction-create');
+const { createVoiceStateUpdateHandler } = require('./events/voice-state-update');
+const analytics = require('./lib/analytics');
+const runtime = require('./lib/runtime');
+const { logUnexpectedError, logRuntimeEvent, getCommandCategory, getInteractionMeta } = require('./lib/logger');
+const { AECS, CodexError, provisionTelemetryWebhooks } = require('./lib/aecs');
+const { preloadLocales } = require('./lib/i18n');
+const { isAppError } = require('./lib/errors');
+const { sanitizeEnvToken, validateRuntimeEnvironment } = require('./lib/env');
+const { startHealthServer } = require('./lib/health-server');
+const { loadCommandsIntoCollection } = require('./lib/command-loader');
+const { createInviteTables } = require('./lib/create-invite-tables');
+const { buildRuntimeConfig } = require('./lib/runtime-config');
+const inviteCommand = require('./commands/recruiting/invite');
+const dmReporter = require('./services/dm/dm-reporter');
+const dmWorker = require('./services/dm/dm-worker');
+const { registerCommands } = require('./register-commands');
+const { reconcileRecruits } = require('./services/recruiting/recruit-service');
+const { handleMemberLeave } = require('./lib/memberLeave');
+const { buildErrorEmbed } = require('./lib/embeds');
+
+// DM worker system
+const runtimeConfig = buildRuntimeConfig(process.env, { guildId: GUILD_ID });
+const BOT_RUNTIME_MODE = runtimeConfig.botRuntimeMode;
+const IS_DM_WORKER = BOT_RUNTIME_MODE === 'dm_worker';
+let dmReportScanTimer = null;
+
+try {
+  const envWarnings = validateRuntimeEnvironment({ minNodeMajor: 18 });
+  for (const warning of envWarnings) {
+    logRuntimeEvent('warn', 'startup.env', 'Runtime environment warning', { warning });
+  }
+} catch (error) {
+  logRuntimeEvent('error', 'startup.env', 'Runtime environment validation failed', {
+    error: String(error && error.message ? error.message : error)
+  });
+  process.exit(1);
+}
+
+const enableMessageContent = runtimeConfig.enableMessageContent;
+const intents = [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMembers,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.GuildVoiceStates,
+  GatewayIntentBits.GuildModeration,
+  GatewayIntentBits.GuildWebhooks,
+  GatewayIntentBits.GuildInvites
+];
+if (enableMessageContent) intents.push(GatewayIntentBits.MessageContent);
+
+const client = new Client({ intents });
+client.commands = new Collection();
+runtime.setClient(client);
+runtime.setDb(db);
+AECS.init();
+
+// Create anti-nuke system instance
+const antiNukeSystem = new AntiNukeSystem();
+const inviteSnapshots = new Map();
+const inviteTrackLocks = new Map();
+const invitePendingAttributions = new Map();
+const voiceSessions = new Map();
+const INVITE_SNAPSHOT_TTL_MS = runtimeConfig.inviteSnapshotTtlMs;
+const SHUTDOWN_STEP_TIMEOUT_MS = runtimeConfig.shutdownStepTimeoutMs;
+const SHUTDOWN_ANALYTICS_TIMEOUT_MS = runtimeConfig.shutdownAnalyticsTimeoutMs;
+const SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS = runtimeConfig.shutdownAntinukeSaveTimeoutMs;
+const ENFORCED_MEMBER_ID = runtimeConfig.enforcedMemberId;
+const ENFORCED_ROLE_ID = runtimeConfig.enforcedRoleId;
+const ENFORCED_GUILD_ID = runtimeConfig.enforcedGuildId;
+const ENFORCED_CHECK_INTERVAL_MS = runtimeConfig.enforcedCheckIntervalMs;
+let enforcedRoleTimer = null;
+
+// Global Mutex for Sequential Join Processing (FIX: VULN-02)
+const guildJoinQueues = new Map();
+async function withGuildJoinLock(guildId, fn) {
+  const queue = guildJoinQueues.get(guildId) || Promise.resolve();
+  // Audit Fix: removed `.catch(() => fn())` which incorrectly re-ran fn() on
+  // any error in the previous entry, risking double invite attribution.
+  const nextQueue = queue.then(() => fn()).finally(() => {
+    // Prune the Map if this was the last pending task for this guild
+    if (guildJoinQueues.get(guildId) === nextQueue) {
+      guildJoinQueues.delete(guildId);
+    }
+  });
+  guildJoinQueues.set(guildId, nextQueue);
+  return nextQueue;
+}
+
+function createRuntimeTraceId() {
+  return AECS.createTraceId().toUpperCase();
+}
+
+const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
+  logRuntimeEvent('info', 'startup.antiNuke', 'Anti-nuke system initialized');
+}).catch(err => {
+  logUnexpectedError('startup.antiNuke', err);
+});
+
+const inviteInitPromise = (async () => {
+  await createInviteTables();
+  await inviteCommand.init();
+  logRuntimeEvent('info', 'startup.invites', 'Invite system initialized');
+})().catch(err => {
+  logUnexpectedError('startup.invites', err);
+});
+
+const commandsPath = path.join(__dirname, 'commands');
+let commandLoadErrors = [];
+try {
+  ({ loadErrors: commandLoadErrors } = loadCommandsIntoCollection({
+    commandsPath,
+    collection: client.commands,
+    onInfo: (message) => {
+      logRuntimeEvent('info', 'startup.commands', message);
+    },
+    onWarn: (message) => {
+      logRuntimeEvent('warn', 'startup.commands', message);
+    }
+  }));
+} catch (error) {
+  console.error('FATAL: command loader crashed during startup.', error);
+  throw error;
+}
+if (commandLoadErrors.length > 0) {
+  const details = commandLoadErrors.map(entry => {
+    const message = entry && entry.error && entry.error.message ? entry.error.message : String(entry.error);
+    return `${entry.file}: ${message}`;
+  });
+  console.error(`FATAL: command loading failed.\n${details.join('\n')}`);
+  throw new Error(`Command loading failed:\n${details.join('\n')}`);
+}
+
+let _readyCalled = false;
+let healthServer = null;
+
+function summarizeTelemetryRoutes(provision) {
+  if (!provision || !Array.isArray(provision.routes)) return [];
+  return provision.routes.map((route) => ({
+    route: route.routeKey,
+    status: route.status,
+    reason: route.reason || null,
+    channelId: route.channelId || null
+  }));
+}
+
+function getAecsFallbackChannelId(antiNuke, guildId = null) {
+  if (!antiNuke || typeof antiNuke.getLogChannel !== 'function') return null;
+  if (guildId) {
+    const direct = antiNuke.getLogChannel(guildId);
+    if (direct) return String(direct);
+  }
+  const known = antiNuke.logChannels instanceof Map
+    ? Array.from(antiNuke.logChannels.values()).filter(Boolean)
+    : [];
+  return known.length ? String(known[0]) : null;
+}
+
+async function configureAecsTelemetry(client, source = 'startup', options = {}) {
+  const telemetryProvision = await provisionTelemetryWebhooks(client, options).catch((err) => {
+    logUnexpectedError(`${source}.aecs.telemetry.provision`, err);
+    return null;
+  });
+
+  if (!telemetryProvision) return null;
+  if (telemetryProvision.config) {
+    AECS.setTelemetryRouting(telemetryProvision.config);
+  }
+
+  const routeSummary = summarizeTelemetryRoutes(telemetryProvision);
+  const summaryText = routeSummary.length
+    ? routeSummary.map((entry) => `${entry.route}:${entry.status}${entry.reason ? `(${entry.reason})` : ''}`).join(', ')
+    : 'no routes';
+
+  // Q-08: Route through structured logger so AECS telemetry setup is visible in telemetry itself.
+  logRuntimeEvent('info', `${source}.aecs.telemetry.routes`, `[AECS] Telemetry ${source}: ${summaryText}`);
+
+  if (telemetryProvision.skipped) {
+    logRuntimeEvent('warn', `${source}.aecs.telemetry`, 'AECS telemetry provisioning skipped', {
+      details: {
+        reason: telemetryProvision.reason || 'unknown',
+        routes: routeSummary
+      }
+    });
+    return telemetryProvision;
+  }
+
+  const defaultRoute = Array.isArray(telemetryProvision.routes)
+    ? telemetryProvision.routes.find((route) => route && route.routeKey === 'default')
+    : null;
+
+  if (defaultRoute && defaultRoute.status === 'skipped') {
+    logRuntimeEvent('warn', `${source}.aecs.telemetry`, 'AECS default telemetry webhook was not provisioned', {
+      details: {
+        reason: defaultRoute.reason || 'unknown',
+        routes: routeSummary,
+        configuredChannelId: process.env.AECS_TELEMETRY_CHANNEL_ID || null
+      }
+    });
+  } else if (telemetryProvision.changed) {
+    logRuntimeEvent('info', `${source}.aecs.telemetry`, 'AECS telemetry webhooks provisioned', {
+      details: {
+        changed: true,
+        routes: routeSummary
+      }
+    });
+  } else {
+    logRuntimeEvent('info', `${source}.aecs.telemetry`, 'AECS telemetry webhooks verified', {
+      details: {
+        changed: false,
+        routes: routeSummary
+      }
+    });
+  }
+
+  return telemetryProvision;
+}
+
+function hasEnforcedRoleConfig() {
+  return Boolean(ENFORCED_MEMBER_ID && ENFORCED_ROLE_ID);
+}
+
+async function ensureBootRoleAssignment() {
+  if (!hasEnforcedRoleConfig()) return;
+
+  const guildsToCheck = [];
+  if (ENFORCED_GUILD_ID) {
+    const configuredGuild = client.guilds.cache.get(ENFORCED_GUILD_ID) || await client.guilds.fetch(ENFORCED_GUILD_ID).catch(() => null);
+    if (configuredGuild) guildsToCheck.push(configuredGuild);
+  } else {
+    guildsToCheck.push(...client.guilds.cache.values());
+  }
+
+  for (const guild of guildsToCheck) {
+    try {
+      const role = guild.roles && guild.roles.cache ? guild.roles.cache.get(ENFORCED_ROLE_ID) : null;
+      if (!role) continue;
+
+      const member = await guild.members.fetch(ENFORCED_MEMBER_ID).catch(() => null);
+      if (!member) continue;
+      if (member.roles && member.roles.cache && member.roles.cache.has(ENFORCED_ROLE_ID)) continue;
+
+      await member.roles.add(ENFORCED_ROLE_ID, 'Boot enforcement: required role assignment');
+      logRuntimeEvent('info', 'startup.role.enforce', 'Enforced boot role assignment', {
+        details: {
+          guildId: guild.id,
+          memberId: ENFORCED_MEMBER_ID,
+          roleId: ENFORCED_ROLE_ID
+        }
+      });
+    } catch (err) {
+      logUnexpectedError('startup.role.enforce', err, {
+        guildId: guild && guild.id ? guild.id : null,
+        memberId: ENFORCED_MEMBER_ID,
+        roleId: ENFORCED_ROLE_ID
+      });
+    }
+  }
+}
+
+function startBootRoleEnforcementTimer() {
+  if (!hasEnforcedRoleConfig()) return;
+  if (enforcedRoleTimer) return;
+  const safeIntervalMs = Number.isFinite(ENFORCED_CHECK_INTERVAL_MS) && ENFORCED_CHECK_INTERVAL_MS >= 15000
+    ? ENFORCED_CHECK_INTERVAL_MS
+    : 300000;
+  enforcedRoleTimer = setInterval(() => {
+    void ensureBootRoleAssignment();
+  }, safeIntervalMs);
+  if (typeof enforcedRoleTimer.unref === 'function') enforcedRoleTimer.unref();
+}
+
+async function onReady() {
+  if (_readyCalled) return;
+  _readyCalled = true;
+  logRuntimeEvent('info', 'startup.ready', 'Discord client ready [v2.1.0-STABILIZED-FINAL]', { userTag: client.user.tag });
+  await preloadLocales().catch((err) => {
+    logUnexpectedError('startup.i18n.preload', err);
+  });
+
+  let telemetryProvision = await configureAecsTelemetry(client, 'startup');
+
+  await antiNukeInitPromise;
+  runtime.setAntiNuke(antiNukeSystem); // FIX (VULN-05): Register anti-nuke in runtime to enable AECS inheritance
+
+  await reconcileRecruits(client, db).catch(err => {
+    logUnexpectedError('service.recruit.reconcile.startup', err);
+  });
+
+  const configuredAecsChannelId = runtimeConfig.aecsTelemetryChannelId
+    || (telemetryProvision && telemetryProvision.config ? String(telemetryProvision.config.telemetryChannelId || '').trim() : '')
+    || String(process.env.AECS_TELEMETRY_CHANNEL_ID || '').trim();
+  if (!configuredAecsChannelId) {
+    const antiNuke = runtime.getAntiNuke();
+    const fallbackChannelId = getAecsFallbackChannelId(antiNuke, GUILD_ID || null);
+    if (fallbackChannelId) {
+      console.log(`[AECS] No AECS telemetry channel configured; inherited anti-nuke log channel ${fallbackChannelId}.`);
+      logRuntimeEvent('info', 'startup.aecs.telemetry', 'AECS telemetry channel inherited from anti-nuke log channel', {
+        details: { channelId: fallbackChannelId }
+      });
+      telemetryProvision = await configureAecsTelemetry(client, 'startup.inherited', {
+        defaultChannelId: fallbackChannelId
+      });
+    } else if (!telemetryProvision || !telemetryProvision.config || !telemetryProvision.config.telemetryWebhookUrl) {
+      console.warn('[AECS] Telemetry is not configured. Set AECS_TELEMETRY_CHANNEL_ID or AECS_TELEMETRY_WEBHOOK_URL.');
+      logRuntimeEvent('warn', 'startup.aecs.telemetry', 'AECS telemetry is not configured', {
+        details: {
+          guidance: 'Set AECS_TELEMETRY_CHANNEL_ID or AECS_TELEMETRY_WEBHOOK_URL'
+        }
+      });
+    }
+  }
+
+  // Start the scheduler only after the one-time startup reconciliation and invite init are done.
+  inviteInitPromise.then(() => {
+    scheduler.start(client, db);
+    logRuntimeEvent('info', 'startup.heartbeat', 'Scheduler heartbeat started after sequential initialization.');
+  }).catch(err => {
+    logUnexpectedError('startup.heartbeat.failure', err);
+  });
+
+  // Start DM campaign report scanner (main bot only)
+  if (!IS_DM_WORKER) {
+    const DM_REPORT_SCAN_MS = 30000;
+    dmReportScanTimer = setInterval(() => {
+      void dmReporter.scanAndPostReports(client).catch(err => {
+        logUnexpectedError('dm.reporter.scheduledScan', err);
+      });
+      void dmReporter.scanAndPostProgressHeartbeats(client).catch(err => {
+        logUnexpectedError('dm.reporter.scheduledHeartbeat', err);
+      });
+    }, DM_REPORT_SCAN_MS);
+  }
+
+  const healthPort = runtimeConfig.healthcheckPort;
+  if (Number.isFinite(healthPort) && healthPort > 0 && !healthServer) {
+    healthServer = startHealthServer({
+      db,
+      port: healthPort,
+      runtimeConfig,
+      metricsProviders: [
+        () => analytics.getMetrics()
+      ]
+    });
+  }
+
+  await inviteInitPromise;
+  const guildId = GUILD_ID;
+  const guild = guildId ? client.guilds.cache.get(guildId) : null;
+  if (guild) {
+    cacheGuildInvites(guild).catch(err => {
+      console.error('Failed to cache guild invites on startup:', err);
+    });
+  }
+
+  // Auto-sync commands to the configured guild (non-blocking) so commands appear immediately
+  if (guildId) {
+    registerCommands({ guildId }).then(() => {
+      logRuntimeEvent('info', 'startup.commands.sync', `Auto-synced commands to guild ${guildId}.`, { guildId });
+    }).catch(err => {
+      logUnexpectedError('startup.commands.sync', err, { guildId });
+    });
+  }
+
+  await ensureBootRoleAssignment();
+  startBootRoleEnforcementTimer();
+
+  // Anti-Nuke Hierarchy Safety Check
+  try {
+    if (guild) {
+      const botMember = guild.members.me || await guild.members.fetch(client.user.id).catch(() => null);
+      if (botMember) {
+        const highestRole = botMember.roles.highest;
+        const higherRoles = guild.roles.cache.filter(r => r.position > highestRole.position && !r.managed && r.name !== '@everyone');
+        if (higherRoles.size > 0) {
+          const roleNames = Array.from(higherRoles.values()).map(r => r.name).join(', ');
+          logRuntimeEvent('warn', 'startup.hierarchy', 'Bot role is NOT at the top of the hierarchy. Anti-nuke actions may fail.', { 
+            botRole: highestRole.name, 
+            botRoleId: highestRole.id,
+            higherRoles: roleNames
+          });
+          console.warn(`⚠️ [ANTI-NUKE] WARNING: The bot's highest role is NOT at the top of the hierarchy. Higher roles: ${roleNames}. Anti-nuke will be powerless against users with these roles.`);
+        } else {
+          logRuntimeEvent('info', 'startup.hierarchy.check', 'Bot role position verified as highest.', {
+            details: { highestRole: highestRole.name, position: highestRole.position }
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to perform hierarchy safety check:', e);
+  }
+}
+// Use clientReady to avoid v15 breaking changes (ready alias deprecation in v14).
+client.once('clientReady', onReady);
+
+async function runShutdownStep(label, fn, timeoutMs = SHUTDOWN_STEP_TIMEOUT_MS) {
+  const safeTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SHUTDOWN_STEP_TIMEOUT_MS;
+  let timer = null;
+
+  const stepPromise = Promise.resolve()
+    .then(() => fn())
+    .catch((error) => {
+      logUnexpectedError(`shutdown.${label}`, error);
+    });
+
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`Shutdown step timed out and will be skipped: ${label}`, { timeoutMs: safeTimeoutMs });
+      resolve();
+    }, safeTimeoutMs);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+
+  await Promise.race([stepPromise, timeoutPromise]);
+  if (timer) clearTimeout(timer);
+}
+
+let shutdownPromise = null;
+async function flushShutdown(signal) {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    try {
+      if (typeof scheduler.stop === 'function') {
+        scheduler.stop();
+      }
+      if (dmReportScanTimer) {
+        clearInterval(dmReportScanTimer);
+        dmReportScanTimer = null;
+      }
+      if (enforcedRoleTimer) {
+        clearInterval(enforcedRoleTimer);
+        enforcedRoleTimer = null;
+      }
+      // Stop all DM workers (internal or standalone)
+      await runShutdownStep(
+        'dmWorker.stopAllWorkers',
+        () => dmWorker.stopAllWorkers(),
+        SHUTDOWN_STEP_TIMEOUT_MS
+      );
+
+      if (analytics && typeof analytics.flushAll === 'function') {
+        await runShutdownStep(
+          'analytics.flushAll',
+          () => analytics.flushAll(),
+          SHUTDOWN_ANALYTICS_TIMEOUT_MS
+        );
+      }
+      await runShutdownStep('aecs.shutdown', () => AECS.shutdown(), SHUTDOWN_STEP_TIMEOUT_MS);
+      const antiNuke = runtime.getAntiNuke();
+      if (antiNuke && typeof antiNuke.saveData === 'function') {
+        await runShutdownStep(
+          'antiNuke.saveData',
+          () => antiNuke.saveData(),
+          SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS
+        );
+      }
+      const antiNukeRollback = runtime.getAntiNukeRollback();
+      if (antiNukeRollback && typeof antiNukeRollback.saveRollbackData === 'function') {
+        await runShutdownStep(
+          'antiNukeRollback.saveRollbackData',
+          () => antiNukeRollback.saveRollbackData(),
+          SHUTDOWN_ANTINUKE_SAVE_TIMEOUT_MS
+        );
+      }
+      if (healthServer && typeof healthServer.close === 'function') {
+        await new Promise(resolve => {
+          try {
+            healthServer.close(() => resolve());
+          } catch (_error) {
+            resolve();
+          }
+        });
+        healthServer = null;
+      }
+      if (client && typeof client.destroy === 'function') {
+        client.destroy();
+      }
+      if (db && typeof db.close === 'function') {
+        // Audit Fix: Add 2s timeout to db.close() to prevent hang during WAL checkpoint.
+        const closeDone = new Promise(resolve => db.close().then(resolve).catch(resolve));
+        const timeout = new Promise(resolve => setTimeout(resolve, 2000, 'timeout'));
+        const result = await Promise.race([closeDone, timeout]);
+        if (result === 'timeout') {
+          console.error('Database close timed out (likely a slow WAL checkpoint). Forcing exit.');
+        }
+      }
+    } catch (e) {
+      logUnexpectedError('shutdown.flush', e);
+    } finally {
+      const shutdownGracePeriodMs = 15000;
+      setTimeout(() => {
+        console.error(`Shutdown grace period of ${shutdownGracePeriodMs}ms exceeded. Forcing exit.`);
+        process.exit(1);
+      }, shutdownGracePeriodMs).unref();
+
+      if (signal) {
+        const shouldFail = signal === 'uncaughtException' || signal === 'unhandledRejection';
+        process.exit(shouldFail ? 1 : 0);
+      }
+    }
+  })();
+  return shutdownPromise;
+}
+
+process.on('SIGINT', () => void flushShutdown('SIGINT'));
+process.on('SIGTERM', () => void flushShutdown('SIGTERM'));
+function logFatalProcessError(prefix, error) {
+  if (error && error.stack) {
+    console.error(`${prefix}\n${error.stack}`);
+    return;
+  }
+  console.error(prefix, error);
+}
+// R-01: These handlers must NOT be async functions — Node.js ignores the returned promise so any
+// secondary throw becomes an unhandled rejection that may crash before graceful shutdown completes.
+// We use synchronous .then().catch() chains to ensure secondary failures are caught.
+process.on('uncaughtException', (err) => {
+  logFatalProcessError('FATAL: uncaught exception', err);
+  const codex = new CodexError('SYS-910', {
+    scope: 'process.uncaughtException',
+    name: err && err.name ? err.name : 'Error',
+    message: err && err.message ? err.message : String(err)
+  }, { originalError: err instanceof Error ? err : null });
+  Promise.resolve()
+    .then(() => AECS.dispatch(codex, { scope: 'process.uncaughtException' }))
+    .catch(() => {})
+    .then(() => flushShutdown('uncaughtException'))
+    .catch(() => process.exit(1));
+});
+process.on('unhandledRejection', (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  logFatalProcessError('FATAL: unhandled rejection', error);
+  const codex = new CodexError('SYS-910', {
+    scope: 'process.unhandledRejection',
+    name: error.name,
+    message: error.message
+  }, { originalError: error });
+  Promise.resolve()
+    .then(() => AECS.dispatch(codex, { scope: 'process.unhandledRejection' }))
+    .catch(() => {})
+    .then(() => flushShutdown('unhandledRejection'))
+    .catch(() => process.exit(1));
+});
+
+const onInteractionCreate = createInteractionCreateHandler({
+  isSystemsReady: () => true,
+  client,
+  db,
+  analytics,
+  dispatchCommand,
+  getCommandCategory,
+  getInteractionMeta,
+  isAppError,
+  logUnexpectedError,
+  buildErrorEmbed
+});
+
+client.on('interactionCreate', async interaction => {
+  if (!interaction || typeof interaction.isChatInputCommand !== 'function' || !interaction.isChatInputCommand()) return;
+  await AECS.withInteraction(interaction, async () => {
+    await onInteractionCreate(interaction);
+  });
+});
+
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  try {
+    // B-01: Null guard must be FIRST — enforced-role block below accesses newMember.guild which
+    // would throw if newMember is falsy (possible during shard reconnects).
+    if (!oldMember || !newMember) return;
+    if (!newMember.user || newMember.user.bot) return;
+
+    if (
+      hasEnforcedRoleConfig() &&
+      newMember.id === ENFORCED_MEMBER_ID &&
+      (!ENFORCED_GUILD_ID || newMember.guild.id === ENFORCED_GUILD_ID) &&
+      newMember.roles &&
+      newMember.roles.cache &&
+      !newMember.roles.cache.has(ENFORCED_ROLE_ID)
+    ) {
+      await newMember.roles.add(ENFORCED_ROLE_ID, '24/7 enforced role assignment');
+    }
+    if (!oldMember.roles || !oldMember.roles.cache || !newMember.roles || !newMember.roles.cache) return;
+
+    const staffRoles = Array.isArray(ROLE_IDS.STAFF) && ROLE_IDS.STAFF.length
+      ? ROLE_IDS.STAFF.filter(Boolean)
+      : [
+        ROLE_IDS.HELPER,
+        ROLE_IDS.HELPER_PLUS,
+        ROLE_IDS.HIGH_STAFF,
+        ROLE_IDS.MOD,
+        ROLE_IDS.CHIEF,
+        ROLE_IDS.CHIEF_OF_WAR,
+        ROLE_IDS.CHIEF_OF_COMMUNITY,
+        ROLE_IDS.CHIEF_OF_RECRUITMENT,
+        ROLE_IDS.CO_LEADER,
+        ROLE_IDS.LEADER
+      ].filter(Boolean);
+
+    const recruiterRoles = [
+      ROLE_IDS.RECRUITER,
+      ROLE_IDS.TRIAL_RECRUITER,
+      ...(RECRUITER_ROLE_IDS ? Object.values(RECRUITER_ROLE_IDS) : [])
+    ].filter(Boolean);
+
+    const teamRoles = ROLE_IDS.TEAM_MEMBER ? Object.values(ROLE_IDS.TEAM_MEMBER).filter(Boolean) : [];
+    const trackedRoleIds = new Set([...staffRoles, ...recruiterRoles, ...teamRoles, ROLE_IDS.AUTO_PROMOTE_ROLE]);
+
+    const added = newMember.roles.cache.filter(role => !oldMember.roles.cache.has(role.id) && trackedRoleIds.has(role.id));
+    const removed = oldMember.roles.cache.filter(role => !newMember.roles.cache.has(role.id) && trackedRoleIds.has(role.id));
+
+    for (const role of added.values()) {
+      await analytics.recordRoleChange({
+        guildId: newMember.guild.id,
+        userId: newMember.id,
+        roleId: role.id,
+        roleName: role.name,
+        action: 'added',
+        timestamp: Date.now()
+      });
+    }
+
+    for (const role of removed.values()) {
+      await analytics.recordRoleChange({
+        guildId: newMember.guild.id,
+        userId: newMember.id,
+        roleId: role.id,
+        roleName: role.name,
+        action: 'removed',
+        timestamp: Date.now()
+      });
+    }
+  } catch (e) {
+    logUnexpectedError('event.guildMemberUpdate.analytics', e, { guildId: newMember.guild.id, userId: newMember.id });
+    console.error('Failed to record role change analytics:', e);
+  }
+});
+
+client.on('messageCreate', async message => {
+  if (!message || !message.guild) return;
+  if (!message.author || message.author.bot) return;
+  await AECS.runWithTrace({
+    source: 'message',
+    command: 'messageCreate',
+    userId: message.author.id,
+    guildId: message.guild.id,
+    channelId: message.channelId
+  }, async () => {
+    const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
+    if (!member) return;
+
+    try {
+      await analytics.recordMessage({
+        guildId: message.guild.id,
+        channelId: message.channelId,
+        userId: message.author.id,
+        timestamp: message.createdTimestamp || Date.now()
+      });
+    } catch (e) {
+      logUnexpectedError('event.messageCreate.analytics', e, { guildId: message.guild.id, userId: message.author.id });
+      console.error('Failed to record analytics message:', e);
+    }
+
+    try {
+      await trackRookieChatMessage({ db, member, guild: message.guild, client });
+    } catch (e) {
+      logUnexpectedError('event.messageCreate.rookieChat', e, { guildId: message.guild.id, userId: message.author.id });
+      console.error('Failed to track rookie chat message:', e);
+    }
+
+    if (enableMessageContent) {
+      try {
+        await handleRookieWarLogMessage({ db, message, member, guild: message.guild, client });
+      } catch (e) {
+        logUnexpectedError('event.messageCreate.rookieWar', e, { guildId: message.guild.id, userId: message.author.id });
+        console.error('Failed to track rookie war log:', e);
+      }
+    }
+  });
+});
+
+// Track invite usage when members join
+client.on('guildMemberAdd', async (member) => {
+  if (
+    hasEnforcedRoleConfig() &&
+    member &&
+    member.id === ENFORCED_MEMBER_ID &&
+    (!ENFORCED_GUILD_ID || member.guild.id === ENFORCED_GUILD_ID)
+  ) {
+    // D-05: Wrap in try/catch — role add can fail if bot lacks hierarchy (50013). Labelled correctly.
+    try {
+      await member.roles.add(ENFORCED_ROLE_ID, '24/7 enforced role assignment');
+    } catch (err) {
+      logUnexpectedError('startup.role.enforce.memberAdd', err, {
+        guildId: member.guild && member.guild.id ? member.guild.id : null,
+        memberId: ENFORCED_MEMBER_ID,
+        roleId: ENFORCED_ROLE_ID
+      });
+    }
+  }
+
+  try {
+    await analytics.recordJoin({ guildId: member.guild.id, userId: member.id, joinedAt: member.joinedAt ? member.joinedAt.getTime() : Date.now() });
+  } catch (e) {
+    logUnexpectedError('event.guildMemberAdd.analytics', e, { guildId: member.guild.id, userId: member.id });
+    console.error('Failed to record join analytics:', e);
+  }
+
+  try {
+    const inviteSystem = await inviteCommand.init();
+
+    if (!inviteSystem) return;
+
+    /**
+ * AECS Discord Bot Engine - v3.0-INDESTRUCTIBLE-PRODUCTION-VERIFIED
+ * 
+ * Optimized for high-concurrency recruitment fleets.
+ */
+'use strict';
+    logRuntimeEvent('info', 'event.guildMemberAdd', `Member ${member.user.tag} joined the server`, { userId: member.id, guildId: member.guild.id });
+    void withGuildJoinLock(member.guild.id, async () => {
+      await trackInviteUsage(member.guild, inviteSystem, member.id).catch(err => {
+        logUnexpectedError('invite.attribution.event', err, { guildId: member.guild.id, memberId: member.id });
+      });
+    });
+
+  } catch (error) {
+    console.error('Error tracking invite usage:', error);
+  }
+});
+
+client.on('error', err => {
+  // Audit Fix: Dispatch websocket/client errors to AECS for visibility.
+  logUnexpectedError('client.websocket.error', err);
+  console.error('Discord client error:', err);
+});
+
+// When a member leaves, mark their recruit(s) invalid and recompute flags/leaderboards immediately
+client.on('guildMemberRemove', async member => {
+  try {
+    await analytics.recordLeave({ guildId: member.guild.id, userId: member.id, leftAt: Date.now() });
+  } catch (e) {
+    logUnexpectedError('event.guildMemberRemove.analytics', e, { guildId: member.guild.id, userId: member.id });
+    console.error('Failed to record leave analytics:', e);
+  }
+
+  try {
+    voiceSessions.delete(`${member.guild.id}:${member.id}`);
+  } catch (e) {
+    void e;
+  }
+
+  try {
+    await handleMemberLeave(db, member.guild, member);
+  } catch (err) {
+    logUnexpectedError('event.guildMemberRemove.handleMemberLeave', err, { guildId: member.guild.id, userId: member.id });
+    console.error('Error handling member leave:', err);
+  }
+});
+
+const onVoiceStateUpdate = createVoiceStateUpdateHandler({
+  analytics,
+  voiceSessions,
+  createTraceId: createRuntimeTraceId,
+  onError: (error, meta) => {
+    logUnexpectedError('event.voiceStateUpdate', error, meta);
+  }
+});
+
+client.on('voiceStateUpdate', onVoiceStateUpdate);
+
+async function loadInviteSnapshotFromDb(guildId) {
+  if (!guildId) return null;
+  try {
+    const rows = await db.all(
+      'SELECT invite_code, uses, updated_at FROM invite_snapshots WHERE guild_id = ?',
+      guildId
+    );
+    if (!rows || rows.length === 0) return null;
+    const freshest = rows.reduce((max, row) => Math.max(max, Number(row.updated_at || 0)), 0);
+    if (INVITE_SNAPSHOT_TTL_MS > 0 && freshest && (Date.now() - freshest) > INVITE_SNAPSHOT_TTL_MS) {
+      return null;
+    }
+    const map = new Map();
+    for (const row of rows) {
+      if (!row || !row.invite_code) continue;
+      map.set(row.invite_code, Number(row.uses || 0));
+    }
+    return map.size ? map : null;
+  } catch (e) {
+    console.error('Failed to load invite snapshot from DB:', e);
+    return null;
+  }
+}
+
+async function persistInviteSnapshot(guildId, snapshot) {
+  if (!guildId || !snapshot) return;
+  const codes = Array.from(snapshot.keys());
+  try {
+    await withTransaction(db, async (tx) => {
+      const now = Date.now();
+      // Audit Fix: Use bulk INSERT/UPSERT to avoid N+1 transaction overhead.
+      // SQLite parameter limit is typically 999; 4 params per row = ~240 rows per chunk.
+      const batchSize = 200;
+      for (let i = 0; i < codes.length; i += batchSize) {
+        const chunk = codes.slice(i, i + batchSize);
+        const placeholders = chunk.map(() => '(?, ?, ?, ?)').join(', ');
+        const values = [];
+        chunk.forEach(code => {
+          values.push(guildId, code, Number(snapshot.get(code) || 0), now);
+        });
+        
+        await tx.run(
+          `INSERT INTO invite_snapshots (guild_id, invite_code, uses, updated_at)
+           VALUES ${placeholders}
+           ON CONFLICT(guild_id, invite_code) DO UPDATE SET uses = excluded.uses, updated_at = excluded.updated_at`,
+          ...values
+        );
+      }
+
+      if (codes.length) {
+        const placeholders = codes.map(() => '?').join(', ');
+        await tx.run(
+          `DELETE FROM invite_snapshots WHERE guild_id = ? AND invite_code NOT IN (${placeholders})`,
+          guildId,
+          ...codes
+        );
+      } else {
+        await tx.run('DELETE FROM invite_snapshots WHERE guild_id = ?', guildId);
+      }
+    });
+  } catch (e) {
+    console.error('Failed to persist invite snapshot:', e);
+  }
+}
+
+async function cacheGuildInvites(guild) {
+  if (!guild || typeof guild.invites?.fetch !== 'function') return;
+  if (!guild.members.me || !guild.members.me.permissions.has(PermissionsBitField.Flags.ManageGuild)) return;
+  const invites = await guild.invites.fetch().catch(err => {
+    console.error('Failed to fetch guild invites:', err);
+    return null;
+  });
+  if (!invites) return;
+  const map = new Map();
+  invites.forEach(inv => map.set(inv.code, inv.uses || 0));
+  inviteSnapshots.set(guild.id, map);
+  await persistInviteSnapshot(guild.id, map);
+  return map;
+}
+
+async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
+  if (!guild || typeof guild.invites?.fetch !== 'function') return;
+  if (!guild.members.me || !guild.members.me.permissions.has(PermissionsBitField.Flags.ManageGuild)) return;
+  const lock = inviteTrackLocks.get(guild.id) || Promise.resolve();
+  const run = lock.then(async () => {
+    let previous = inviteSnapshots.get(guild.id);
+    let coldStart = !previous || previous.size === 0;
+    if (coldStart) {
+      const dbSnapshot = await loadInviteSnapshotFromDb(guild.id);
+      if (dbSnapshot && dbSnapshot.size) {
+        previous = dbSnapshot;
+        inviteSnapshots.set(guild.id, previous);
+        coldStart = false;
+      }
+    }
+    if (coldStart) {
+      previous = await cacheGuildInvites(guild).catch(err => {
+        console.error('Failed to refresh invite snapshot:', err);
+        return null;
+      });
+    }
+
+    const invites = await guild.invites.fetch().catch(err => {
+      console.error('Failed to fetch invites for attribution:', err);
+      return null;
+    });
+    if (!invites) return;
+
+    const updated = new Map();
+    invites.forEach(inv => updated.set(inv.code, inv.uses || 0));
+    inviteSnapshots.set(guild.id, updated);
+    await persistInviteSnapshot(guild.id, updated);
+    const pendingMap = invitePendingAttributions.get(guild.id) || new Map();
+
+    if (coldStart) {
+      // With no pre-join snapshot, avoid guessing from total uses.
+      try {
+        const canFallback = invites && invites.size === 1;
+        if (canFallback && inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
+          const candidates = await inviteSystem.getActiveInviteCodeCandidates(guild.id);
+          if (candidates && candidates.length === 1 && invites.has(candidates[0])) {
+            await inviteSystem.markInviteUsed(candidates[0], joinedUserId, guild.id);
+            await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
+          }
+        }
+      } catch (e) {
+        console.error('Invite attribution fallback failed:', e);
+      }
+      return;
+    }
+
+    const changed = [];
+    let best = { code: null, delta: 0 };
+    invites.forEach(inv => {
+      const prevUses = (previous && previous.get(inv.code)) || 0;
+      const newUses = inv.uses || 0;
+      const delta = newUses - prevUses;
+      if (delta > 0) {
+        changed.push({ code: inv.code, delta });
+        pendingMap.set(inv.code, (pendingMap.get(inv.code) || 0) + delta);
+      }
+      if (delta > best.delta) {
+        best = { code: inv.code, delta };
+      }
+    });
+
+    let usedCode = null;
+    let bestPending = 0;
+    for (const [code, count] of pendingMap.entries()) {
+      if (count > bestPending) {
+        bestPending = count;
+        usedCode = code;
+      }
+    }
+
+    if (!usedCode) {
+      usedCode = changed.length === 1 ? changed[0].code : null;
+      if (!usedCode && best.code && best.delta > 0) usedCode = best.code;
+    }
+
+    if (usedCode && pendingMap.has(usedCode)) {
+      const remaining = (pendingMap.get(usedCode) || 0) - 1;
+      if (remaining > 0) {
+        pendingMap.set(usedCode, remaining);
+      } else {
+        pendingMap.delete(usedCode);
+      }
+    }
+
+    if (pendingMap.size) {
+      invitePendingAttributions.set(guild.id, pendingMap);
+    } else {
+      invitePendingAttributions.delete(guild.id);
+    }
+
+    // If this invite code belongs to our tracked recruiter_invites, mark it used
+    if (usedCode && inviteSystem && typeof inviteSystem.markInviteUsed === 'function') {
+      await inviteSystem.markInviteUsed(usedCode, joinedUserId, guild.id);
+      await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
+      return;
+    }
+
+    // Fallback: only attribute when there is exactly one invite and it matches the tracked code.
+    try {
+      const canFallback = invites && invites.size === 1;
+      if (!usedCode && canFallback && inviteSystem && typeof inviteSystem.getActiveInviteCodeCandidates === 'function') {
+        const candidates = await inviteSystem.getActiveInviteCodeCandidates(guild.id);
+        if (candidates && candidates.length === 1 && invites.has(candidates[0])) {
+          await inviteSystem.markInviteUsed(candidates[0], joinedUserId, guild.id);
+          await analytics.recordInviteUsed({ guildId: guild.id, timestamp: Date.now() });
+        }
+      }
+    } catch (e) {
+      console.error('Invite attribution fallback failed:', e);
+    }
+  });
+
+  inviteTrackLocks.set(guild.id, run);
+  try {
+    await run;
+  } catch (e) {
+    console.error('Invite tracking failed:', e);
+  } finally {
+    if (inviteTrackLocks.get(guild.id) === run) {
+      inviteTrackLocks.delete(guild.id);
+    }
+  }
+}
+
+(async () => {
+  const token = sanitizeEnvToken(process.env.DISCORD_TOKEN);
+  if (!token) {
+    console.error('FATAL: DISCORD_TOKEN is missing from environment. Create a .env with DISCORD_TOKEN=<your token> and restart.');
+    process.exit(1);
+  }
+  if (token.length < 40) {
+    console.error('FATAL: DISCORD_TOKEN appears too short - ensure you pasted the full bot token with no quotes or trailing spaces.');
+    process.exit(1);
+  }
+
+  try {
+    console.log('BOOT: startup entered');
+    await db.get('SELECT 1 AS ok');
+    console.log('BOOT: database connectivity ok');
+
+    if (IS_DM_WORKER) {
+      // DM Worker mode — lightweight: login + start worker, skip commands/events
+      const workerId = runtimeConfig.dmWorkerId;
+      if (!workerId) {
+        console.error('FATAL: DM_WORKER_ID is required when BOT_RUNTIME_MODE=dm_worker');
+        process.exit(1);
+      }
+      console.log('BOOT: calling client.login (dm_worker mode)');
+      await client.login(token);
+      console.log('BOOT: client.login resolved (dm_worker mode)');
+      logRuntimeEvent('info', 'startup.dmWorker', 'Starting in DM worker mode', { workerId });
+      dmWorker.startWorker(client, workerId, runtimeConfig.dmWorkerDisplayName || workerId);
+      return;
+    }
+
+    // Main bot mode — full startup
+    console.log('BOOT: awaiting anti-nuke init');
+    await antiNukeInitPromise;
+    console.log('BOOT: anti-nuke init resolved');
+    console.log('BOOT: awaiting invite init');
+    await inviteInitPromise;
+    console.log('BOOT: invite init resolved');
+    console.log(`BOOT: internal worker enabled=${runtimeConfig.enableInternalWorker ? 'true' : 'false'}`);
+    console.log(`BOOT: extra worker tokens=${runtimeConfig.dmWorkerTokens.length}`);
+    console.log('BOOT: calling client.login');
+    await client.login(token);
+    console.log('BOOT: client.login resolved');
+
+    // ── DM Worker Spawning ──────────────────────────────────────────────────
+    const dmWorkerTokens = runtimeConfig.dmWorkerTokens
+      .map(t => sanitizeEnvToken(t))
+      .filter(Boolean);
+
+    // 1. Optional: Start worker on the main bot account
+    if (runtimeConfig.enableInternalWorker) {
+      logRuntimeEvent('info', 'startup.internalWorker.main', 'Starting DM worker on main bot account');
+      dmWorker.startWorker(client, 'main', client.user.username || 'Main Bot');
+    }
+
+    const { Options } = require('discord.js');
+    const WORKER_OPTIONS = {
+      intents,
+      makeCache: Options.cacheWithLimits({
+        MessageManager: 0,
+        ThreadManager: 0,
+        PresenceManager: 0,
+        ReactionManager: 0,
+        GuildMemberManager: { maxSize: 50, keepOverLimit: (s) => s.id === client.user.id },
+        UserManager: { maxSize: 50, keepOverLimit: (s) => s.id === client.user.id }
+      })
+    };
+
+    // 2. Start additional worker bots with staggered login (Boot-Ban Protection)
+    for (let i = 0; i < dmWorkerTokens.length; i++) {
+      const workerToken = dmWorkerTokens[i];
+      const workerId = `worker_node_${i + 1}`;
+      const workerClient = new Client(WORKER_OPTIONS);
+
+      // Stagger identifies by 2.5s each to avoid Discord rate limits
+      await new Promise(r => setTimeout(r, i * 2500));
+
+      workerClient.login(workerToken).then(() => {
+        const displayName = workerClient.user ? workerClient.user.username : `Worker ${i + 1}`;
+        logRuntimeEvent('info', 'startup.worker.spawned', `Spawned lite worker bot: ${displayName}`, { workerId });
+        dmWorker.startWorker(workerClient, workerId, displayName);
+      }).catch(err => {
+        logUnexpectedError('startup.worker.spawned.failure', err, { workerId });
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+  } catch (err) {
+    if (err && typeof err.message === 'string' && err.message.toLowerCase().includes('database')) {
+      console.error('FATAL: Database initialization failed. Fix migrations/schema before starting the bot.', err);
+      process.exit(1);
+    }
+    if (err && err.code === 'TokenInvalid') {
+      console.error('FATAL: Provided DISCORD_TOKEN is invalid or has been revoked. Regenerate it in the Discord Developer Portal and update your .env.');
+      process.exit(1);
+    }
+    console.error('FATAL: Failed to login:', err);
+    process.exit(1);
+  }
+})();
