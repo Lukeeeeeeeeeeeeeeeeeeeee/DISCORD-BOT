@@ -1,4 +1,5 @@
 const { GUILD_ID } = require('../constants');
+const { getWeekStartUtcTs } = require('./week');
 
 async function restorePointsOnStartup(db) {
   console.log('🔄 Restoring recruiter points and recruits...');
@@ -11,8 +12,10 @@ async function restorePointsOnStartup(db) {
     { userId: '1385608712080851075', points: 1, recruits: 2 }    // pero0244421
   ];
   
+  // Get the actual current week start (Monday 00:05 UTC)
+  const weekStart = getWeekStartUtcTs();
   const now = Date.now();
-  const oneDayAgo = now - (24 * 60 * 60 * 1000); // 1 day ago, within current week
+  const baseTs = weekStart + (24 * 60 * 60 * 1000); // 1 day after week start
   
   for (const { userId, points, recruits } of recruitersToRestore) {
     try {
@@ -31,11 +34,11 @@ async function restorePointsOnStartup(db) {
       const currentCount = existing ? existing.count : 0;
       const needed = recruits - currentCount;
       
-      // Create dummy recruits if needed (with recent timestamps so they count in current week)
+      // Create dummy recruits if needed (with timestamps WITHIN current week)
       if (needed > 0) {
         for (let i = 0; i < needed; i++) {
           const dummyId = `DUMMY_${userId}_${i}_${Date.now()}`;
-          const createdAt = oneDayAgo + (i * 3600000); // Spread over 24 hours, 1 hour apart
+          const createdAt = baseTs + (i * 3600000); // Start 1 day after week start, spread 1 hour apart
           
           await db.run(
             `INSERT OR IGNORE INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points)
@@ -43,7 +46,7 @@ async function restorePointsOnStartup(db) {
             [GUILD_ID, userId, dummyId, `Restored_Recruit_${i+1}`, createdAt]
           );
         }
-        console.log(`  ✓ Created ${needed} dummy recruits for ${userId}`);
+        console.log(`  ✓ Created ${needed} dummy recruits for ${userId} (timestamps from ${new Date(baseTs).toISOString()})`);
       }
       
     } catch (err) {
