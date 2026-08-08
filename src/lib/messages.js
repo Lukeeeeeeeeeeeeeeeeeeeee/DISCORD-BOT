@@ -107,8 +107,8 @@ function makeLeaderboardText(rows, regionLabel, lang = 'en') {
     info = getRegionInfo(regionLabel);
   }
 
-  // Use big text header format
-  const title = `# ${info.emoji} ${t('leaderboard.title', lang, { region: info.name })}`.trim();
+  // Use simple hardcoded title - don't rely on i18n
+  const title = `${info.emoji} Leaderboard (${info.name})`;
   if (!rows || rows.length === 0) {
     const msg = `${title}\nNo recruiters found.`;
     return msg.length > 2000 ? msg.slice(0, 1997) + '...' : msg;
@@ -130,6 +130,8 @@ function makeLeaderboardText(rows, regionLabel, lang = 'en') {
     if (next.length > 1950) break;
     kept.push(line);
   }
+  const remaining = lines.length - (kept.length - 1);
+  if (remaining > 0) kept.push(`...and ${remaining} more`);
   const remaining = lines.length - (kept.length - 1);
   if (remaining > 0) kept.push(`...and ${remaining} more`);
   text = kept.join('\n');
