@@ -12,7 +12,7 @@ async function restorePointsOnStartup(db) {
   ];
   
   const now = Date.now();
-  const weekStart = now - (7 * 24 * 60 * 60 * 1000); // 7 days ago
+  const oneDayAgo = now - (24 * 60 * 60 * 1000); // 1 day ago, within current week
   
   for (const { userId, points, recruits } of recruitersToRestore) {
     try {
@@ -31,18 +31,19 @@ async function restorePointsOnStartup(db) {
       const currentCount = existing ? existing.count : 0;
       const needed = recruits - currentCount;
       
-      // Create dummy recruits if needed
+      // Create dummy recruits if needed (with recent timestamps so they count in current week)
       if (needed > 0) {
         for (let i = 0; i < needed; i++) {
-          const dummyId = `DUMMY_${userId}_${i}`;
-          const createdAt = weekStart + (i * 60000); // Spread over the week
+          const dummyId = `DUMMY_${userId}_${i}_${Date.now()}`;
+          const createdAt = oneDayAgo + (i * 3600000); // Spread over 24 hours, 1 hour apart
           
           await db.run(
             `INSERT OR IGNORE INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points)
              VALUES (?, ?, ?, 'EU', ?, ?, 1, 1)`,
-            [GUILD_ID, userId, dummyId, `Recruit_${i+1}`, createdAt]
+            [GUILD_ID, userId, dummyId, `Restored_Recruit_${i+1}`, createdAt]
           );
         }
+        console.log(`  ✓ Created ${needed} dummy recruits for ${userId}`);
       }
       
     } catch (err) {
