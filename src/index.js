@@ -177,6 +177,9 @@ const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
 
 const inviteInitPromise = (async () => {
   await createInviteTables();
+  // Migrate guild ID if needed (from old server to new server)
+  const { migrateGuildIdIfNeeded } = require('./lib/migrate-guild-id');
+  await migrateGuildIdIfNeeded(db);
   await initInviteSystem(GUILD_ID, db);
   console.log('ðŸ”— Invite system ready!');
 })().catch(err => {
