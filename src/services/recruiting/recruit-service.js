@@ -467,7 +467,7 @@ async function execute(interaction, _client, dbHandle = null) {
     }
     const teamInfo = getRegionInfo(team);
     const teamName = teamInfo && teamInfo.name ? teamInfo.name : team;
-    const nicknameSuffix = ` | ${regionTag || team} 0/10`;
+    const nicknameSuffix = ` | ${regionTag || team} 0/2`;
     const ign = normalizeIgn(rawIgn, nicknameSuffix);
     if (!ign) {
       return replyError(interaction, 'IGN must include at least 1 visible character.');
