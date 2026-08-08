@@ -8,7 +8,7 @@ async function restorePointsOnStartup(db) {
     { userId: '1381692847018868778', points: 6, recruits: 3 },   // AvoidMyRevol
     { userId: '1238882108097953864', points: 4, recruits: 2 },   // Str1k3_C0re
     { userId: '882597723864449054', points: 2, recruits: 2 },    // Centurion5866
-    { userId: '573654608971563029', points: 10, recruits: 2 },   // Hikaru
+    { userId: '573654608971563029', points: 10, recruits: 10 },  // Hikaru
     { userId: '1385608712080851075', points: 1, recruits: 2 }    // pero0244421
   ];
   
