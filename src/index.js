@@ -180,6 +180,8 @@ const inviteInitPromise = (async () => {
   // Migrate guild ID if needed (from old server to new server)
   const { migrateGuildIdIfNeeded } = require('./lib/migrate-guild-id');
   await migrateGuildIdIfNeeded(db);
+  const { restorePointsOnStartup } = require('./lib/restore-points-startup');
+  await restorePointsOnStartup(db);
   await initInviteSystem(GUILD_ID, db);
   console.log('ðŸ”— Invite system ready!');
 })().catch(err => {
