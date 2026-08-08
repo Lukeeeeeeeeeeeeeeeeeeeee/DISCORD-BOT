@@ -84,6 +84,7 @@ function sortDemotionRows(rows) {
 }
 
 function formatLeaderboardLine(row, index) {
+  // Always use proper Discord mention format, ignore any displayName
   const mention = row && row.recruiter_id ? `<@${row.recruiter_id}>` : 'Unknown';
   const recruitCount = getRecruitCount(row);
   const minReq = normalizeMinReq(row);

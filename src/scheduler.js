@@ -672,9 +672,8 @@ async function recomputeLeaderboardsInternal(db, guild) {
             absence: !!absence,
             systemWarning: !!systemWarningRow,
             activeWarnings,
-            displayName: staffMember && staffMember.user
-              ? `${staffMember.user.tag || staffMember.user.username} | ${getRegionInfo(rg.key).name || rg.key}`
-              : `<@${r.recruiter_id}>`
+            // FIXED: Always use proper Discord mentions instead of display names
+            displayName: null
           }
         };
       });
