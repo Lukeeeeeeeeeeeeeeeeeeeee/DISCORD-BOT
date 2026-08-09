@@ -3,10 +3,10 @@ const { ShardClientUtil } = require('discord.js');
 const { GUILD_ID, CHANNELS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('./constants');
 const { getRegionInfo, getTeamLabel } = require('./lib/regions');
 const { formatPointsValue } = require('./lib/economy');
-const { getWeekStartUtcTs } = require('./lib/week');
+const { getWeekStartUtcTs, getRolling7DayStartTs } = require('./lib/week');
 const { formatUtcDateOnly, formatUtcDate } = require('./lib/time');
 const { fetchMembersByIds } = require('./lib/member-fetch');
-const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('./lib/leaderboard-utils');
+const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs, loadRecruiterIdsFromRecentRecruits } = require('./lib/leaderboard-utils');
 const { upsertLeaderboardMessage, makeLeaderboardText, makeDemotionWatchText } = require('./lib/messages');
 const { acquireJobLock } = require('./lib/job-locks');
 const { withTransaction } = require('./lib/transactions');
@@ -520,6 +520,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
     { key: 'AS', channel: CHANNELS.INVITES_AS }
   ];
   const weekStart = getWeekStartUtcTs();
+  const rolling7dStart = getRolling7DayStartTs();
   let memberMap = new Map();
   let dbRecruiterIds = [];
   let hasDbRecruiters = false;
@@ -600,6 +601,17 @@ async function recomputeLeaderboardsInternal(db, guild) {
       }
     }
 
+    try {
+      const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
+        guildId,
+        region: rg.key,
+        sinceTs: rolling7dStart
+      });
+      recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
+    } catch (e) {
+      console.error(`Failed to load recent recruiter IDs for ${rg.key} leaderboard:`, e);
+    }
+
     if (allRecruiterIds.size === 0) {
       // Test-mode / minimal guild mock: fall back to anyone who has recruited in this region in-window.
       const ids = await db.all(
@@ -626,12 +638,12 @@ async function recomputeLeaderboardsInternal(db, guild) {
     let rows = [];
     if (!leaderboardText) {
       const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
-      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: weekStart, guildId });
+      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: rolling7dStart, guildId });
       const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
       const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
       const enriched = [];
-      const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
+      const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now() };
       const enrichedResults = await runWithConcurrency(rowsBase || [], SNAPSHOT_CONCURRENCY, async (r) => {
         const absence = meta.absences.has(r.recruiter_id);
         const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;
@@ -795,8 +807,9 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   }
 
   const weekStart = getWeekStartUtcTs();
+  const rolling7dStart = getRolling7DayStartTs();
   const meta = await loadRecruiterMeta(db, recruiterIds, { guildId });
-  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { weekStart, sinceTs: weekStart, guildId });
+  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { weekStart, sinceTs: rolling7dStart, guildId });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
   const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
   const memberMap = await fetchMembersByIds(guild, recruiterIds);

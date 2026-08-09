@@ -1,7 +1,7 @@
 const { REGIONS, RECRUITER_ROLE_IDS, ROLE_IDS } = require('../../constants');
 const { getRegionInfo } = require('../../lib/regions');
-const { getWeekStartUtcTs } = require('../../lib/week');
-const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs } = require('../../lib/leaderboard-utils');
+const { getWeekStartUtcTs, getRolling7DayStartTs } = require('../../lib/week');
+const { fetchLeaderboardRows, loadRecruiterMeta, loadPreviousMinReqs, loadRecruiterIdsFromRecentRecruits } = require('../../lib/leaderboard-utils');
 const { fetchMembersByIds } = require('../../lib/member-fetch');
 const recruitersRepo = require('../../repos/recruiters-repo');
 const { runWithConcurrency } = require('../../lib/concurrency');
@@ -51,17 +51,18 @@ async function warmMemberCacheIfNeeded(guild, totalRoleMembers, reason, options 
 }
 
 async function buildRows({ db, guild, guildId, recruiterMembers, region, weekStart, memberMap }) {
+  const rolling7dStart = getRolling7DayStartTs();
   const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
   if (recruiterMembers.length === 0) {
     return { rows: [], meta };
   }
 
-  const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region, weekStart, sinceTs: weekStart, guildId });
+  const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region, weekStart, sinceTs: rolling7dStart, guildId });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
   const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
   const rows = [];
-  const statsWindow = { sinceTs: weekStart - (7 * 24 * 60 * 60 * 1000), untilTs: weekStart };
+  const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now() };
   const safeConcurrency = Number.isFinite(LEADERBOARD_ROW_CONCURRENCY) && LEADERBOARD_ROW_CONCURRENCY > 0
     ? LEADERBOARD_ROW_CONCURRENCY
     : 4;
@@ -169,6 +170,17 @@ async function showLeaderboard({ interaction, db, guildId }) {
       refreshedMembers.forEach(member => allRecruiterIds.add(member.id));
     }
 
+    try {
+      const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
+        guildId,
+        region: region,
+        sinceTs: getRolling7DayStartTs()
+      });
+      recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
+    } catch (e) {
+      console.error(`Failed to load recent recruiter IDs for ${region} leaderboard:`, e);
+    }
+
     let memberMap = new Map();
     try {
       const fallbackToDb = allRecruiterIds.size === 0;
@@ -253,6 +265,16 @@ async function showLeaderboard({ interaction, db, guildId }) {
     }
   } catch (e) {
     console.error('Failed to resolve recruiter members for global leaderboard', e);
+  }
+
+  try {
+    const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
+      guildId,
+      sinceTs: getRolling7DayStartTs()
+    });
+    recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
+  } catch (e) {
+    console.error('Failed to load recent recruiter IDs for global leaderboard:', e);
   }
 
   const recruiterMembers = Array.from(allRecruiterIds);

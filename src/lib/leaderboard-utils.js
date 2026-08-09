@@ -145,5 +145,33 @@ module.exports = {
   chunkArray,
   fetchLeaderboardRows,
   loadRecruiterMeta,
-  loadPreviousMinReqs
+  loadPreviousMinReqs,
+  loadRecruiterIdsFromRecentRecruits
 };
+
+async function loadRecruiterIdsFromRecentRecruits(db, opts = {}) {
+  if (!db) return [];
+  const guildId = resolveGuildId(opts.guild || opts.guildId);
+  const sinceTs = Number.isFinite(opts.sinceTs) ? opts.sinceTs : Date.now();
+  const region = opts.region || null;
+
+  try {
+    const rows = region
+      ? await db.all(
+        'SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
+        guildId,
+        region,
+        sinceTs
+      )
+      : await db.all(
+        'SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ? AND valid = 1 AND created_at >= ?',
+        guildId,
+        sinceTs
+      );
+    return (rows || []).map(row => row && row.recruiter_id).filter(Boolean);
+  } catch (error) {
+    const msg = String(error && error.message ? error.message : '').toLowerCase();
+    if (msg.includes('no such table: recruits')) return [];
+    throw error;
+  }
+}
