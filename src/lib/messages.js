@@ -114,8 +114,17 @@ function makeLeaderboardText(rows, regionLabel, lang = 'en') {
     return msg.length > 2000 ? msg.slice(0, 1997) + '...' : msg;
   }
 
+  // Deduplicate by recruiter_id (take first occurrence after sorting)
+  const seen = new Set();
+  const dedupedRows = rows.filter(r => {
+    if (!r || !r.recruiter_id) return false;
+    if (seen.has(r.recruiter_id)) return false;
+    seen.add(r.recruiter_id);
+    return true;
+  });
+
   // Sort by recruits desc, then points desc, then minReq asc.
-  const sortedRows = sortLeaderboardRows(rows);
+  const sortedRows = sortLeaderboardRows(dedupedRows);
 
   const lines = sortedRows.map((r, i) => formatLeaderboardLine(r, i));
 
