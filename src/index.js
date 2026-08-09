@@ -169,14 +169,15 @@ async function deleteVoiceSession(guildId, userId) {
   await db.run('DELETE FROM runtime_voice_sessions WHERE guild_id = ? AND user_id = ?', guildId, userId);
 }
 
-// CRITICAL: Run data protection BEFORE anything else
+// CRITICAL: Run ULTRA data protection BEFORE anything else
 const dataProtectionPromise = (async () => {
   try {
-    const { protectData } = require('../scripts/startup-data-protection');
+    const { protectDataV2 } = require('../scripts/startup-data-protection-v2');
     const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'recruiter.db');
-    await protectData(dbPath);
+    await protectDataV2(dbPath);
   } catch (err) {
-    console.error('Data protection failed:', err);
+    console.error('❌ Data protection failed:', err);
+    // Non-fatal - continue startup but log error
   }
 })();
 
