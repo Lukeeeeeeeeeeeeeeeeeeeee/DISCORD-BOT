@@ -82,7 +82,10 @@ async function autoFixMissingRecruits() {
     console.log('✅ No fixes needed, data is correct');
   }
   
-  await db.close();
+  // Only close db if we're running standalone
+  if (require.main === module) {
+    await db.close();
+  }
 }
 
 // Run if called directly

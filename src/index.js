@@ -261,9 +261,11 @@ async function onReady() {
     // Auto-fix missing recruit records (safety check for data integrity)
     try {
       const { autoFixMissingRecruits } = require('../auto_fix_missing_recruits');
-      await autoFixMissingRecruits();
+      await autoFixMissingRecruits().catch(err => {
+        console.error('⚠️ Auto-fix for missing recruits failed (non-fatal):', err.message);
+      });
     } catch (err) {
-      console.error('Auto-fix for missing recruits failed:', err);
+      console.error('⚠️ Could not load auto-fix module (non-fatal):', err.message);
     }
     
     scheduler.start(client, db);
