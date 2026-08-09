@@ -69,12 +69,12 @@ async function promoteMember({ member, db, guild, verifierId }) {
 
     const uniqueRolesToRemove = Array.from(new Set(rolesToRemove));
     const rolesToRemoveNow = uniqueRolesToRemove
-        .filter(roleId => roleId !== member.guild.id)
-        .filter(roleId => member.roles.cache.has(roleId));
+        .filter(roleId => member.guild && roleId !== member.guild.id)
+        .filter(roleId => member.roles && member.roles.cache && member.roles.cache.has(roleId));
     const rolesToAddNow = [ROLE_IDS.SOLACE, teamRoleId]
         .filter(Boolean)
-        .filter(roleId => roleId !== member.guild.id)
-        .filter(roleId => !member.roles.cache.has(roleId));
+        .filter(roleId => member.guild && roleId !== member.guild.id)
+        .filter(roleId => member.roles && member.roles.cache && !member.roles.cache.has(roleId));
 
     try {
       if (rolesToRemoveNow.length) {
