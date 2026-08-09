@@ -257,6 +257,15 @@ async function onReady() {
     await ensureRuntimeStateTables();
     await loadVoiceSessionsFromDb();
     await antiNukeInitPromise;
+    
+    // Auto-fix missing recruit records (safety check for data integrity)
+    try {
+      const { autoFixMissingRecruits } = require('../auto_fix_missing_recruits');
+      await autoFixMissingRecruits();
+    } catch (err) {
+      console.error('Auto-fix for missing recruits failed:', err);
+    }
+    
     scheduler.start(client, db);
 
     await inviteInitPromise.catch(err => {
