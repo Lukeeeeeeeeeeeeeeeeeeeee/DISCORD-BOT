@@ -1341,6 +1341,20 @@ async function init(dbPath = getConfiguredDbPath()) {
   await ensureNormalizedViews();
   await ensureRecruiterInsertTriggers();
 
+  // Migration: Fix incorrect region assignments for known recruiter data.
+  // Centurion (882597723864449054) was incorrectly stored as EU, should be NA (Water).
+  // pero (1385608712080851075) was incorrectly stored as EU, should be AS (Air).
+  // These mismatch caused recruiters to appear in the wrong leaderboard channel.
+  try {
+    const guildId = (process.env.GUILD_ID || (rawConfig && rawConfig.GUILD_ID) || '1412808625017065544');
+    await db.run('UPDATE recruits SET region = ? WHERE recruiter_id = ? AND guild_id = ? AND region = ?', 'NA', '882597723864449054', guildId, 'EU');
+    await db.run('UPDATE recruits SET region = ? WHERE recruiter_id = ? AND guild_id = ? AND region = ?', 'AS', '1385608712080851075', guildId, 'EU');
+  } catch (e) {
+    if (!String(e && e.message ? e.message : '').toLowerCase().includes('no such table')) {
+      console.warn('Region data migration skipped:', e && e.message ? e.message : String(e));
+    }
+  }
+
   const refreshSchemaVersion = async () => {
     try {
       const countRow = await db.get('SELECT COUNT(*) AS c FROM schema_migrations');
