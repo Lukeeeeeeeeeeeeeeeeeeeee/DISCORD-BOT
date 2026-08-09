@@ -67,7 +67,7 @@ const BASE = {
   REGION_INFO: {
     EU: { name: 'Fire', emoji: '🔥', color: 0xE25822, thumbnail: '' },
     NA: { name: 'Water', emoji: '💧', color: 0x1E90FF, thumbnail: '' },
-    AS: { name: 'Air', emoji: '�️', color: 0x8E44AD, thumbnail: '' }
+    AS: { name: 'Air', emoji: '🌪️', color: 0x8E44AD, thumbnail: '' }
   },
   PURCHASE_ITEMS: {
     'nickname': 30,
