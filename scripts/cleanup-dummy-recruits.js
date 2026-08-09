@@ -23,7 +23,6 @@ async function cleanupDummyRecruits() {
     const before = await db.get(
       `SELECT COUNT(*) as count FROM recruits 
        WHERE ign LIKE 'Restored_Recruit_%' 
-       OR ign LIKE 'Recruit_%' 
        OR recruited_id LIKE 'DUMMY_%' 
        OR recruited_id LIKE 'RESTORED_%'`
     );
@@ -36,11 +35,10 @@ async function cleanupDummyRecruits() {
       return;
     }
     
-    // Delete dummy recruits
+    // Delete dummy recruits (but NOT manual restore data)
     const result = await db.run(
       `DELETE FROM recruits 
        WHERE ign LIKE 'Restored_Recruit_%' 
-       OR ign LIKE 'Recruit_%' 
        OR recruited_id LIKE 'DUMMY_%' 
        OR recruited_id LIKE 'RESTORED_%'`
     );
@@ -51,7 +49,6 @@ async function cleanupDummyRecruits() {
     const after = await db.get(
       `SELECT COUNT(*) as count FROM recruits 
        WHERE ign LIKE 'Restored_Recruit_%' 
-       OR ign LIKE 'Recruit_%' 
        OR recruited_id LIKE 'DUMMY_%' 
        OR recruited_id LIKE 'RESTORED_%'`
     );

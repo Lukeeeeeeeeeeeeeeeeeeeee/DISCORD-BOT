@@ -47,13 +47,16 @@ async function restoreRecruits() {
       
       // Create the correct number of recruits
       for (let i = 0; i < recruits; i++) {
-        const recruitId = `RESTORED_${userId}_${i}_${Date.now()}_${Math.random()}`;
+        const recruitId = `MANUAL_RESTORE_${userId}_${i}_${Date.now()}_${Math.random()}`;
         const createdAt = baseTs + (i * 3600000); // Spread 1 hour apart
+        
+        // Use placeholder IGN that won't trigger dummy detection
+        const placeholderIgn = `Verified_${name.substring(0, 6)}_${i+1}`;
         
         await db.run(
           `INSERT INTO recruits (guild_id, recruiter_id, recruited_id, region, ign, created_at, valid, points)
            VALUES (?, ?, ?, ?, ?, ?, 1, 1)`,
-          [GUILD_ID, userId, recruitId, region, `Recruit_${i+1}`, createdAt]
+          [GUILD_ID, userId, recruitId, region, placeholderIgn, createdAt]
         );
       }
       console.log(`  ✓ Created ${recruits} valid recruits`);

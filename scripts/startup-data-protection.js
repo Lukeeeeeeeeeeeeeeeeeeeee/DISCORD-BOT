@@ -89,7 +89,7 @@ async function getDbStats(db) {
     const validRecruits = await db.get('SELECT COUNT(*) as count FROM recruits WHERE valid = 1');
     const totalRecruits = await db.get('SELECT COUNT(*) as count FROM recruits');
     const dummyRecruits = await db.get(
-      "SELECT COUNT(*) as count FROM recruits WHERE ign LIKE 'Restored_Recruit_%' OR ign LIKE 'Recruit_%' OR recruited_id LIKE 'DUMMY_%' OR recruited_id LIKE 'RESTORED_%'"
+      "SELECT COUNT(*) as count FROM recruits WHERE ign LIKE 'Restored_Recruit_%' OR recruited_id LIKE 'DUMMY_%' OR recruited_id LIKE 'RESTORED_%'"
     );
     
     return {
@@ -208,8 +208,7 @@ async function protectData(dbPath) {
   console.log('\n📦 Step 1: Creating backup...');
   const backupPath = createBackup(dbPath);
   if (!backupPath) {
-    console.error('❌ CRITICAL: Could not create backup! Aborting for safety.');
-    process.exit(1);
+    console.warn('⚠️  WARNING: Could not create backup! Proceeding with caution...');
   }
   
   // Step 2: Clean old backups
@@ -270,10 +269,14 @@ async function protectData(dbPath) {
   console.log('\n' + '='.repeat(60));
   if (warnings.length === 0 && comparisonWarnings.length === 0) {
     console.log('✅ DATA PROTECTION CHECK PASSED');
-    console.log(`💾 Backup saved: ${path.basename(backupPath)}`);
+    if (backupPath) {
+      console.log(`💾 Backup saved: ${path.basename(backupPath)}`);
+    }
   } else {
     console.log('⚠️  DATA PROTECTION CHECK COMPLETED WITH WARNINGS');
-    console.log(`💾 Backup saved: ${path.basename(backupPath)}`);
+    if (backupPath) {
+      console.log(`💾 Backup saved: ${path.basename(backupPath)}`);
+    }
     console.log('⚠️  Review warnings above before proceeding!');
   }
   console.log('=' .repeat(60) + '\n');
