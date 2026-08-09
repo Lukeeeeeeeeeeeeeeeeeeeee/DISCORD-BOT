@@ -169,6 +169,17 @@ async function deleteVoiceSession(guildId, userId) {
   await db.run('DELETE FROM runtime_voice_sessions WHERE guild_id = ? AND user_id = ?', guildId, userId);
 }
 
+// CRITICAL: Run data protection BEFORE anything else
+const dataProtectionPromise = (async () => {
+  try {
+    const { protectData } = require('../scripts/startup-data-protection');
+    const dbPath = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'recruiter.db');
+    await protectData(dbPath);
+  } catch (err) {
+    console.error('Data protection failed:', err);
+  }
+})();
+
 const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
   console.log('🛡️ Complete anti-nuke system with rollback ready!');
 }).catch(err => {
@@ -176,6 +187,7 @@ const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
 });
 
 const inviteInitPromise = (async () => {
+  await dataProtectionPromise;
   await createInviteTables();
   // Migrate guild ID if needed (from old server to new server)
   const { migrateGuildIdIfNeeded } = require('./lib/migrate-guild-id');
