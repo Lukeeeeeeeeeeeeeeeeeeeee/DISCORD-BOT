@@ -133,6 +133,8 @@ const commands = [
           return { name, value: code };
         })
       )))
+    .addSubcommand(s => s.setName('recompute').setDescription('Recompute all leaderboards (admin only)'))
+    .addSubcommand(s => s.setName('emergency-fix').setDescription('Emergency fix for missing recruit data (admin only)'))
     .addSubcommand(s => s.setName('init').setDescription('Initialize leaderboard messages (admin only)')),
   new SlashCommandBuilder().setName('status').setDescription('Admin: show bot status')
     .setDefaultMemberPermissions(ADMIN_PERMS),
