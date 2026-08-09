@@ -16,9 +16,14 @@ function sleep(ms) {
 }
 
 async function executeTransaction(db, fn, opts = {}) {
-  // Validate database is open and ready
-  if (!db || !db.open) {
-    throw new Error('Database is not open');
+  // Validate database exists (but don't check .open as it might be undefined initially)
+  if (!db) {
+    throw new Error('Database handle is required');
+  }
+  
+  // Only check if explicitly closed (open === false), not if undefined
+  if (db.open === false) {
+    throw new Error('Database is closed');
   }
   
   const maxRetries = Number.isFinite(opts.maxRetries) ? opts.maxRetries : 3;
@@ -27,8 +32,8 @@ async function executeTransaction(db, fn, opts = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let began = false;
     try {
-      // Check database is still open before each operation
-      if (!db.open) {
+      // Check database is not explicitly closed before each operation
+      if (db.open === false) {
         throw new Error('Database was closed during transaction');
       }
       
@@ -36,16 +41,16 @@ async function executeTransaction(db, fn, opts = {}) {
       began = true;
       const result = await fn(db);
       
-      // Check database is still open before commit
-      if (!db.open) {
+      // Check database is not explicitly closed before commit
+      if (db.open === false) {
         throw new Error('Database was closed before commit');
       }
       
       await db.run('COMMIT');
       return result;
     } catch (err) {
-      // Only attempt rollback if database is still open
-      if (began && db.open) {
+      // Only attempt rollback if database is not explicitly closed
+      if (began && db.open !== false) {
         try {
           await db.run('ROLLBACK');
         } catch (rollbackErr) {
@@ -55,7 +60,7 @@ async function executeTransaction(db, fn, opts = {}) {
           }
         }
       }
-      if (attempt < maxRetries && isTransientTxError(err) && db.open) {
+      if (attempt < maxRetries && isTransientTxError(err) && db.open !== false) {
         const delayMs = 50 * (attempt + 1);
         await sleep(delayMs);
         continue;
@@ -69,7 +74,9 @@ async function executeTransaction(db, fn, opts = {}) {
 
 async function withTransaction(db, fn, opts = {}) {
   if (!db) throw new Error('Database handle is required');
-  if (!db.open) throw new Error('Database is not open');
+  
+  // Check if database has an open property and if it's false (sqlite library specific)
+  if (db.open === false) throw new Error('Database is not open');
 
   const prev = txQueueByDb.get(db) || Promise.resolve();
   const run = prev
@@ -80,8 +87,8 @@ async function withTransaction(db, fn, opts = {}) {
       }
     })
     .then(() => {
-      // Re-check database is open before executing
-      if (!db.open) {
+      // Re-check database is open before executing (only if property exists)
+      if (db.open === false) {
         throw new Error('Database closed before transaction could start');
       }
       return executeTransaction(db, fn, opts);

@@ -14,10 +14,10 @@ async function restoreRecruits() {
   
   // Recruiters to restore with their recruit counts
   const recruitersData = [
-    { userId: '882597723864449054', recruits: 2, region: 'EU', name: 'Centurion' },
-    { userId: '1381692847018868778', recruits: 11, region: 'EU', name: 'AvoidMyRevol' },
-    { userId: '573654608971563029', recruits: 10, region: 'AS', name: 'Hikaru' },
-    { userId: '1356543666088448071', recruits: 1, region: 'EU', name: 'pero0244421' }
+    { userId: '882597723864449054', recruits: 2, region: 'EU', name: 'Centurion', promoted: true }, // Has 2/2, should be promoted
+    { userId: '1381692847018868778', recruits: 11, region: 'EU', name: 'AvoidMyRevol', promoted: true },
+    { userId: '573654608971563029', recruits: 10, region: 'AS', name: 'Hikaru', promoted: true },
+    { userId: '1356543666088448071', recruits: 1, region: 'EU', name: 'pero0244421', promoted: false }
   ];
   
   const weekStart = getWeekStartUtcTs();
@@ -27,7 +27,7 @@ async function restoreRecruits() {
   console.log('Week started:', new Date(weekStart).toISOString());
   console.log('Creating recruits with timestamps from:', new Date(baseTs).toISOString(), '\n');
   
-  for (const { userId, recruits, region, name } of recruitersData) {
+  for (const { userId, recruits, region, name, promoted } of recruitersData) {
     console.log(`Processing ${name} (${userId})...`);
     
     try {
@@ -61,12 +61,13 @@ async function restoreRecruits() {
       }
       console.log(`  ✓ Created ${recruits} valid recruits`);
       
-      // Update points based on recruits (1 point per recruit)
+      // Update points and promotion status
+      const promotedValue = promoted ? 1 : 0;
       await db.run(
-        `UPDATE recruiters SET points = ? WHERE guild_id = ? AND id = ?`,
-        [recruits, GUILD_ID, userId]
+        `UPDATE recruiters SET points = ?, promoted = ? WHERE guild_id = ? AND id = ?`,
+        [recruits, promotedValue, GUILD_ID, userId]
       );
-      console.log(`  ✓ Set points to ${recruits}\n`);
+      console.log(`  ✓ Set points to ${recruits}, promoted: ${promoted ? 'YES' : 'NO'}\n`);
       
     } catch (err) {
       console.error(`  ❌ Failed for ${name}:`, err.message, '\n');
