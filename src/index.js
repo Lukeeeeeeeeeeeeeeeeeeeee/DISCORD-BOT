@@ -1,4 +1,4 @@
-﻿require('dotenv').config();
+require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
@@ -170,9 +170,9 @@ async function deleteVoiceSession(guildId, userId) {
 }
 
 const antiNukeInitPromise = antiNukeSystem.init(client).then(() => {
-  console.log('ðŸ›¡ï¸ Complete anti-nuke system with rollback ready!');
+  console.log('🛡️ Complete anti-nuke system with rollback ready!');
 }).catch(err => {
-  console.error('âŒ Failed to initialize anti-nuke:', err);
+  console.error('❌ Failed to initialize anti-nuke:', err);
 });
 
 const inviteInitPromise = (async () => {
@@ -180,12 +180,13 @@ const inviteInitPromise = (async () => {
   // Migrate guild ID if needed (from old server to new server)
   const { migrateGuildIdIfNeeded } = require('./lib/migrate-guild-id');
   await migrateGuildIdIfNeeded(db);
-  const { restorePointsOnStartup } = require('./lib/restore-points-startup');
-  await restorePointsOnStartup(db);
+  // DISABLED: This was overwriting real data with fake dummy recruits!
+  // const { restorePointsOnStartup } = require('./lib/restore-points-startup');
+  // await restorePointsOnStartup(db);
   await initInviteSystem(GUILD_ID, db);
-  console.log('ðŸ”— Invite system ready!');
+  console.log('🔗 Invite system ready!');
 })().catch(err => {
-  console.error('âŒ Failed to initialize invite system:', err);
+  console.error('❌ Failed to initialize invite system:', err);
 });
 
 const commandsPath = path.join(__dirname, 'commands');
@@ -683,7 +684,7 @@ async function trackInviteUsage(guild, inviteSystem, joinedUserId) {
     process.exit(1);
   }
   if (token.length < 40) {
-    console.error('FATAL: DISCORD_TOKEN appears too short â€” ensure you pasted the full bot token with no quotes or trailing spaces.');
+    console.error('FATAL: DISCORD_TOKEN appears too short — ensure you pasted the full bot token with no quotes or trailing spaces.');
     process.exit(1);
   }
 
