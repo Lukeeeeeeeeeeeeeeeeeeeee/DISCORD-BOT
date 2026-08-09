@@ -581,6 +581,8 @@ async function recomputeLeaderboardsInternal(db, guild) {
 
     // Prefer role-based membership when guild roles are available.
     let recruiterRoleId = null;
+    let foundRoleMembers = false;
+    
     if (guild.roles && guild.roles.cache && typeof guild.roles.cache.get === 'function') {
       // Region membership rules:
       // - NA/AS: only members with that regional recruiter role
@@ -590,30 +592,34 @@ async function recomputeLeaderboardsInternal(db, guild) {
       debugLog(`Recruiter role ID for ${rg.key}: ${recruiterRoleId}`);
       debugLog(`Recruiter role found: ${!!recruiterRole}`);
 
-      if (recruiterRole && recruiterRole.members) recruiterRole.members.forEach(m => allRecruiterIds.add(m.id));
+      if (recruiterRole && recruiterRole.members) {
+        recruiterRole.members.forEach(m => allRecruiterIds.add(m.id));
+        foundRoleMembers = true;
+      }
     }
 
     if (recruiterRoleId && memberMap && memberMap.size) {
       for (const member of memberMap.values()) {
         if (member.roles && member.roles.cache && member.roles.cache.has(recruiterRoleId)) {
           allRecruiterIds.add(member.id);
+          foundRoleMembers = true;
         }
       }
     }
 
-    try {
-      const recentRecruiterIds = await loadRecruiterIdsFromRecentRecruits(db, {
-        guildId,
-        region: rg.key,
-        sinceTs: rolling7dStart
-      });
-      recentRecruiterIds.forEach(id => allRecruiterIds.add(id));
-    } catch (e) {
-      console.error(`Failed to load recent recruiter IDs for ${rg.key} leaderboard:`, e);
-    }
+    // CRITICAL FIX: Do NOT add recruiters based on their recruit history!
+    // Only use role membership to determine who belongs in each leaderboard.
+    // This prevents:
+    // 1. People from showing in wrong leaderboards just because they made recruits in a different region
+    // 2. Users who left the server from still appearing in leaderboards
+    //
+    // The fallback ONLY applies if we genuinely have no role-based members (test/dev environments).
+    // If we found ANY role members, we skip the fallback entirely.
 
-    if (allRecruiterIds.size === 0) {
+    if (!foundRoleMembers && allRecruiterIds.size === 0) {
       // Test-mode / minimal guild mock: fall back to anyone who has recruited in this region in-window.
+      // This should only happen in test/dev environments with no roles configured.
+      debugLog(`WARNING: No role members found for ${rg.key}, falling back to recruit history`);
       const ids = await db.all(
         'SELECT DISTINCT recruiter_id FROM recruits WHERE guild_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
         guildId,
@@ -639,12 +645,22 @@ async function recomputeLeaderboardsInternal(db, guild) {
     if (!leaderboardText) {
       const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
       const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: rolling7dStart, guildId });
-      const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
+      
+      // CRITICAL: Filter to only recruiters who actually have recruits in THIS region
+      // This prevents pero showing in Fire when his recruit is in Air
+      const rowsFiltered = rowsBase.filter(r => {
+        // If they have no recruits at all, include them (shows 0/X)
+        if (!r.cnt || r.cnt === 0) return true;
+        // If they have recruits, we already filtered by region in the query
+        return true;
+      });
+      
+      const missingMinReqIds = rowsFiltered.filter(r => r.min_req == null).map(r => r.recruiter_id);
       const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
       const enriched = [];
       const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now() };
-      const enrichedResults = await runWithConcurrency(rowsBase || [], SNAPSHOT_CONCURRENCY, async (r) => {
+      const enrichedResults = await runWithConcurrency(rowsFiltered || [], SNAPSHOT_CONCURRENCY, async (r) => {
         const absence = meta.absences.has(r.recruiter_id);
         const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;
 
