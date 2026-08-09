@@ -14,10 +14,12 @@ async function restoreRecruits() {
   
   // Recruiters to restore with their recruit counts
   const recruitersData = [
-    { userId: '882597723864449054', recruits: 2, region: 'EU', name: 'Centurion', promoted: true }, // Has 2/2, should be promoted
+    { userId: '1238882108097953864', recruits: 6, region: 'EU', name: 'Str1k3_C0re', promoted: true },
+    { userId: '1356543666088448071', recruits: 1, region: 'EU', name: 'pero0244421', promoted: false },
+    { userId: '1504846628656250951', recruits: 2, region: 'EU', name: 'NewRecruiter', promoted: true }, // NEW
     { userId: '1381692847018868778', recruits: 11, region: 'EU', name: 'AvoidMyRevol', promoted: true },
-    { userId: '573654608971563029', recruits: 10, region: 'AS', name: 'Hikaru', promoted: true },
-    { userId: '1356543666088448071', recruits: 1, region: 'EU', name: 'pero0244421', promoted: false }
+    { userId: '882597723864449054', recruits: 2, region: 'EU', name: 'Centurion', promoted: true },
+    { userId: '573654608971563029', recruits: 10, region: 'AS', name: 'Hikaru', promoted: true }
   ];
   
   const weekStart = getWeekStartUtcTs();
