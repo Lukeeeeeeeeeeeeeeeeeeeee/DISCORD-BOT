@@ -9,6 +9,25 @@ const scheduler = require('../../scheduler');
 
 const REGION_CHOICES = ['EU', 'NA', 'AS'];
 
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label || 'Operation'} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function safeEdit(interaction, content) {
+  try {
+    if (interaction.deferred || interaction.replied) {
+      return await interaction.editReply({ content });
+    }
+    return await interaction.reply({ content, ephemeral: true });
+  } catch (e) {
+    console.error('safeEdit failed:', e);
+  }
+}
+
 function inferRegion(member) {
   if (!member || !member.roles || !member.roles.cache) return null;
   for (const [region, roleId] of Object.entries(RECRUITER_ROLE_IDS || {})) {
@@ -53,94 +72,120 @@ module.exports = {
   async execute(interaction, _client, dbHandle = null) {
     const database = dbHandle || db;
 
+    // Acknowledge immediately so the interaction can never time out ("application did not respond").
     if (!interaction.deferred && !interaction.replied) {
       await interaction.deferReply({ ephemeral: true });
     }
 
-    if (!hasAdministrator(interaction.member)) {
-      return interaction.editReply({ content: '❌ Administrator permission required.' });
-    }
-    if (!interaction.guild) {
-      return interaction.editReply({ content: '❌ This command can only be used in a server.' });
-    }
+    // Run all work detached and timeout-guarded so a slow DB op or Discord fetch
+    // can never leave the interaction stuck on "thinking" / "did not respond".
+    withTimeout(runCommand(interaction, database), 25000, 'command')
+      .catch(err => {
+        console.error('set-recruiter-recruits error:', err);
+        safeEdit(interaction, `❌ ${err && err.message ? err.message : err}`);
+      });
+    return;
+  }
+};
 
-    const sub = interaction.options.getSubcommand();
-    const member = interaction.options.getUser('member');
-    const reason = interaction.options.getString('reason') || 'Manual adjustment by admin';
-    const guildId = resolveGuildId(interaction.guild);
+async function runCommand(interaction, database) {
+  if (!hasAdministrator(interaction.member)) {
+    return safeEdit(interaction, '❌ Administrator permission required.');
+  }
+  if (!interaction.guild) {
+    return safeEdit(interaction, '❌ This command can only be used in a server.');
+  }
 
-    if (!member) {
-      return interaction.editReply({ content: 'Please provide a valid member.' });
-    }
-    const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-    if (!targetMember) {
-      return interaction.editReply({ content: 'That member is not in this server.' });
-    }
+  const sub = interaction.options.getSubcommand();
+  if (!['set', 'add', 'reset'].includes(sub)) {
+    return safeEdit(interaction, '❌ Unknown subcommand.');
+  }
+  const member = interaction.options.getUser('member');
+  const reason = interaction.options.getString('reason') || 'Manual adjustment by admin';
+  const guildId = resolveGuildId(interaction.guild);
 
-    let region = interaction.options.getString('region');
-    if (!region) region = inferRegion(targetMember);
-    if (!region || !REGION_CHOICES.includes(region)) {
-      return interaction.editReply({ content: 'Could not determine region. Please specify the `region` option (EU/NA/AS).' });
-    }
+  if (!member) {
+    return safeEdit(interaction, 'Please provide a valid member.');
+  }
 
-    const weekStart = getWeekStartUtcTs();
+  // Best-effort guild membership check; admin override proceeds even if the fetch fails.
+  const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
 
-    try {
-      let changed = 0;
-      let actionLabel = '';
+  // Use the recruiter's regional role region so the count actually appears on their leaderboard.
+  let region = interaction.options.getString('region');
+  const roleRegion = inferRegion(targetMember);
+  const requestedRegion = region;
+  if (!region) {
+    region = roleRegion;
+  } else if (roleRegion && region !== roleRegion) {
+    region = roleRegion;
+  }
+  if (!region || !REGION_CHOICES.includes(region)) {
+    return safeEdit(interaction, 'Could not determine region. Ensure the recruiter has a regional recruiter role, or specify a valid region (EU/NA/AS).');
+  }
 
-      if (sub === 'set') {
-        const target = interaction.options.getInteger('count');
-        const currentRow = await database.get(
-          'SELECT COUNT(*) AS c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
-          guildId, member.id, region, weekStart
-        );
-        const current = currentRow ? Number(currentRow.c || 0) : 0;
-        const diff = target - current;
-        actionLabel = `Set weekly recruits to **${target}** (${region})`;
-        changed = await applyRecruitDelta(database, guildId, member.id, region, weekStart, diff);
-      } else if (sub === 'add') {
-        const amount = interaction.options.getInteger('amount');
-        actionLabel = `Adjusted weekly recruits by **${amount >= 0 ? '+' : ''}${amount}** (${region})`;
-        changed = await applyRecruitDelta(database, guildId, member.id, region, weekStart, amount);
-      } else if (sub === 'reset') {
-        const ids = await database.all(
-          'SELECT id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
-          guildId, member.id, region, weekStart
-        );
-        await withTransaction(database, async (tx) => {
-          for (const r of (ids || [])) {
-            await tx.run('DELETE FROM recruits WHERE guild_id = ? AND id = ?', guildId, r.id);
-          }
-        });
-        changed = (ids || []).length;
-        actionLabel = `Reset weekly recruits (removed **${changed}**) (${region})`;
-      } else {
-        return interaction.editReply({ content: '❌ Unknown subcommand.' });
-      }
+  const weekStart = getWeekStartUtcTs();
+  const regionNote = (requestedRegion && requestedRegion !== region)
+    ? ` (used ${region} from recruiter's role; ${requestedRegion} would not display on their board)`
+    : '';
 
-      const newCountRow = await database.get(
+  const work = async () => {
+    let changed = 0;
+    let actionLabel = '';
+
+    if (sub === 'set') {
+      const target = interaction.options.getInteger('count');
+      const currentRow = await database.get(
         'SELECT COUNT(*) AS c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
         guildId, member.id, region, weekStart
       );
-      const newCount = newCountRow ? Number(newCountRow.c || 0) : 0;
-
-      await interaction.editReply({
-        content: `✅ ${actionLabel}\n` +
-                 `Recruiter: ${targetMember.user.tag}\n` +
-                 `New weekly recruit count: **${newCount}** (${region})\n` +
-                 `Reason: ${reason}`
+      const current = currentRow ? Number(currentRow.c || 0) : 0;
+      const diff = target - current;
+      actionLabel = `Set weekly recruits to **${target}**`;
+      changed = await applyRecruitDelta(database, guildId, member.id, region, weekStart, diff);
+    } else if (sub === 'add') {
+      const amount = interaction.options.getInteger('amount');
+      actionLabel = `Adjusted weekly recruits by **${amount >= 0 ? '+' : ''}${amount}**`;
+      changed = await applyRecruitDelta(database, guildId, member.id, region, weekStart, amount);
+    } else {
+      const ids = await database.all(
+        'SELECT id FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
+        guildId, member.id, region, weekStart
+      );
+      await withTransaction(database, async (tx) => {
+        for (const r of (ids || [])) {
+          await tx.run('DELETE FROM recruits WHERE guild_id = ? AND id = ?', guildId, r.id);
+        }
       });
-    } catch (error) {
-      console.error('set-recruiter-recruits command error:', error);
-      return interaction.editReply({ content: `❌ Failed to update recruits: ${error.message}` });
+      changed = (ids || []).length;
+      actionLabel = `Reset weekly recruits (removed **${changed}**)`;
     }
 
-    // Refresh leaderboards in the background so it can never block the reply.
-    scheduler.recomputeLeaderboards(database, interaction.guild)
-      .catch(e => console.error('Failed to refresh leaderboards:', e));
-  }
-};
+    const newCountRow = await database.get(
+      'SELECT COUNT(*) AS c FROM recruits WHERE guild_id = ? AND recruiter_id = ? AND region = ? AND valid = 1 AND created_at >= ?',
+      guildId, member.id, region, weekStart
+    );
+    const newCount = newCountRow ? Number(newCountRow.c || 0) : 0;
+
+    return { actionLabel, newCount, region, targetMember, reason, regionNote };
+  };
+
+  const result = await withTimeout(work(), 20000, 'recruits update');
+
+  await safeEdit(interaction,
+    `✅ ${result.actionLabel}${result.regionNote}\n` +
+    `Recruiter: ${result.targetMember ? result.targetMember.user.tag : member.tag}\n` +
+    `New weekly recruit count: **${result.newCount}** (${result.region})\n` +
+    `Reason: ${result.reason}`
+  );
+
+  // Refresh leaderboards in the background, without the heavy full member fetch.
+  withTimeout(
+    scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true }),
+    60000,
+    'recompute'
+  ).catch(e => console.error('Failed to refresh leaderboards:', e));
+}
 
 async function applyRecruitDelta(database, guildId, recruiterId, region, weekStart, delta) {
   if (!Number.isFinite(delta) || delta === 0) return 0;

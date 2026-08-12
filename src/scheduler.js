@@ -506,7 +506,7 @@ function formatLeaderboardMessage(rows, regionLabel) {
 let leaderboardsInFlight = null;
 let warningsInFlight = null;
 
-async function recomputeLeaderboardsInternal(db, guild) {
+async function recomputeLeaderboardsInternal(db, guild, opts = {}) {
   await ensureWeeklyCalculationsTable(db).catch(err => {
     console.error('Failed to ensure weekly calculations table:', err);
   });
@@ -547,7 +547,7 @@ async function recomputeLeaderboardsInternal(db, guild) {
       if (role && role.members) cachedRecruiterCount += role.members.size;
     }
   }
-  if (cachedRecruiterCount === 0 && recruiterRolesForCache.length) {
+  if (cachedRecruiterCount === 0 && recruiterRolesForCache.length && !(opts && opts.skipMemberCache)) {
     console.log('⚠️ No recruiters in cache, fetching all guild members...');
     await primeMemberCache(guild, 'recomputeLeaderboards', {
       force: FORCE_FULL_FETCH_ON_EMPTY || true  // Always fetch if no recruiters cached
@@ -801,9 +801,9 @@ async function recomputeLeaderboardsInternal(db, guild) {
   }
 }
 
-async function recomputeLeaderboards(db, guild) {
+async function recomputeLeaderboards(db, guild, opts = {}) {
   if (leaderboardsInFlight) return leaderboardsInFlight;
-  leaderboardsInFlight = recomputeLeaderboardsInternal(db, guild);
+  leaderboardsInFlight = recomputeLeaderboardsInternal(db, guild, opts);
   try {
     return await leaderboardsInFlight;
   } finally {

@@ -5,6 +5,25 @@ const { formatPointsValue } = require('../../lib/economy');
 const { hasAdministrator } = require('../../lib/permissions');
 const scheduler = require('../../scheduler');
 
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label || 'Operation'} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function safeEdit(interaction, content) {
+  try {
+    if (interaction.deferred || interaction.replied) {
+      return await interaction.editReply({ content });
+    }
+    return await interaction.reply({ content, ephemeral: true });
+  } catch (e) {
+    console.error('safeEdit failed:', e);
+  }
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('set-recruiter-points')
@@ -31,92 +50,91 @@ module.exports = {
   async execute(interaction, _client, dbHandle = null) {
     const database = dbHandle || db;
 
-    // Defer FIRST so the interaction is always acknowledged.
+    // Acknowledge immediately so the interaction can never time out ("application did not respond").
     if (!interaction.deferred && !interaction.replied) {
       await interaction.deferReply({ ephemeral: true });
     }
 
-    if (!hasAdministrator(interaction.member)) {
-      return interaction.editReply({ content: '❌ Administrator permission required.' });
-    }
-
-    if (!interaction.guild) {
-      return interaction.editReply({ content: '❌ This command can only be used in a server.' });
-    }
-
-    const sub = interaction.options.getSubcommand();
-    const member = interaction.options.getUser('member');
-    const reason = interaction.options.getString('reason') || 'Manual adjustment by admin';
-    const guildId = resolveGuildId(interaction.guild);
-
-    if (sub !== 'set') {
-      return interaction.editReply({ content: '❌ Unknown subcommand.' });
-    }
-
-    if (!member) {
-      return interaction.editReply({ content: 'Please provide a valid member.' });
-    }
-
-    const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
-    if (!targetMember) {
-      return interaction.editReply({ content: 'That member is not in this server.' });
-    }
-
-    const newPoints = interaction.options.getNumber('points');
-
-    try {
-      // Ensure recruiter exists in database
-      await database.run(
-        'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
-        guildId,
-        member.id
-      );
-
-      // Get current points
-      const existing = await database.get(
-        'SELECT CAST(points AS REAL) AS points FROM recruiters WHERE guild_id = ? AND id = ?',
-        guildId,
-        member.id
-      );
-      const previousPoints = existing ? Number(existing.points || 0) : 0;
-
-      // Set new points
-      await database.run(
-        'UPDATE recruiters SET points = ? WHERE guild_id = ? AND id = ?',
-        newPoints,
-        guildId,
-        member.id
-      );
-
-      // Log the change
-      await database.run(
-        'INSERT INTO recruiter_points_ledger (guild_id, recruiter_id, delta, reason, ref_type, ref_id, resulting_points, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        guildId,
-        member.id,
-        newPoints - previousPoints,
-        reason,
-        'admin_set',
-        `admin:${interaction.user.id}`,
-        newPoints,
-        Date.now()
-      ).catch(() => {}); // Ignore if table doesn't exist
-
-      // Reply FIRST so the user always gets a response (fixes the "thinking" hang).
-      await interaction.editReply({
-        content: `✅ Set **${targetMember.user.tag}**'s total recruitment points to **${formatPointsValue(newPoints)}**\n` +
-                 `Previous: ${formatPointsValue(previousPoints)}\n` +
-                 `Change: ${newPoints - previousPoints >= 0 ? '+' : ''}${formatPointsValue(newPoints - previousPoints)}\n` +
-                 `Reason: ${reason}`
+    // Run all work detached and timeout-guarded so a slow DB op or Discord fetch
+    // can never leave the interaction stuck on "thinking" / "did not respond".
+    withTimeout(runCommand(interaction, database), 25000, 'command')
+      .catch(err => {
+        console.error('set-recruiter-points error:', err);
+        safeEdit(interaction, `❌ ${err && err.message ? err.message : err}`);
       });
-    } catch (error) {
-      console.error('set-recruiter-points command error:', error);
-      return interaction.editReply({
-        content: `❌ Failed to update points: ${error.message}`
-      });
-    }
-
-    // Refresh leaderboards in the background so it can never block the reply.
-    scheduler.recomputeLeaderboards(database, interaction.guild)
-      .catch(e => console.error('Failed to refresh leaderboards:', e));
+    return;
   }
 };
+
+async function runCommand(interaction, database) {
+  if (!hasAdministrator(interaction.member)) {
+    return safeEdit(interaction, '❌ Administrator permission required.');
+  }
+  if (!interaction.guild) {
+    return safeEdit(interaction, '❌ This command can only be used in a server.');
+  }
+
+  const member = interaction.options.getUser('member');
+  const reason = interaction.options.getString('reason') || 'Manual adjustment by admin';
+  const guildId = resolveGuildId(interaction.guild);
+
+  if (!member) {
+    return safeEdit(interaction, 'Please provide a valid member.');
+  }
+
+  // Best-effort guild membership check; admin override proceeds even if the fetch fails.
+  const targetMember = await interaction.guild.members.fetch(member.id).catch(() => null);
+  const newPoints = interaction.options.getNumber('points');
+
+  const work = async () => {
+    await database.run(
+      'INSERT OR IGNORE INTO recruiters (guild_id, id, points, warnings, promoted, channel_base) VALUES (?, ?, 0, 0, 0, 4)',
+      guildId,
+      member.id
+    );
+
+    const existing = await database.get(
+      'SELECT CAST(points AS REAL) AS points FROM recruiters WHERE guild_id = ? AND id = ?',
+      guildId,
+      member.id
+    );
+    const previousPoints = existing ? Number(existing.points || 0) : 0;
+
+    await database.run(
+      'UPDATE recruiters SET points = ? WHERE guild_id = ? AND id = ?',
+      newPoints,
+      guildId,
+      member.id
+    );
+
+    await database.run(
+      'INSERT INTO recruiter_points_ledger (guild_id, recruiter_id, delta, reason, ref_type, ref_id, resulting_points, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      guildId,
+      member.id,
+      newPoints - previousPoints,
+      reason,
+      'admin_set',
+      `admin:${interaction.user.id}`,
+      newPoints,
+      Date.now()
+    ).catch(() => {});
+
+    return { previousPoints, newPoints, targetMember, reason };
+  };
+
+  const result = await withTimeout(work(), 20000, 'points update');
+
+  await safeEdit(interaction,
+    `✅ Set **${result.targetMember ? result.targetMember.user.tag : member.tag}**'s total recruitment points to **${formatPointsValue(result.newPoints)}**\n` +
+    `Previous: ${formatPointsValue(result.previousPoints)}\n` +
+    `Change: ${result.newPoints - result.previousPoints >= 0 ? '+' : ''}${formatPointsValue(result.newPoints - result.previousPoints)}\n` +
+    `Reason: ${result.reason}`
+  );
+
+  // Refresh leaderboards in the background, without the heavy full member fetch.
+  withTimeout(
+    scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true }),
+    60000,
+    'recompute'
+  ).catch(e => console.error('Failed to refresh leaderboards:', e));
+}
