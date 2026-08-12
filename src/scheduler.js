@@ -1123,6 +1123,7 @@ function start(client, db) {
 
   // Cron: Monday at 00:00 UTC - Weekly recruiter recalculation
   cron.schedule('0 0 * * 1', async () => {
+    console.log(`[CRON] Weekly recalculation triggered at ${new Date().toISOString()}`);
     const guild = await resolveGuild(client);
     if (!guild) return;
     try {
@@ -1150,6 +1151,7 @@ function start(client, db) {
 
   // Cron: Monday at 00:05 UTC - Weekly MinReq and stats snapshot (5 minutes after recalculation)
   cron.schedule('5 0 * * 1', async () => {
+    console.log(`[CRON] Weekly snapshot triggered at ${new Date().toISOString()}`);
     await runWeeklySnapshotAndReset(db, client);
   }, {
     scheduled: true,
