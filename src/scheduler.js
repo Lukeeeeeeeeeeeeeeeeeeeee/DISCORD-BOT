@@ -633,6 +633,19 @@ async function recomputeLeaderboardsInternal(db, guild) {
     }
 
     debugLog(`Total recruiters found for ${rg.key}: ${allRecruiterIds.size}`);
+    
+    // Diagnostic: Log trial recruiters specifically
+    if (ROLE_IDS.TRIAL_RECRUITER && guild.roles && guild.roles.cache) {
+      const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
+      if (trialRole && trialRole.members) {
+        const trialRecruitersInRegion = Array.from(trialRole.members.keys()).filter(id => allRecruiterIds.has(id));
+        console.log(`[LEADERBOARD] ${rg.key}: ${trialRecruitersInRegion.length} trial recruiters included (out of ${trialRole.members.size} total trial recruiters)`);
+        if (trialRecruitersInRegion.length < trialRole.members.size) {
+          const missingTrials = Array.from(trialRole.members.keys()).filter(id => !allRecruiterIds.has(id));
+          console.log(`[LEADERBOARD] ${rg.key}: Trial recruiters NOT included: ${missingTrials.join(', ')}`);
+        }
+      }
+    }
     const lang = process.env.DEFAULT_LANG || 'en';
     let leaderboardText;
 

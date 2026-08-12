@@ -258,15 +258,7 @@ async function onReady() {
     await loadVoiceSessionsFromDb();
     await antiNukeInitPromise;
     
-    // Auto-fix missing recruit records (safety check for data integrity)
-    try {
-      const { autoFixMissingRecruits } = require('../auto_fix_missing_recruits');
-      await autoFixMissingRecruits().catch(err => {
-        console.error('⚠️ Auto-fix for missing recruits failed (non-fatal):', err.message);
-      });
-    } catch (err) {
-      console.error('⚠️ Could not load auto-fix module (non-fatal):', err.message);
-    }
+    // Auto-fix module removed - data integrity handled by scheduler
     
     scheduler.start(client, db);
 
