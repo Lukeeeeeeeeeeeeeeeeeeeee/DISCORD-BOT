@@ -55,7 +55,10 @@ module.exports = {
       return replyError(interaction, 'This command can only be used in a server.');
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    // Check if already deferred/replied to avoid double-defer
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true });
+    }
 
     const sub = interaction.options.getSubcommand();
     const member = interaction.options.getUser('member');

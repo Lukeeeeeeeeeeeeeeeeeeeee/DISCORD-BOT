@@ -588,7 +588,8 @@ async function recomputeLeaderboardsInternal(db, guild) {
     
     if (guild.roles && guild.roles.cache && typeof guild.roles.cache.get === 'function') {
       // Region membership rules:
-      // - NA/AS/EU: members with that regional recruiter role OR trial recruiter role
+      // - Include anyone with the regional recruiter role (EU/NA/AS)
+      // - ALSO include trial recruiters who DON'T have regional roles yet
       recruiterRoleId = RECRUITER_ROLE_IDS && RECRUITER_ROLE_IDS[rg.key] ? RECRUITER_ROLE_IDS[rg.key] : null;
       const recruiterRole = recruiterRoleId ? guild.roles.cache.get(recruiterRoleId) : null;
       debugLog(`Recruiter role ID for ${rg.key}: ${recruiterRoleId}`);
@@ -598,11 +599,29 @@ async function recomputeLeaderboardsInternal(db, guild) {
         recruiterRole.members.forEach(m => allRecruiterIds.add(m.id));
         foundRoleMembers = true;
       }
+      
+      // CRITICAL: Trial recruiters may not have regional roles yet, but they still recruit for a region
+      // Include ALL trial recruiters in ALL region leaderboards since they can recruit anywhere
+      if (ROLE_IDS.TRIAL_RECRUITER) {
+        const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
+        if (trialRole && trialRole.members) {
+          trialRole.members.forEach(member => {
+            allRecruiterIds.add(member.id);
+            foundRoleMembers = true;
+          });
+        }
+      }
     }
 
     if (recruiterRoleId && memberMap && memberMap.size) {
       for (const member of memberMap.values()) {
         if (member.roles && member.roles.cache && member.roles.cache.has(recruiterRoleId)) {
+          allRecruiterIds.add(member.id);
+          foundRoleMembers = true;
+        }
+        
+        // Also check trial recruiters in memberMap
+        if (ROLE_IDS.TRIAL_RECRUITER && member.roles && member.roles.cache && member.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
           allRecruiterIds.add(member.id);
           foundRoleMembers = true;
         }
