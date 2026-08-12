@@ -209,42 +209,53 @@ const commands = [
     .addIntegerOption(opt => opt.setName('chunk_size').setDescription('Split export into chunks (1-200)').setRequired(false).setMinValue(1).setMaxValue(200)),
   
   new SlashCommandBuilder()
-    .setName('set-recruiter-stats')
-    .setDescription('Manually set recruiter points or recruit count (Admin only)')
+    .setName('set-recruiter-points')
+    .setDescription('Set a recruiter\'s TOTAL recruitment points (Admin only)')
     .setDefaultMemberPermissions(ADMIN_PERMS)
     .addSubcommand(subcommand =>
       subcommand
-        .setName('points')
-        .setDescription('Set a recruiter\'s total points')
-        .addUserOption(option => 
-          option.setName('member')
-            .setDescription('The recruiter')
-            .setRequired(true))
-        .addNumberOption(option =>
-          option.setName('points')
-            .setDescription('New points total')
-            .setRequired(true)
-            .setMinValue(0))
-        .addStringOption(option =>
-          option.setName('reason')
-            .setDescription('Reason for adjustment (optional)')
-            .setRequired(false)))
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('add-points')
-        .setDescription('Add or subtract points from a recruiter')
+        .setName('set')
+        .setDescription('Set a recruiter\'s total recruitment points')
         .addUserOption(option =>
           option.setName('member')
             .setDescription('The recruiter')
             .setRequired(true))
         .addNumberOption(option =>
-          option.setName('amount')
-            .setDescription('Amount to add (use negative to subtract)')
-            .setRequired(true))
+          option.setName('points')
+            .setDescription('New total points')
+            .setRequired(true)
+            .setMinValue(0))
         .addStringOption(option =>
           option.setName('reason')
             .setDescription('Reason for adjustment (optional)')
             .setRequired(false))),
+  new SlashCommandBuilder()
+    .setName('set-recruiter-recruits')
+    .setDescription('Set a recruiter\'s TOTAL recruits for the current week (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('set')
+        .setDescription('Set the total weekly recruit count')
+        .addUserOption(option => option.setName('member').setDescription('The recruiter').setRequired(true))
+        .addIntegerOption(option => option.setName('count').setDescription('New total recruit count for the week').setRequired(true).setMinValue(0))
+        .addStringOption(option => option.setName('region').setDescription('Region (defaults to recruiter\'s regional role)').setRequired(false).addChoices({ name: 'EU', value: 'EU' }, { name: 'NA', value: 'NA' }, { name: 'AS', value: 'AS' }))
+        .addStringOption(option => option.setName('reason').setDescription('Reason (optional)').setRequired(false)))
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('add')
+        .setDescription('Add or remove weekly recruits')
+        .addUserOption(option => option.setName('member').setDescription('The recruiter').setRequired(true))
+        .addIntegerOption(option => option.setName('amount').setDescription('Amount to add (negative to remove)').setRequired(true))
+        .addStringOption(option => option.setName('region').setDescription('Region (defaults to recruiter\'s regional role)').setRequired(false).addChoices({ name: 'EU', value: 'EU' }, { name: 'NA', value: 'NA' }, { name: 'AS', value: 'AS' }))
+        .addStringOption(option => option.setName('reason').setDescription('Reason (optional)').setRequired(false)))
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('reset')
+        .setDescription('Remove all weekly recruits for a recruiter')
+        .addUserOption(option => option.setName('member').setDescription('The recruiter').setRequired(true))
+        .addStringOption(option => option.setName('region').setDescription('Region (defaults to recruiter\'s regional role)').setRequired(false).addChoices({ name: 'EU', value: 'EU' }, { name: 'NA', value: 'NA' }, { name: 'AS', value: 'AS' }))
+        .addStringOption(option => option.setName('reason').setDescription('Reason (optional)').setRequired(false))),
 ];
 
 async function registerCommands({ guildId = null, global = false } = {}) {

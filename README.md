@@ -31,6 +31,7 @@ Quick checks:
 - Recruiting: `/recruit`, `/info`, `/revoke-recruit`, `/invite`, `/recruiter info`.
 - Economy: `/recruiter buy`, `/recruiter multiplier-list`, `/recruiter multiplier-view`, `/recruiter multiplier-active`, `/recruiter multiplier-apply`, `/recruiter multiplier-reset`.
 - Moderation: `/recruiter warn`, `/recruiter warnings-revoke`, `/absent`, `/rookiepoints add/remove`, `/rookie_promote`.
+- Admin stats: `/set-recruiter-points set`, `/set-recruiter-recruits set/add/reset`.
 - Reporting: `/leaderboard show/init`, `/recruitment_report`, `/dm`.
 - Anti-nuke: `/antinuke_status`, `/antinuke_rollback`, `/simulate_attack`, `/toggle_strict_mode`, `/toggle_aggressive_ban`, `/set_quarantine_options`.
 - Ops/backups: `/force_backup`, `/view_backups`, `/emergency_recover`, `/export_logs`, `/set_log_channel`, `/whitelist`, `/check_score`, `/reset_scores`, `/status`.
