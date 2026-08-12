@@ -649,6 +649,8 @@ async function recomputeLeaderboardsInternal(db, guild) {
       const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
       const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: leaderboardWindowStart, guildId });
       
+      console.log(`[LEADERBOARD] ${rg.key}: Found ${rowsBase.length} recruiters with data (window: ${new Date(leaderboardWindowStart).toISOString()})`);
+      
       // rowsBase already filtered by region in the SQL query, no additional filtering needed
       const rowsFiltered = rowsBase;
       
@@ -1090,6 +1092,8 @@ function start(client, db) {
     // Temporarily disabled until 2026-08-09 to prevent leaderboard spam during fixes
     const now = new Date();
     // FIXED: Re-enable leaderboard recompute (was skipped until Aug 9)
+    console.log('[STARTUP] Recomputing leaderboards at', now.toISOString());
+    console.log('[STARTUP] Week started:', new Date(getWeekStartUtcTs()).toISOString());
     await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
 
     // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
