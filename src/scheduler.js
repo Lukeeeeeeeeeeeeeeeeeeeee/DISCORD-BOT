@@ -802,7 +802,19 @@ async function recomputeLeaderboardsInternal(db, guild, opts = {}) {
 }
 
 async function recomputeLeaderboards(db, guild, opts = {}) {
-  if (leaderboardsInFlight) return leaderboardsInFlight;
+  // If force flag is set, skip the lock check (for admin commands)
+  if (!opts.force && leaderboardsInFlight) {
+    console.log('[SCHEDULER] Leaderboard recompute already in progress, returning existing promise');
+    return leaderboardsInFlight;
+  }
+  
+  // If forced, wait for existing one to finish first, then run a new one
+  if (opts.force && leaderboardsInFlight) {
+    console.log('[SCHEDULER] Force refresh requested, waiting for current refresh to complete...');
+    await leaderboardsInFlight.catch(() => {}); // Ignore errors from previous run
+    console.log('[SCHEDULER] Starting forced refresh...');
+  }
+  
   leaderboardsInFlight = recomputeLeaderboardsInternal(db, guild, opts);
   try {
     return await leaderboardsInFlight;

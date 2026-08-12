@@ -187,8 +187,19 @@ async function handlePointsSubcommand(interaction, database) {
 
   // EMERGENCY FIX: Don't await the leaderboard refresh - it's too slow and causes command timeouts
   // Fire and forget - let it run in the background
-  scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true })
-    .catch(e => console.error('Failed to refresh leaderboards (points):', e));
+  // Use force: true to ensure the refresh actually happens even if one is already running
+  console.log('[SET-RECRUITER-STATS] Triggering forced background leaderboard refresh (points)...');
+  const refreshStart = Date.now();
+  
+  scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true, force: true })
+    .then(() => {
+      const elapsed = Date.now() - refreshStart;
+      console.log(`[SET-RECRUITER-STATS] Leaderboard refresh completed in ${elapsed}ms (points)`);
+    })
+    .catch(e => {
+      const elapsed = Date.now() - refreshStart;
+      console.error(`[SET-RECRUITER-STATS] Failed to refresh leaderboards after ${elapsed}ms (points):`, e);
+    });
 }
 
 async function handleRecruitsSubcommand(interaction, database) {
@@ -252,8 +263,19 @@ async function handleRecruitsSubcommand(interaction, database) {
 
   // EMERGENCY FIX: Don't await the leaderboard refresh - it's too slow and causes command timeouts
   // Fire and forget - let it run in the background
-  scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true })
-    .catch(e => console.error('Failed to refresh leaderboards (recruits):', e));
+  // Use force: true to ensure the refresh actually happens even if one is already running
+  console.log('[SET-RECRUITER-STATS] Triggering forced background leaderboard refresh (recruits)...');
+  const refreshStart = Date.now();
+  
+  scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true, force: true })
+    .then(() => {
+      const elapsed = Date.now() - refreshStart;
+      console.log(`[SET-RECRUITER-STATS] Leaderboard refresh completed in ${elapsed}ms (recruits)`);
+    })
+    .catch(e => {
+      const elapsed = Date.now() - refreshStart;
+      console.error(`[SET-RECRUITER-STATS] Failed to refresh leaderboards after ${elapsed}ms (recruits):`, e);
+    });
 }
 
 async function applyRecruitDelta(database, guildId, recruiterId, region, weekStart, delta) {
