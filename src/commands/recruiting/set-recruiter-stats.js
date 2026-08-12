@@ -47,17 +47,17 @@ module.exports = {
   async execute(interaction, _client, dbHandle = null) {
     const database = dbHandle || db;
 
+    // Defer FIRST before any checks that might reply
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true });
+    }
+
     if (!hasAdministrator(interaction.member)) {
-      return replyError(interaction, 'Administrator permission required.');
+      return interaction.editReply({ content: '❌ Administrator permission required.' });
     }
 
     if (!interaction.guild) {
-      return replyError(interaction, 'This command can only be used in a server.');
-    }
-
-    // Check if already deferred/replied to avoid double-defer
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ ephemeral: true });
+      return interaction.editReply({ content: '❌ This command can only be used in a server.' });
     }
 
     const sub = interaction.options.getSubcommand();
