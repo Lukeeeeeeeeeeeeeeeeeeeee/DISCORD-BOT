@@ -1093,8 +1093,8 @@ function start(client, db) {
     await recomputeLeaderboards(db, guild).catch((e) => console.error('recomputeLeaderboards failed:', e));
 
     // Catch-up: if weekly snapshot was missed (bot offline at 00:05 UTC), run it once.
-    // Sanity Window: Only catch up if we are within 24 hours of the scheduled time.
-    // This prevents a Monday reset from triggering on a Sunday.
+    // Only catch up if we're within 6 hours of the scheduled time (00:05 Monday UTC)
+    // This prevents Wednesday restarts from triggering Monday resets
     try {
       const weekStart = getWeekStartUtcTs();
       const snapKey = `weekly_snapshot_${weekStart}`;
@@ -1102,13 +1102,19 @@ function start(client, db) {
       const existing = await db.get('SELECT key FROM system_events WHERE guild_id = ? AND key = ?', guildId, snapKey);
 
       const now = Date.now();
-      const sanityWindow = 24 * 60 * 60 * 1000; // 24 hours
+      const scheduledResetTime = weekStart + (5 * 60 * 1000); // Monday 00:05 UTC
+      const timeSinceScheduled = now - scheduledResetTime;
+      const catchupWindow = 6 * 60 * 60 * 1000; // 6 hours (not 24!)
 
-      if (!existing && now >= weekStart && now < weekStart + sanityWindow) {
-        debugLog(`Catch-up: Running missed weekly snapshot for ${formatUtcDate(weekStart)}`);
+      // Only catch up if:
+      // 1. Reset hasn't run yet (!existing)
+      // 2. We're past the scheduled time (timeSinceScheduled > 0)
+      // 3. We're within 6 hours of scheduled time (timeSinceScheduled < catchupWindow)
+      if (!existing && timeSinceScheduled > 0 && timeSinceScheduled < catchupWindow) {
+        debugLog(`Catch-up: Running missed weekly snapshot for ${formatUtcDate(weekStart)} (${Math.round(timeSinceScheduled/60000)}m late)`);
         await runWeeklySnapshotAndReset(db, client, { announce: false });
-      } else if (!existing && now >= weekStart + sanityWindow) {
-        debugLog(`Catch-up skipped: Outside 24h sanity window for ${formatUtcDate(weekStart)}`);
+      } else if (!existing && timeSinceScheduled >= catchupWindow) {
+        debugLog(`Catch-up skipped: Too late (${Math.round(timeSinceScheduled/3600000)}h past scheduled time). Wait for next Monday.`);
       }
     } catch (e) {
       console.error('Weekly snapshot catch-up check failed:', e);
