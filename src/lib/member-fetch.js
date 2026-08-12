@@ -1,6 +1,6 @@
-const DEFAULT_CHUNK_SIZE = Number.parseInt(process.env.MEMBER_FETCH_CHUNK || '100', 10);
-const DEFAULT_CONCURRENCY = Number.parseInt(process.env.MEMBER_FETCH_CONCURRENCY || '3', 10);
-const DEFAULT_MAX_RETRIES = Number.parseInt(process.env.MEMBER_FETCH_MAX_RETRIES || '2', 10);
+const DEFAULT_CHUNK_SIZE = Number.parseInt(process.env.MEMBER_FETCH_CHUNK || '50', 10); // Reduced from 100 to avoid timeouts
+const DEFAULT_CONCURRENCY = Number.parseInt(process.env.MEMBER_FETCH_CONCURRENCY || '2', 10); // Reduced from 3 to be gentler on API
+const DEFAULT_MAX_RETRIES = Number.parseInt(process.env.MEMBER_FETCH_MAX_RETRIES || '3', 10); // Increased from 2 to give more chances
 
 function chunkArray(items, size = DEFAULT_CHUNK_SIZE) {
   const out = [];
@@ -52,7 +52,7 @@ async function fetchMembersByIds(guild, ids, opts = {}) {
     let lastError = null;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const fetched = await guild.members.fetch({ user: chunk });
+        const fetched = await guild.members.fetch({ user: chunk, time: 15000 }); // Add 15s timeout
         if (fetched && typeof fetched.values === 'function') {
           for (const member of fetched.values()) {
             if (member && member.id) members.set(member.id, member);
@@ -64,13 +64,17 @@ async function fetchMembersByIds(guild, ids, opts = {}) {
         const hardFail = error && (error.code === 50007 || error.code === 50013 || error.code === 50001);
         if (hardFail || attempt >= maxRetries) break;
         const rateLimited = error && (error.status === 429 || error.code === 429);
-        const baseDelayMs = 1000 * (attempt + 1);
+        const baseDelayMs = 2000 * (attempt + 1); // Increased from 1000 to 2000 for longer backoff
         const delayMs = rateLimited ? getRetryAfterMs(error, baseDelayMs) : baseDelayMs;
         await sleep(delayMs);
       }
     }
     if (lastError) {
-      console.warn('Member fetch failed after retries', { count: chunk.length, error: lastError.message || lastError });
+      // Only log if it's not a timeout error to reduce noise
+      const isTimeout = lastError && lastError.message && lastError.message.includes("didn't arrive");
+      if (!isTimeout) {
+        console.warn('Member fetch failed after retries', { count: chunk.length, error: lastError.message || lastError });
+      }
     }
     return null;
   });

@@ -2938,7 +2938,9 @@ class AntiNuke {
     }
 
     // Send to owner DM
-    if (this.LOG_DM_ID) {
+    // DISABLED: User requested to stop receiving backup DM notifications
+    // Only send DMs for critical actions, not backups
+    if (this.LOG_DM_ID && !this.isBackupActionType(actionData.type)) {
       try {
         const owner = await this.client.users.fetch(this.LOG_DM_ID);
         await owner.send({ embeds: [embed] });
@@ -2947,6 +2949,14 @@ class AntiNuke {
       }
     }
   }
+  
+  // Check if action type is a backup action
+  isBackupActionType(actionType) {
+    return actionType === 'backup_created'
+      || actionType === 'backup_incremental_created'
+      || actionType === 'manual_backup_created';
+  }
+  
   // Get color for action type
   getColorForAction(action) {
     if (action && action.whitelisted) {

@@ -215,6 +215,15 @@ async function performWeeklyRecalculations(guild) {
  * Send DM notification to staff member about weekly recalculation
  */
 async function sendWeeklyRecalculationDM(result, options = {}) {
+  // DISABLED: User requested to stop receiving weekly DM notifications
+  // This function is now a no-op to prevent 1am DM spam
+  // The calculation still happens, just no DMs are sent
+  
+  const { staffMember } = result;
+  console.log(`Weekly recalculation DM skipped for ${staffMember.id} (feature disabled by user request)`);
+  return;
+  
+  /* ORIGINAL CODE PRESERVED FOR REFERENCE:
   const { staffMember, newMinReq, stats7d, activeWarnings, absence, previousMinReq } = result;
   const logChannel = options.logChannel || null;
 
@@ -266,6 +275,7 @@ async function sendWeeklyRecalculationDM(result, options = {}) {
   } catch (error) {
     console.error(`Error sending weekly DM to ${staffMember.id}:`, error);
   }
+  */
 }
 
 /**

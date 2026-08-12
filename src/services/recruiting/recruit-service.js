@@ -363,16 +363,33 @@ async function execute(interaction, _client, dbHandle = null) {
   const traceId = createTraceId();
   try {
     const respond = async (payload) => {
-      if (didDefer && typeof interaction.editReply === 'function') return interaction.editReply(payload);
-      if (typeof interaction.reply === 'function') return interaction.reply(payload);
-      if (typeof interaction.editReply === 'function') return interaction.editReply(payload);
+      try {
+        if (interaction.deferred || interaction.replied) {
+          if (typeof interaction.editReply === 'function') {
+            return await interaction.editReply(payload);
+          }
+        } else if (typeof interaction.reply === 'function') {
+          return await interaction.reply(payload);
+        }
+      } catch (err) {
+        // Interaction expired or unknown - log but don't crash
+        if (err.code === 10008) {
+          console.error('Interaction expired (Unknown Message):', { traceId, commandName: interaction.commandName });
+          return null;
+        }
+        throw err;
+      }
       return null;
     };
 
     let didDefer = false;
     if (typeof interaction.deferReply === 'function') {
-      await interaction.deferReply();
-      didDefer = true;
+      try {
+        await interaction.deferReply();
+        didDefer = true;
+      } catch (err) {
+        console.error('Failed to defer interaction:', { traceId, error: err });
+      }
     }
 
     const member = interaction.options.getUser('member');
@@ -616,6 +633,7 @@ async function execute(interaction, _client, dbHandle = null) {
 
       try {
         await scheduler.recomputeLeaderboards(db, interaction.guild);
+        console.log(`Leaderboard recomputed after recruit: recruiter=${interaction.user.id}, recruited=${member.id}, region=${team}`);
       } catch (e) {
         console.error('Failed updating leaderboards:', e);
       }

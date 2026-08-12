@@ -520,7 +520,10 @@ async function recomputeLeaderboardsInternal(db, guild) {
     { key: 'AS', channel: CHANNELS.INVITES_AS }
   ];
   const weekStart = getWeekStartUtcTs();
-  const rolling7dStart = getRolling7DayStartTs();
+  // Use weekStart for leaderboard time window so it resets every Monday
+  // This shows recruits from Monday 00:00 UTC until now, not a rolling 7-day window
+  const leaderboardWindowStart = weekStart;
+  
   let memberMap = new Map();
   let dbRecruiterIds = [];
   let hasDbRecruiters = false;
@@ -644,22 +647,16 @@ async function recomputeLeaderboardsInternal(db, guild) {
     let rows = [];
     if (!leaderboardText) {
       const meta = await loadRecruiterMeta(db, recruiterMembers, { guildId });
-      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: rolling7dStart, guildId });
+      const rowsBase = await fetchLeaderboardRows(db, recruiterMembers, { region: rg.key, weekStart, sinceTs: leaderboardWindowStart, guildId });
       
-      // CRITICAL: Filter to only recruiters who actually have recruits in THIS region
-      // This prevents pero showing in Fire when his recruit is in Air
-      const rowsFiltered = rowsBase.filter(r => {
-        // If they have no recruits at all, include them (shows 0/X)
-        if (!r.cnt || r.cnt === 0) return true;
-        // If they have recruits, we already filtered by region in the query
-        return true;
-      });
+      // rowsBase already filtered by region in the SQL query, no additional filtering needed
+      const rowsFiltered = rowsBase;
       
       const missingMinReqIds = rowsFiltered.filter(r => r.min_req == null).map(r => r.recruiter_id);
       const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
 
       const enriched = [];
-      const statsWindow = { sinceTs: rolling7dStart, untilTs: Date.now() };
+      const statsWindow = { sinceTs: leaderboardWindowStart, untilTs: Date.now() };
       const enrichedResults = await runWithConcurrency(rowsFiltered || [], SNAPSHOT_CONCURRENCY, async (r) => {
         const absence = meta.absences.has(r.recruiter_id);
         const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;
@@ -823,15 +820,16 @@ async function recomputeWarningsLeaderboardInternal(db, guild) {
   }
 
   const weekStart = getWeekStartUtcTs();
-  const rolling7dStart = getRolling7DayStartTs();
+  // Use weekStart for warnings leaderboard so it shows current week data
+  const leaderboardWindowStart = weekStart;
   const meta = await loadRecruiterMeta(db, recruiterIds, { guildId });
-  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { weekStart, sinceTs: rolling7dStart, guildId });
+  const rowsBase = await fetchLeaderboardRows(db, recruiterIds, { weekStart, sinceTs: leaderboardWindowStart, guildId });
   const missingMinReqIds = rowsBase.filter(r => r.min_req == null).map(r => r.recruiter_id);
   const prevMinReqMap = await loadPreviousMinReqs(db, missingMinReqIds, weekStart, { guildId });
   const memberMap = await fetchMembersByIds(guild, recruiterIds);
 
   const rows = [];
-  const statsWindow = { sinceTs: weekStart, untilTs: Date.now() };
+  const statsWindow = { sinceTs: leaderboardWindowStart, untilTs: Date.now() };
   const warningRowsEnriched = await runWithConcurrency(rowsBase || [], SNAPSHOT_CONCURRENCY, async (r) => {
     const absence = meta.absences.has(r.recruiter_id);
     const activeWarnings = meta.warnings.get(r.recruiter_id) || 0;

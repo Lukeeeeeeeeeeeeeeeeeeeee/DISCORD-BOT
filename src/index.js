@@ -305,8 +305,8 @@ async function onReady() {
     console.error('Startup initialization failed; bot will remain in guarded mode.', err);
   }
 }
-// Start schedulers/subsystems once the client is online (support both event names for compatibility).
-client.once('ready', onReady);
+// Start schedulers/subsystems once the client is online
+// Using 'clientReady' instead of deprecated 'ready' event (Discord.js v14+)
 client.once('clientReady', onReady);
 
 async function flushShutdown(signal) {
