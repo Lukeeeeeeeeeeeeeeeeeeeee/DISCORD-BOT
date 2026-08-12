@@ -97,9 +97,9 @@ module.exports = {
     }
 
     // Run all work with proper await so the command doesn't finish prematurely
-    // Increased timeout to 55s to allow for leaderboard recomputation (max 60s for recompute)
+    // Reduced timeout since we no longer await leaderboard recomputation
     try {
-      await withTimeout(runCommand(interaction, database), 55000, 'command');
+      await withTimeout(runCommand(interaction, database), 15000, 'command');
     } catch (err) {
       console.error('set-recruiter-stats error:', err);
       await safeEdit(interaction, `❌ ${err && err.message ? err.message : err}`);
@@ -181,21 +181,14 @@ async function handlePointsSubcommand(interaction, database) {
     `Previous: ${formatPointsValue(result.previousPoints)}\n` +
     `Change: ${result.newPoints - result.previousPoints >= 0 ? '+' : ''}${formatPointsValue(result.newPoints - result.previousPoints)}\n` +
     `Reason: ${result.reason}\n` +
-    `💡 This changes their total points (leaderboard). To change weekly recruits, use \`/set-recruiter-stats recruits\``
+    `💡 This changes their total points (leaderboard). To change weekly recruits, use \`/set-recruiter-stats recruits\`\n` +
+    `⏳ Leaderboard will update in the background...`
   );
 
-  // CRITICAL: Await the leaderboard refresh so it completes before command finishes
-  // Increased timeout to 120s to handle large guilds
-  try {
-    await withTimeout(
-      scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true }),
-      120000,
-      'recompute'
-    );
-  } catch (e) {
-    console.error('Failed to refresh leaderboards (points):', e);
-    // Don't fail the command if leaderboard refresh times out, just log it
-  }
+  // EMERGENCY FIX: Don't await the leaderboard refresh - it's too slow and causes command timeouts
+  // Fire and forget - let it run in the background
+  scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true })
+    .catch(e => console.error('Failed to refresh leaderboards (points):', e));
 }
 
 async function handleRecruitsSubcommand(interaction, database) {
@@ -253,21 +246,14 @@ async function handleRecruitsSubcommand(interaction, database) {
     `✅ Set **${result.targetMember ? result.targetMember.user.tag : member.tag}**'s **WEEKLY RECRUITS** to **${result.newCount}** (${result.region})${result.regionNote}\n` +
     `New weekly recruit count: ${result.newCount}\n` +
     `Reason: ${result.reason}\n` +
-    `💡 This changes weekly recruits only. To change total points, use \`/set-recruiter-stats points\``
+    `💡 This changes weekly recruits only. To change total points, use \`/set-recruiter-stats points\`\n` +
+    `⏳ Leaderboard will update in the background...`
   );
 
-  // CRITICAL: Await the leaderboard refresh so it completes before command finishes
-  // Increased timeout to 120s to handle large guilds
-  try {
-    await withTimeout(
-      scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true }),
-      120000,
-      'recompute'
-    );
-  } catch (e) {
-    console.error('Failed to refresh leaderboards (recruits):', e);
-    // Don't fail the command if leaderboard refresh times out, just log it
-  }
+  // EMERGENCY FIX: Don't await the leaderboard refresh - it's too slow and causes command timeouts
+  // Fire and forget - let it run in the background
+  scheduler.recomputeLeaderboards(database, interaction.guild, { skipMemberCache: true })
+    .catch(e => console.error('Failed to refresh leaderboards (recruits):', e));
 }
 
 async function applyRecruitDelta(database, guildId, recruiterId, region, weekStart, delta) {
