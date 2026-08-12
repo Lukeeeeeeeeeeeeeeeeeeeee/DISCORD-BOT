@@ -599,6 +599,22 @@ async function recomputeLeaderboardsInternal(db, guild) {
         recruiterRole.members.forEach(m => allRecruiterIds.add(m.id));
         foundRoleMembers = true;
       }
+      
+      // CRITICAL FIX: Also include trial recruiters who belong to this region
+      // Trial recruiters are assigned to a region but may not have the regional role yet
+      if (ROLE_IDS.TRIAL_RECRUITER) {
+        const trialRole = guild.roles.cache.get(ROLE_IDS.TRIAL_RECRUITER);
+        if (trialRole && trialRole.members) {
+          trialRole.members.forEach(member => {
+            // Check if this trial recruiter belongs to this region based on their team member role
+            const teamMemberRoleId = ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER[rg.key];
+            if (teamMemberRoleId && member.roles.cache.has(teamMemberRoleId)) {
+              allRecruiterIds.add(member.id);
+              foundRoleMembers = true;
+            }
+          });
+        }
+      }
     }
 
     if (recruiterRoleId && memberMap && memberMap.size) {
@@ -606,6 +622,15 @@ async function recomputeLeaderboardsInternal(db, guild) {
         if (member.roles && member.roles.cache && member.roles.cache.has(recruiterRoleId)) {
           allRecruiterIds.add(member.id);
           foundRoleMembers = true;
+        }
+        
+        // Also check trial recruiters in memberMap
+        if (ROLE_IDS.TRIAL_RECRUITER && member.roles && member.roles.cache && member.roles.cache.has(ROLE_IDS.TRIAL_RECRUITER)) {
+          const teamMemberRoleId = ROLE_IDS.TEAM_MEMBER && ROLE_IDS.TEAM_MEMBER[rg.key];
+          if (teamMemberRoleId && member.roles.cache.has(teamMemberRoleId)) {
+            allRecruiterIds.add(member.id);
+            foundRoleMembers = true;
+          }
         }
       }
     }

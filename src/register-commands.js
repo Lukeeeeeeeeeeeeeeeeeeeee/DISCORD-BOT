@@ -207,6 +207,44 @@ const commands = [
         { name: 'txt', value: 'txt' }
       ))
     .addIntegerOption(opt => opt.setName('chunk_size').setDescription('Split export into chunks (1-200)').setRequired(false).setMinValue(1).setMaxValue(200)),
+  
+  new SlashCommandBuilder()
+    .setName('set-recruiter-stats')
+    .setDescription('Manually set recruiter points or recruit count (Admin only)')
+    .setDefaultMemberPermissions(ADMIN_PERMS)
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('points')
+        .setDescription('Set a recruiter\'s total points')
+        .addUserOption(option => 
+          option.setName('member')
+            .setDescription('The recruiter')
+            .setRequired(true))
+        .addNumberOption(option =>
+          option.setName('points')
+            .setDescription('New points total')
+            .setRequired(true)
+            .setMinValue(0))
+        .addStringOption(option =>
+          option.setName('reason')
+            .setDescription('Reason for adjustment (optional)')
+            .setRequired(false)))
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('add-points')
+        .setDescription('Add or subtract points from a recruiter')
+        .addUserOption(option =>
+          option.setName('member')
+            .setDescription('The recruiter')
+            .setRequired(true))
+        .addNumberOption(option =>
+          option.setName('amount')
+            .setDescription('Amount to add (use negative to subtract)')
+            .setRequired(true))
+        .addStringOption(option =>
+          option.setName('reason')
+            .setDescription('Reason for adjustment (optional)')
+            .setRequired(false))),
 ];
 
 async function registerCommands({ guildId = null, global = false } = {}) {
