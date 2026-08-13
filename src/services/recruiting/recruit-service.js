@@ -383,13 +383,17 @@ async function execute(interaction, _client, dbHandle = null) {
     };
 
     let didDefer = false;
-    if (typeof interaction.deferReply === 'function') {
+    // Check if already deferred by interaction-create handler
+    if (typeof interaction.deferReply === 'function' && !interaction.deferred && !interaction.replied) {
       try {
         await interaction.deferReply();
         didDefer = true;
       } catch (err) {
         console.error('Failed to defer interaction:', { traceId, error: err });
       }
+    } else if (interaction.deferred) {
+      // Already deferred by auto-defer in interaction-create
+      didDefer = true;
     }
 
     const member = interaction.options.getUser('member');

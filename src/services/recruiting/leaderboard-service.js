@@ -143,7 +143,10 @@ async function showLeaderboard({ interaction, db, guildId }) {
     if (!REGIONS.includes(region) && region !== 'GLOBAL') {
       return { error: 'Invalid region.' };
     }
-    await interaction.deferReply();
+    // Check if already deferred by auto-defer
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply();
+    }
     const respond = (payload) => interaction.editReply(payload);
 
     let dbIds = [];
@@ -212,7 +215,10 @@ async function showLeaderboard({ interaction, db, guildId }) {
     return respond({ content: text, allowedMentions: { parse: [] } });
   }
 
-  await interaction.deferReply();
+  // Check if already deferred by auto-defer
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply();
+  }
   const respond = (payload) => interaction.editReply(payload);
   const allRecruiterIds = new Set();
   const recruiterRoleIds = ['EU', 'NA', 'AS']

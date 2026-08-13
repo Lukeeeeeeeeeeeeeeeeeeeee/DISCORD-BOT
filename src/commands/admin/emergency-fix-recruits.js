@@ -8,7 +8,10 @@ module.exports = {
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   async execute(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    // Check if already deferred by auto-defer
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true });
+    }
 
     try {
       const guildId = interaction.guildId;
